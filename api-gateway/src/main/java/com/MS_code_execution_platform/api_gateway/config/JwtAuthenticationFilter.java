@@ -24,6 +24,12 @@ public class JwtAuthenticationFilter implements WebFilter {
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
 
+        String path = exchange.getRequest().getURI().getPath();
+
+        if (path.startsWith("/auth/")) {
+            return chain.filter(exchange);  // Skip JWT validation
+        }
+
         String authHeader = exchange.getRequest()
                 .getHeaders()
                 .getFirst(HttpHeaders.AUTHORIZATION);
@@ -55,3 +61,18 @@ public class JwtAuthenticationFilter implements WebFilter {
         return chain.filter(exchange);
     }
 }
+
+
+/* In WebFlux, filters execute BEFORE authorization rules.
+
+So your JwtAuthenticationFilter is:
+
+Running for /auth/register
+
+Not finding Authorization header
+
+Returning 401
+
+Request never reaches permitAll()
+
+ */
