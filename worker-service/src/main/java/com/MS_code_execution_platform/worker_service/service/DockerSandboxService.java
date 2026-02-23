@@ -1,7 +1,7 @@
 package com.MS_code_execution_platform.worker_service.service;
 
 
-import com.MS_code_execution_platform.worker_service.entity.SubmissionRequest;
+import com.MS_code_execution_platform.worker_service.dto.SubmissionRequest;
 import org.springframework.stereotype.Service;
 
 import java.io.File;

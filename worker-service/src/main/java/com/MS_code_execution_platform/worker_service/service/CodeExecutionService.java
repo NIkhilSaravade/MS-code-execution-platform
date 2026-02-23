@@ -1,7 +1,7 @@
 package com.MS_code_execution_platform.worker_service.service;
 
-import com.MS_code_execution_platform.worker_service.entity.ExecutionResult;
-import com.MS_code_execution_platform.worker_service.entity.SubmissionRequest;
+import com.MS_code_execution_platform.worker_service.dto.ExecutionResult;
+import com.MS_code_execution_platform.worker_service.dto.SubmissionRequest;
 import com.MS_code_execution_platform.worker_service.messaging.ResultProducer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;

@@ -31,7 +31,7 @@ public class SubmissionController {
     }
 
     @GetMapping("/user/{userId}")
-    public List<Submission> getUserSubmissions(@PathVariable Long userId) {
+    public List<Submission> getUserSubmissions(@PathVariable UUID userId) {
         return submissionRepository.findByUserId(userId);
     }
 }

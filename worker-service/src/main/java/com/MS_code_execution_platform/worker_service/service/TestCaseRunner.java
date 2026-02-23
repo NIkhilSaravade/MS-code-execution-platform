@@ -1,8 +1,8 @@
 package com.MS_code_execution_platform.worker_service.service;
 
 
-import com.MS_code_execution_platform.worker_service.entity.ExecutionResult;
-import com.MS_code_execution_platform.worker_service.entity.TestCase;
+import com.MS_code_execution_platform.worker_service.dto.ExecutionResult;
+import com.MS_code_execution_platform.worker_service.dto.TestCase;
 
 import java.util.List;
 

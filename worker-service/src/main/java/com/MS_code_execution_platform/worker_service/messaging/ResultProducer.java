@@ -1,6 +1,6 @@
 package com.MS_code_execution_platform.worker_service.messaging;
 
-import com.MS_code_execution_platform.worker_service.entity.ExecutionResult;
+import com.MS_code_execution_platform.worker_service.dto.ExecutionResult;
 import lombok.RequiredArgsConstructor;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;

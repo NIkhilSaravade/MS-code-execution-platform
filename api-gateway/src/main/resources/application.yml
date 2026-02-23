@@ -13,13 +13,19 @@ spring:
             - id: user-service
               uri: lb://USER-SERVICE
               predicates:
-                - Path=/auth/**
+                - Path=/auth/**,/users/**
+
 
 
             - id: problem-service
               uri: lb://PROBLEM-SERVICE
               predicates:
                 - Path=/problems/**
+
+            - id: submission-service
+              uri: lb://SUBMISSION-SERVICE
+              predicates:
+                - Path=/submissions/**
 
 
 

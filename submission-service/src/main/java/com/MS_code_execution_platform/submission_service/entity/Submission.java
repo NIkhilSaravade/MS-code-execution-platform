@@ -19,7 +19,7 @@ public class Submission {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    private Long userId;
+    private UUID userId;
     private Long problemId;
 
     @Column(columnDefinition = "TEXT")
