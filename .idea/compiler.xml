@@ -11,7 +11,7 @@
         <module name="discovery-service" />
         <module name="config-service" />
       </profile>
-      <profile name="Annotation profile for worker-service" enabled="true">
+      <profile name="Annotation profile for execution-result-service" enabled="true">
         <sourceOutputDir name="target/generated-sources/annotations" />
         <sourceTestOutputDir name="target/generated-test-sources/test-annotations" />
         <outputRelativeToContentRoot value="true" />
@@ -22,6 +22,7 @@
         <module name="submission-service" />
         <module name="problem-service" />
         <module name="user-service" />
+        <module name="execution-result-service" />
       </profile>
     </annotationProcessing>
   </component>
@@ -30,6 +31,7 @@
       <module name="api-gateway" options="-parameters" />
       <module name="config-service" options="-parameters" />
       <module name="discovery-service" options="-parameters" />
+      <module name="execution-result-service" options="-parameters" />
       <module name="problem-service" options="-parameters" />
       <module name="submission-service" options="-parameters" />
       <module name="user-service" options="-parameters" />
