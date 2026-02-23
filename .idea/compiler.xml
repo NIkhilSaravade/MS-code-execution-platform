@@ -11,7 +11,7 @@
         <module name="discovery-service" />
         <module name="config-service" />
       </profile>
-      <profile name="Annotation profile for execution-result-service" enabled="true">
+      <profile name="Annotation profile for worker-service" enabled="true">
         <sourceOutputDir name="target/generated-sources/annotations" />
         <sourceTestOutputDir name="target/generated-test-sources/test-annotations" />
         <outputRelativeToContentRoot value="true" />
@@ -20,8 +20,8 @@
         </processorPath>
         <module name="worker-service" />
         <module name="submission-service" />
-        <module name="problem-service" />
         <module name="user-service" />
+        <module name="problem-service" />
         <module name="execution-result-service" />
       </profile>
     </annotationProcessing>

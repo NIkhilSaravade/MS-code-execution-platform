@@ -12,7 +12,10 @@ public class ExecutionResultConsumer {
 
     private final ExecutionResultService executionResultService;
 
-    @KafkaListener(topics = "execution-result-topic")
+    @KafkaListener(
+            topics = "execution-result-topic",
+            containerFactory = "kafkaListenerContainerFactory"
+    )
     public void consume(ExecutionResultEvent event) {
         executionResultService.processExecutionResult(event);
     }

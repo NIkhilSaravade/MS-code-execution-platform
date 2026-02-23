@@ -1,6 +1,5 @@
 package com.MS_code_execution_platform.worker_service.service;
 
-
 import com.MS_code_execution_platform.worker_service.util.FileUtils;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -13,36 +12,43 @@ public class CodeExecutionService {
 
     private final DockerExecutionService dockerExecutionService;
 
-    public String execute(Long submissionId, String code, String language) {
+    public String execute(Long submissionId,
+                          String code,
+                          String language,
+                          String input) {
 
         try {
             Path dir = FileUtils.createTempDirectory(submissionId);
 
             switch (language.toLowerCase()) {
 
-                case "java":
-                    FileUtils.writeCodeFile(dir, "Main.java", code);
-                    return dockerExecutionService.execute(
-                            dir,
-                            "openjdk:17-alpine",
-                            "javac Main.java && java Main"
-                    );
-
                 case "python":
                     FileUtils.writeCodeFile(dir, "main.py", code);
-                    return dockerExecutionService.execute(
-                            dir,
-                            "python:3.10-alpine",
-                            "python main.py"
-                    );
+                    FileUtils.writeCodeFile(dir, "input.txt", input);
 
+                    return dockerExecutionService.execute(
+                            dir.toAbsolutePath().toString(),
+                            "python:3.10",
+                            "python main.py < input.txt"
+                    );
+                case "java":
+                    FileUtils.writeCodeFile(dir, "Main.java", code);
+                    FileUtils.writeCodeFile(dir, "input.txt", input);
+
+                    return dockerExecutionService.execute(
+                            dir.toAbsolutePath().toString(),
+                            "eclipse-temurin:17",
+                            "javac Main.java && java Main < input.txt"
+                    );
                 case "cpp":
                 case "c++":
                     FileUtils.writeCodeFile(dir, "main.cpp", code);
+                    FileUtils.writeCodeFile(dir, "input.txt", input);
+
                     return dockerExecutionService.execute(
-                            dir,
-                            "gcc:12-alpine",
-                            "g++ main.cpp -o main && ./main"
+                            dir.toAbsolutePath().toString(),
+                            "gcc:12",
+                            "g++ main.cpp -o main && ./main < input.txt"
                     );
 
                 default:

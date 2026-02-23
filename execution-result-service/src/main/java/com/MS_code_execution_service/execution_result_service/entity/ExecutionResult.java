@@ -19,7 +19,7 @@ public class ExecutionResult {
     private Long problemId;
     private Long userId;
 
-    @Lob
+    @Column(columnDefinition = "TEXT")
     private String output;
 
     private String status;  // PASSED / FAILED / ERROR

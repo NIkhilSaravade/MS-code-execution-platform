@@ -12,7 +12,10 @@ public class ExecutionResultConsumer {
 
     private final SubmissionService submissionService;
 
-    @KafkaListener(topics = "execution-result-topic", groupId = "submission-group")
+    @KafkaListener(
+            topics = "execution-result-topic",
+            containerFactory = "kafkaListenerContainerFactory"
+    )
     public void consumeExecutionResult(ExecutionResultEvent event) {
         submissionService.updateSubmissionResult(event);
     }

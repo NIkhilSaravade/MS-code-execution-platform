@@ -15,8 +15,6 @@ spring:
               predicates:
                 - Path=/auth/**,/users/**
 
-
-
             - id: problem-service
               uri: lb://PROBLEM-SERVICE
               predicates:
@@ -26,6 +24,11 @@ spring:
               uri: lb://SUBMISSION-SERVICE
               predicates:
                 - Path=/submissions/**
+
+            - id: execution-result-service
+              uri: lb://EXECUTION-RESULT-SERVICE
+              predicates:
+                - Path=/api/results/**
 
 
 

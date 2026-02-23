@@ -44,21 +44,28 @@
 		<artifactId>spring-boot-starter-web</artifactId>
 	    </dependency>
 
-		<!-- Docker Java -->
+		<!-- Docker Java Core -->
 		<dependency>
 			<groupId>com.github.docker-java</groupId>
-			<artifactId>docker-java</artifactId>
+			<artifactId>docker-java-core</artifactId>
 			<version>3.3.4</version>
 		</dependency>
 
+		<!-- Docker Java HTTPClient5 Transport -->
 		<dependency>
 			<groupId>com.github.docker-java</groupId>
 			<artifactId>docker-java-transport-httpclient5</artifactId>
 			<version>3.3.4</version>
 		</dependency>
 
+		<dependency>
+			<groupId>org.apache.httpcomponents.core5</groupId>
+			<artifactId>httpcore5-h2</artifactId>
+			<version>5.2.4</version>
+		</dependency>
 
-	<dependency>
+
+		<dependency>
 			<groupId>com.fasterxml.jackson.core</groupId>
 			<artifactId>jackson-databind</artifactId>
 		</dependency>

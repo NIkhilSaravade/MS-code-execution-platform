@@ -1,11 +1,11 @@
 package com.MS_code_execution_platform.worker_service.service;
 
 import com.MS_code_execution_platform.worker_service.dto.ExecutionResultEvent;
-import com.MS_code_execution_platform.worker_service.dto.ProblemResponse;
 import com.MS_code_execution_platform.worker_service.dto.SubmissionEvent;
+import com.MS_code_execution_platform.worker_service.dto.TestCaseResponse;
+import com.MS_code_execution_platform.worker_service.kafka.ExecutionResultProducer;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
@@ -15,35 +15,60 @@ public class WorkerService {
 
     private final CodeExecutionService codeExecutionService;
     private final RestTemplate restTemplate;
-    private final KafkaTemplate<String, ExecutionResultEvent> kafkaTemplate;
+    private final ExecutionResultProducer executionResultProducer;
 
     @Value("${problem-service.url}")
     private String problemServiceUrl;
 
-    @Value("${topics.execution-result}")
-    private String resultTopic;
-
     public void processSubmission(SubmissionEvent event) {
 
-        ProblemResponse problem = restTemplate.getForObject(
-                problemServiceUrl + "/problems/" + event.getProblemId(),
-                ProblemResponse.class
+        TestCaseResponse[] testCases = restTemplate.getForObject(
+                problemServiceUrl + "/problems/" + event.getProblemId() + "/testcases",
+                TestCaseResponse[].class
         );
 
-        String actualOutput = codeExecutionService.execute(
-                event.getSubmissionId(),
-                event.getCode(),
-                event.getLanguage()
-        );
+        if (testCases == null || testCases.length == 0) {
+            throw new RuntimeException("No test cases found for problem: " + event.getProblemId());
+        }
 
-        String status = actualOutput.trim().equals(problem.getExpectedOutput().trim())
-                ? "PASSED" : "FAILED";
+        boolean allPassed = true;
+        String lastOutput = "";
 
-        kafkaTemplate.send(resultTopic,
+        for (TestCaseResponse testCase : testCases) {
+
+            // 🔥 PASS test case input to execution service
+            String actualOutput = codeExecutionService.execute(
+                    event.getSubmissionId(),
+                    event.getCode(),
+                    event.getLanguage(),
+                    testCase.getInput()
+            );
+
+            lastOutput = actualOutput;
+
+            String normalizedActual = actualOutput == null
+                    ? ""
+                    : actualOutput.trim().replaceAll("\\s+", "");
+
+            String normalizedExpected = testCase.getExpectedOutput() == null
+                    ? ""
+                    : testCase.getExpectedOutput().trim().replaceAll("\\s+", "");
+
+            if (!normalizedActual.equals(normalizedExpected)) {
+                allPassed = false;
+                break;
+            }
+        }
+
+        String status = allPassed ? "PASSED" : "FAILED";
+
+        ExecutionResultEvent resultEvent =
                 new ExecutionResultEvent(
                         event.getSubmissionId(),
-                        actualOutput,
+                        lastOutput,
                         status
-                ));
+                );
+
+        executionResultProducer.sendExecutionResult(resultEvent);
     }
 }

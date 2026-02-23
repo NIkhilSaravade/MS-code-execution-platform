@@ -1,4 +1,4 @@
-package com.MS_code_execution_platform.worker_service.consumer;
+package com.MS_code_execution_platform.worker_service.kafka;
 
 import com.MS_code_execution_platform.worker_service.dto.SubmissionEvent;
 import com.MS_code_execution_platform.worker_service.service.WorkerService;
