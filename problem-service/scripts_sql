@@ -1,0 +1,85 @@
+INSERT INTO problem (name, description, constraints) VALUES
+('Two Sum', 'Find two numbers that add up to a target.', '2 <= nums.length <= 10^4'),
+('Best Time to Buy and Sell Stock', 'Maximize profit from stock prices.', '1 <= prices.length <= 10^5'),
+('Contains Duplicate', 'Check if array contains duplicates.', '1 <= nums.length <= 10^5'),
+('Product of Array Except Self', 'Return array of products except self.', '2 <= nums.length <= 10^5'),
+('Maximum Subarray', 'Find contiguous subarray with maximum sum.', '-10^4 <= nums[i] <= 10^4'),
+('Maximum Product Subarray', 'Find contiguous subarray with max product.', '-10 <= nums[i] <= 10'),
+('Find Minimum in Rotated Sorted Array', 'Find minimum element in rotated sorted array.', '1 <= nums.length <= 5000'),
+('Search in Rotated Sorted Array', 'Search target in rotated sorted array.', '-10^4 <= nums[i] <= 10^4'),
+('3Sum', 'Find all unique triplets summing to zero.', '-10^5 <= nums[i] <= 10^5'),
+('Container With Most Water', 'Find max water container area.', '2 <= height.length <= 10^5');
+
+
+INSERT INTO test_case (problem_id, input, expected_output, hidden) VALUES
+(1, '[2,7,11,15], target=9', '[0,1]', false),
+(1, '[3,2,4], target=6', '[1,2]', false),
+(1, '[3,3], target=6', '[0,1]', true);
+
+INSERT INTO test_case (problem_id, input, expected_output, hidden) VALUES
+(2, '[7,1,5,3,6,4]', '5', false),
+(2, '[7,6,4,3,1]', '0', false),
+(2, '[1,2]', '1', true);
+
+INSERT INTO test_case (problem_id, input, expected_output, hidden) VALUES
+(3, '[1,2,3,1]', 'true', false),
+(3, '[1,2,3,4]', 'false', false),
+(3, '[1,1,1,3,3,4,3,2,4,2]', 'true', true);
+
+
+INSERT INTO test_case (problem_id, input, expected_output, hidden) VALUES
+(4, '[1,2,3,4]', '[24,12,8,6]', false),
+(4, '[-1,1,0,-3,3]', '[0,0,9,0,0]', false),
+(4, '[2,3]', '[3,2]', true);
+
+INSERT INTO test_case (problem_id, input, expected_output, hidden) VALUES
+(5, '[-2,1,-3,4,-1,2,1,-5,4]', '6', false),
+(5, '[1]', '1', false),
+(5, '[5,4,-1,7,8]', '23', true);
+
+
+INSERT INTO test_case (problem_id, input, expected_output, hidden) VALUES
+(6, '[2,3,-2,4]', '6', false),
+(6, '[-2,0,-1]', '0', false),
+(6, '[-2,3,-4]', '24', true);
+
+INSERT INTO test_case (problem_id, input, expected_output, hidden) VALUES
+(7, '[3,4,5,1,2]', '1', false),
+(7, '[4,5,6,7,0,1,2]', '0', false),
+(7, '[11,13,15,17]', '11', true);
+
+INSERT INTO test_case (problem_id, input, expected_output, hidden) VALUES
+(8, '[4,5,6,7,0,1,2], target=0', '4', false),
+(8, '[4,5,6,7,0,1,2], target=3', '-1', false),
+(8, '[1], target=0', '-1', true);
+
+INSERT INTO test_case (problem_id, input, expected_output, hidden) VALUES
+(9, '[-1,0,1,2,-1,-4]', '[[-1,-1,2],[-1,0,1]]', false),
+(9, '[]', '[]', false),
+(9, '[0,0,0]', '[[0,0,0]]', true);
+
+INSERT INTO test_case (problem_id, input, expected_output, hidden) VALUES
+(10, '[1,8,6,2,5,4,8,3,7]', '49', false),
+(10, '[1,1]', '1', false),
+(10, '[4,3,2,1,4]', '16', true);
+
+
+
+
+SELECT p.name, t.input, t.expected_output
+FROM problem p
+JOIN test_case t ON p.id = t.problem_id;
+
+
+
+
+
+
+
+
+
+
+
+
+
+

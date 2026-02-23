@@ -16,6 +16,12 @@ spring:
                 - Path=/auth/**
 
 
+            - id: problem-service
+              uri: lb://PROBLEM-SERVICE
+              predicates:
+                - Path=/problems/**
+
+
 
 
 

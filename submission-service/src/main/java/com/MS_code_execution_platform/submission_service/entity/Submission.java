@@ -1,37 +1,35 @@
 package com.MS_code_execution_platform.submission_service.entity;
-import jakarta.persistence.Entity;
-import jakarta.persistence.Id;
-import jakarta.persistence.Lob;
-import jakarta.persistence.Table;
-import lombok.AllArgsConstructor;
-import lombok.Builder;
-import lombok.Getter;
-import lombok.NoArgsConstructor;
+import jakarta.persistence.*;
+import lombok.*;
 
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.UUID;
 
+
 @Entity
-@Table(name = "submissions")
 @Getter
+@Setter
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
 public class Submission {
 
     @Id
-    private UUID id;
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
 
-    private UUID userId;
+    private Long userId;
+    private Long problemId;
 
-    private String problemId;
+    @Column(columnDefinition = "TEXT")
+    private String code;
 
     private String language;
 
-    @Lob
-    private String sourceCode;
+    private String status; // PENDING, SUCCESS, FAILED
 
-    private String status;
+    private String output;
 
-    private Instant createdAt;
+    private LocalDateTime submittedAt;
 }

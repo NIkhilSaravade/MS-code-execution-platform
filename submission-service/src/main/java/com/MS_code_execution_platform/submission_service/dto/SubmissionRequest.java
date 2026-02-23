@@ -5,12 +5,9 @@ import lombok.Data;
 
 @Data
 public class SubmissionRequest {
-    @NotBlank
-    private String problemId;
 
-    @NotBlank
+    private Long userId;
+    private Long problemId;
+    private String code;
     private String language;
-
-    @NotBlank
-    private String sourceCode;
 }
