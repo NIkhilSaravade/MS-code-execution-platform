@@ -1,61 +1,56 @@
 package com.MS_code_execution_platform.worker_service.service;
 
-import com.MS_code_execution_platform.worker_service.dto.ExecutionResult;
-import com.MS_code_execution_platform.worker_service.dto.SubmissionRequest;
-import com.MS_code_execution_platform.worker_service.messaging.ResultProducer;
-import com.fasterxml.jackson.databind.ObjectMapper;
+
+import com.MS_code_execution_platform.worker_service.util.FileUtils;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
-import java.util.Map;
-
+import java.nio.file.Path;
 
 @Service
 @RequiredArgsConstructor
 public class CodeExecutionService {
 
-    private final DockerSandboxService dockerSandboxService;
-    private final ResultProducer resultProducer;
-    private final ObjectMapper objectMapper;
+    private final DockerExecutionService dockerExecutionService;
 
-    private final Map<String, LanguageStrategy> languageStrategies;
-
-    public void execute(String submissionJson) {
+    public String execute(Long submissionId, String code, String language) {
 
         try {
+            Path dir = FileUtils.createTempDirectory(submissionId);
 
-            // 1️⃣ Convert JSON → SubmissionRequest
-            SubmissionRequest request =
-                    objectMapper.readValue(submissionJson, SubmissionRequest.class);
+            switch (language.toLowerCase()) {
 
-            // 2️⃣ Get strategy based on language
-            LanguageStrategy strategy =
-                    languageStrategies.get(request.getLanguage().toLowerCase());
+                case "java":
+                    FileUtils.writeCodeFile(dir, "Main.java", code);
+                    return dockerExecutionService.execute(
+                            dir,
+                            "openjdk:17-alpine",
+                            "javac Main.java && java Main"
+                    );
 
-            if (strategy == null) {
-                throw new RuntimeException("Unsupported Language");
+                case "python":
+                    FileUtils.writeCodeFile(dir, "main.py", code);
+                    return dockerExecutionService.execute(
+                            dir,
+                            "python:3.10-alpine",
+                            "python main.py"
+                    );
+
+                case "cpp":
+                case "c++":
+                    FileUtils.writeCodeFile(dir, "main.cpp", code);
+                    return dockerExecutionService.execute(
+                            dir,
+                            "gcc:12-alpine",
+                            "g++ main.cpp -o main && ./main"
+                    );
+
+                default:
+                    return "Unsupported Language";
             }
 
-            // 3️⃣ Execute inside secure docker
-            String output =
-                    dockerSandboxService.execute(request, strategy);
-
-            // 4️⃣ Build result
-            ExecutionResult result = new ExecutionResult();
-            result.setSubmissionId(request.getSubmissionId());
-            result.setStatus("SUCCESS");
-            result.setOutput(output);
-
-            // 5️⃣ Send result back
-            resultProducer.sendResult(result);
-
         } catch (Exception e) {
-
-            ExecutionResult result = new ExecutionResult();
-            result.setStatus("ERROR");
-            result.setError(e.getMessage());
-
-            resultProducer.sendResult(result);
+            return "Execution Error: " + e.getMessage();
         }
     }
 }

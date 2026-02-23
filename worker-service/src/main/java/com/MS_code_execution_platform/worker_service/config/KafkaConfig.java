@@ -1,8 +1,11 @@
 package com.MS_code_execution_platform.worker_service.config;
 
+
 import org.springframework.context.annotation.Configuration;
+import org.springframework.kafka.annotation.EnableKafka;
 
 @Configuration
-public class KafkaConsumerConfig {
-    // You can customize Kafka configs here if needed
+@EnableKafka
+public class KafkaConfig {
+
 }
