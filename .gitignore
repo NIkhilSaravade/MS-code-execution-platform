@@ -1,0 +1,23 @@
+@"
+# Secrets
+.env
+
+# IDE
+.idea/
+.vscode/
+
+# Claude
+CLAUDE.md
+
+# Python
+venv/
+.venv/
+.vendor/
+__pycache__/
+*.py[cod]
+chroma_db/
+
+# Java
+target/
+*.class
+"@ | Out-File -FilePath .gitignore -Encoding utf8
