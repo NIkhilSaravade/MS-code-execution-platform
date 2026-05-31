@@ -16,3 +16,4 @@ chroma_db/
 # IDE
 .idea/
 .vscode/
+.vendor/
