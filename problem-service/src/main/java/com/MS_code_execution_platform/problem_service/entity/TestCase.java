@@ -23,6 +23,15 @@ public class TestCase {
 
     private boolean hidden;
 
+    // S3-backed fields for worker-service-go (see TestCaseStorageService).
+    // input/expectedOutput above stay populated too, for the older Java
+    // worker-service's GET /problems/{id}/testcases, which returns inline content.
+    private String inputS3Key;
+    private String expectedS3Key;
+    private Integer ordinal;
+    private boolean isSample;
+    private Integer weight;
+
     @ManyToOne
     @JoinColumn(name = "problem_id")
     private Problem problem;

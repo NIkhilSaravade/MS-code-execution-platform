@@ -31,5 +31,8 @@ public class Submission {
 
     private String output;
 
+    // Populated on state transitions reported by worker-service (e.g. a system error detail)
+    private String reason;
+
     private LocalDateTime submittedAt;
 }

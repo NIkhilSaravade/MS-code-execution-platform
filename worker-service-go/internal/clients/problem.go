@@ -11,6 +11,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
 
+	"github.com/nikhilsaravade95/code-execution-platform/worker-service/internal/auth"
 	"github.com/nikhilsaravade95/code-execution-platform/worker-service/internal/config"
 	"github.com/nikhilsaravade95/code-execution-platform/worker-service/internal/domain"
 )
@@ -21,14 +22,19 @@ import (
 type ProblemClient struct {
 	baseURL string
 	http    *http.Client
+	tokens  *auth.TokenSource
 }
 
 // NewProblemClient creates the client with a generous timeout because
 // problem-service is read-heavy and cache-backed — most calls return fast,
-// but cold misses can be slower.
-func NewProblemClient(cfg *config.Config) *ProblemClient {
+// but cold misses can be slower. tokens supplies the bearer token attached
+// to every request: problem-service's /internal/** routes require a service
+// access token (client-credentials grant), not a user's token, since the
+// worker has no inbound HTTP request to forward one from.
+func NewProblemClient(cfg *config.Config, tokens *auth.TokenSource) *ProblemClient {
 	return &ProblemClient{
 		baseURL: cfg.ProblemServiceBaseURL,
+		tokens:  tokens,
 		http: &http.Client{
 			Timeout: 8 * time.Second,
 			Transport: &http.Transport{
@@ -38,6 +44,16 @@ func NewProblemClient(cfg *config.Config) *ProblemClient {
 			},
 		},
 	}
+}
+
+// authorize attaches a service access token to the outgoing request.
+func (c *ProblemClient) authorize(ctx context.Context, req *http.Request) error {
+	token, err := c.tokens.Token(ctx)
+	if err != nil {
+		return fmt.Errorf("fetch service token: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	return nil
 }
 
 // GetTestCases returns all test cases for a specific problem version.
@@ -53,6 +69,9 @@ func (c *ProblemClient) GetTestCases(ctx context.Context, problemVersionID strin
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
+	}
+	if err := c.authorize(ctx, req); err != nil {
+		return nil, err
 	}
 	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
 
@@ -97,6 +116,9 @@ func (c *ProblemClient) GetProblemLimits(ctx context.Context, problemID string) 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return 0, 0, fmt.Errorf("build request: %w", err)
+	}
+	if err := c.authorize(ctx, req); err != nil {
+		return 0, 0, err
 	}
 	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
 

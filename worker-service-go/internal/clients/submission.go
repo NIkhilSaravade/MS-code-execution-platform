@@ -13,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 
+	"github.com/nikhilsaravade95/code-execution-platform/worker-service/internal/auth"
 	"github.com/nikhilsaravade95/code-execution-platform/worker-service/internal/config"
 	"github.com/nikhilsaravade95/code-execution-platform/worker-service/internal/domain"
 )
@@ -27,14 +28,17 @@ import (
 type SubmissionClient struct {
 	baseURL string
 	http    *http.Client
+	tokens  *auth.TokenSource
 }
 
 // NewSubmissionClient creates a client with conservative timeouts.
 // Total timeout (5s) is shorter than the caller's own deadline so the
-// worker still has time to handle the error gracefully.
-func NewSubmissionClient(cfg *config.Config) *SubmissionClient {
+// worker still has time to handle the error gracefully. tokens supplies the
+// bearer token attached to every request - see ProblemClient.authorize for why.
+func NewSubmissionClient(cfg *config.Config, tokens *auth.TokenSource) *SubmissionClient {
 	return &SubmissionClient{
 		baseURL: cfg.SubmissionServiceBaseURL,
+		tokens:  tokens,
 		http: &http.Client{
 			Timeout: 5 * time.Second,
 			Transport: &http.Transport{
@@ -44,6 +48,16 @@ func NewSubmissionClient(cfg *config.Config) *SubmissionClient {
 			},
 		},
 	}
+}
+
+// authorize attaches a service access token to the outgoing request.
+func (c *SubmissionClient) authorize(ctx context.Context, req *http.Request) error {
+	token, err := c.tokens.Token(ctx)
+	if err != nil {
+		return fmt.Errorf("fetch service token: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	return nil
 }
 
 // MarkRunning transitions the submission to the RUNNING state.
@@ -84,6 +98,9 @@ func (c *SubmissionClient) updateState(ctx context.Context, submissionID, state,
 		return fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if err := c.authorize(ctx, req); err != nil {
+		return err
+	}
 
 	// Inject OTel context so the submission-service span is a child of this one.
 	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))

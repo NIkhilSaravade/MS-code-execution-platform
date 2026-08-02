@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.util.NoSuchElementException;
 import java.util.UUID;
 
 @Service
@@ -49,6 +50,21 @@ public class SubmissionService {
 
         submission.setStatus(event.getStatus());
         submission.setOutput(event.getOutput());
+
+        submissionRepository.save(submission);
+    }
+
+    // Called by worker-service over HTTP for faster optimistic feedback than
+    // waiting on the executions.completed.v1 Kafka event (see worker-service-go's
+    // SubmissionClient docs). The Kafka event remains the source of truth.
+    public void updateState(Long submissionId, String state, String reason) {
+
+        Submission submission = submissionRepository.findById(submissionId)
+                .orElseThrow(() -> new NoSuchElementException(
+                        "Submission not found: " + submissionId));
+
+        submission.setStatus(state);
+        submission.setReason(reason);
 
         submissionRepository.save(submission);
     }

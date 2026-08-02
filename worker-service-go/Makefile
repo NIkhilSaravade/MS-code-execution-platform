@@ -41,8 +41,11 @@ run:
 
 run-with-env:
 	KAFKA_BROKERS=localhost:9092 \
-	SUBMISSION_SERVICE_URL=http://localhost:8082 \
-	PROBLEM_SERVICE_URL=http://localhost:8083 \
+	SUBMISSION_SERVICE_URL=http://localhost:8083 \
+	PROBLEM_SERVICE_URL=http://localhost:8082 \
+	AUTH_SERVICE_URL=http://localhost:8086 \
+	WORKER_CLIENT_ID=worker-service \
+	WORKER_CLIENT_SECRET=dev-only-secret-change-me \
 	S3_ENDPOINT=http://localhost:9000 \
 	SANDBOX_RUNTIME=runc \
 	LOG_LEVEL=debug \

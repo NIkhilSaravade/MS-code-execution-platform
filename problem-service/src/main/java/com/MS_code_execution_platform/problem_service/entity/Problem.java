@@ -26,6 +26,9 @@ public class Problem {
     @Column(columnDefinition = "TEXT")
     private String constraints;
 
+    private Integer timeLimitMs;
+    private Integer memoryLimitMb;
+
     @OneToMany(mappedBy = "problem", cascade = CascadeType.ALL, orphanRemoval = true)
     private List<TestCase> testCases;
 

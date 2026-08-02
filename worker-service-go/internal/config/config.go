@@ -31,6 +31,13 @@ type Config struct {
 	SubmissionServiceBaseURL string
 	ProblemServiceBaseURL    string
 
+	// Service identity for calls to problem-service/submission-service.
+	// The worker authenticates as itself via OAuth2 client-credentials
+	// (see internal/auth), not with a user's token - it has none to forward.
+	AuthServiceBaseURL string
+	WorkerClientID     string
+	WorkerClientSecret string
+
 	// S3 / MinIO
 	S3Endpoint        string
 	S3Region          string
@@ -79,8 +86,13 @@ func Load() (*Config, error) {
 	cfg.KafkaSessionTimeout = getEnvDuration("KAFKA_SESSION_TIMEOUT", 30*time.Second, &errs)
 
 	// Upstream services
-	cfg.SubmissionServiceBaseURL = getEnvOrDefault("SUBMISSION_SERVICE_URL", "http://localhost:8082")
-	cfg.ProblemServiceBaseURL = getEnvOrDefault("PROBLEM_SERVICE_URL", "http://localhost:8083")
+	cfg.SubmissionServiceBaseURL = getEnvOrDefault("SUBMISSION_SERVICE_URL", "http://localhost:8083")
+	cfg.ProblemServiceBaseURL = getEnvOrDefault("PROBLEM_SERVICE_URL", "http://localhost:8082")
+
+	// Service identity (client-credentials grant against auth-service)
+	cfg.AuthServiceBaseURL = getEnvOrDefault("AUTH_SERVICE_URL", "http://localhost:8086")
+	cfg.WorkerClientID = getEnvOrDefault("WORKER_CLIENT_ID", "worker-service")
+	cfg.WorkerClientSecret = getEnvOrDefault("WORKER_CLIENT_SECRET", "dev-only-secret-change-me")
 
 	// S3 / MinIO
 	cfg.S3Endpoint = getEnvOrDefault("S3_ENDPOINT", "http://localhost:9000")

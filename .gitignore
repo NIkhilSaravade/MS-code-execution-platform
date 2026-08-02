@@ -1,4 +1,3 @@
-@"
 # Secrets
 .env
 
@@ -20,7 +19,6 @@ chroma_db/
 # Java
 target/
 *.class
-"@ | Out-File -FilePath .gitignore -Encoding utf8
 
 # Compiled binaries
 bin/
@@ -29,8 +27,6 @@ bin/
 *.dll
 *.so
 *.dylib
-worker
-worker.exe
 
 # Go build/test artifacts
 *.test

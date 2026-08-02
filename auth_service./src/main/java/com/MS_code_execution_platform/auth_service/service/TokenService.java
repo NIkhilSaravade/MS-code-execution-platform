@@ -62,6 +62,28 @@ public class TokenService {
         return jwtEncoder.encode(JwtEncoderParameters.from(claims)).getTokenValue();
     }
 
+    // Client-credentials grant: the token represents the calling service itself,
+    // not a user acting through it - no 'email' claim, subject is the client id.
+    public String issueServiceAccessToken(String clientId, String role) {
+        Instant now = Instant.now();
+
+        JwtClaimsSet claims = JwtClaimsSet.builder()
+                .issuer(issuer)
+                .audience(List.of(audience))
+                .subject(clientId)
+                .issuedAt(now)
+                .expiresAt(now.plus(accessTokenTtlMinutes, ChronoUnit.MINUTES))
+                .claim("roles", List.of(role))
+                .claim("client_id", clientId)
+                .build();
+
+        return jwtEncoder.encode(JwtEncoderParameters.from(claims)).getTokenValue();
+    }
+
+    public long getAccessTokenTtlSeconds() {
+        return accessTokenTtlMinutes * 60;
+    }
+
     @Transactional
     public String issueRefreshToken(String userId) {
         String raw = generateSecureRandomToken();
