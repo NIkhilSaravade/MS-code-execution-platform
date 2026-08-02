@@ -31,6 +31,13 @@ public class ProblemController {
         return problemService.getAllProblems(page, size);
     }
 
+    // Metadata only (no test case content) - safe for any authenticated user,
+    // unlike /testcases below which exposes hidden test cases' expected output.
+    @GetMapping("/{problemId}")
+    public ProblemResponse getProblem(@PathVariable Long problemId) {
+        return problemService.getProblemResponse(problemId);
+    }
+
     // Used by Worker Service
     @GetMapping("/{problemId}/testcases")
     public List<TestCaseResponse> getTestCases(@PathVariable Long problemId) {

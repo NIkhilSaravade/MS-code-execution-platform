@@ -12,6 +12,7 @@ import com.MS_code_execution_platform.problem_service.storage.TestCaseStorageSer
 import jakarta.persistence.EntityNotFoundException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.*;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -30,6 +31,10 @@ public class ProblemService {
     private final TestCaseRepository testCaseRepository;
     private final TestCaseStorageService testCaseStorageService;
 
+    // Redundant with the route-level rule in SecurityConfig by design: two
+    // independent layers, so a missed/changed route pattern alone can't open
+    // this up to non-admins.
+    @PreAuthorize("hasRole('ADMIN')")
     public Problem createProblem(ProblemRequest request) {
 
         Problem problem = Problem.builder()
@@ -106,5 +111,15 @@ public class ProblemService {
         return problemRepository.findById(problemId)
                 .orElseThrow(() -> new EntityNotFoundException(
                         "Problem not found: " + problemId));
+    }
+
+    public ProblemResponse getProblemResponse(Long problemId) {
+        Problem problem = getProblemOrThrow(problemId);
+        return ProblemResponse.builder()
+                .id(problem.getId())
+                .name(problem.getName())
+                .description(problem.getDescription())
+                .constraints(problem.getConstraints())
+                .build();
     }
 }

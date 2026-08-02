@@ -11,5 +11,9 @@ public interface SubmissionRepository extends JpaRepository<Submission, Long> {
 
     List<Submission> findByUserId(UUID userId);
 
+    // Query-scoping (never load by id alone): if the submission isn't the
+    // caller's, the row simply isn't found - authorization can't be forgotten
+    // because it's baked into the query itself.
+    Optional<Submission> findByIdAndUserId(Long id, UUID userId);
 
 }

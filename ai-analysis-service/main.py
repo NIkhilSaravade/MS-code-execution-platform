@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 import httpx
 import json
@@ -9,6 +9,7 @@ from db.models import AIAnalysis
 from db.init_db import create_tables
 from discovery.eureka_client import register_with_eureka
 from discovery.service_resolver import get_service_url
+from security.jwt_verifier import get_current_claims
 
 
 app = FastAPI()
@@ -25,10 +26,11 @@ class AnalyzeRequest(BaseModel):
 
 
 @app.post("/ai/analyze")
-async def analyze_code(request: AnalyzeRequest, authorization: str = Header(None)):
-
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Authorization header missing")
+async def analyze_code(
+    request: AnalyzeRequest,
+    authorization: str = Header(None),
+    claims: dict = Depends(get_current_claims),
+):
 
     headers = {"Authorization": authorization}
 
