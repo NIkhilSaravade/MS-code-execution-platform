@@ -1,0 +1,67 @@
+{
+  "defaultAction": "SCMP_ACT_ERRNO",
+  "archMap": [
+    {
+      "architecture": "SCMP_ARCH_X86_64",
+      "subArchitectures": ["SCMP_ARCH_X86", "SCMP_ARCH_X32"]
+    },
+    {
+      "architecture": "SCMP_ARCH_AARCH64",
+      "subArchitectures": ["SCMP_ARCH_ARM"]
+    }
+  ],
+  "syscalls": [
+    {
+      "names": [
+        "read", "write", "close", "fstat", "lseek", "mmap", "mprotect",
+        "munmap", "brk", "rt_sigaction", "rt_sigprocmask", "rt_sigreturn",
+        "ioctl", "pread64", "pwrite64", "readv", "writev", "access",
+        "pipe", "select", "sched_yield", "mremap", "msync", "madvise",
+        "dup", "dup2", "nanosleep", "getpid", "sendfile", "getdents",
+        "getcwd", "chdir", "rename", "mkdir", "rmdir", "creat", "link",
+        "unlink", "readlink", "chmod", "fchmod", "chown", "fchown",
+        "umask", "gettimeofday", "getrlimit", "getrusage", "times",
+        "getuid", "syslog", "getgid", "setuid", "setgid", "geteuid",
+        "getegid", "setpgid", "getppid", "getpgrp", "setsid", "setreuid",
+        "setregid", "getgroups", "setgroups", "getresuid", "getresgid",
+        "getpgid", "getsid", "capget", "capset", "rt_sigsuspend",
+        "sigaltstack", "uname", "statfs", "fstatfs", "getpriority",
+        "setpriority", "prctl", "arch_prctl", "gettid", "futex",
+        "sched_getaffinity", "set_thread_area", "get_thread_area",
+        "set_tid_address", "restart_syscall", "exit_group", "epoll_wait",
+        "epoll_ctl", "tgkill", "utimes", "waitid", "openat", "mkdirat",
+        "fstatat64", "unlinkat", "renameat", "linkat", "readlinkat",
+        "fchmodat", "faccessat", "pselect6", "ppoll", "set_robust_list",
+        "get_robust_list", "splice", "tee", "sync_file_range", "vmsplice",
+        "utimensat", "epoll_pwait", "accept4", "eventfd2", "epoll_create1",
+        "dup3", "pipe2", "inotify_init1", "preadv", "pwritev", "recvmmsg",
+        "prlimit64", "clock_gettime", "clock_getres", "clock_nanosleep",
+        "exit", "wait4", "newfstatat", "getrandom", "memfd_create",
+        "execve", "clone", "fork", "vfork",
+        "open", "stat", "lstat", "poll"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "names": [
+        "socket", "connect", "getsockname", "getpeername",
+        "socketpair", "sendto", "recvfrom", "shutdown",
+        "bind", "listen", "accept", "getsockopt", "setsockopt",
+        "recvmsg", "sendmsg", "sendmmsg"
+      ],
+      "action": "SCMP_ACT_ERRNO",
+      "comment": "All network syscalls are explicitly denied. --network none handles this at the namespace level too; this is defense in depth."
+    },
+    {
+      "names": [
+        "ptrace", "process_vm_readv", "process_vm_writev",
+        "perf_event_open", "kcmp", "finit_module", "kexec_load",
+        "init_module", "delete_module", "sysfs",
+        "mount", "umount2", "pivot_root", "chroot",
+        "setns", "unshare"
+      ],
+      "action": "SCMP_ACT_ERRNO",
+      "comment": "Privilege escalation and container escape syscalls — always denied."
+    }
+  ]
+}

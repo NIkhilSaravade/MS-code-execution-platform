@@ -21,3 +21,44 @@ chroma_db/
 target/
 *.class
 "@ | Out-File -FilePath .gitignore -Encoding utf8
+
+# Compiled binaries
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+worker
+worker.exe
+
+# Go build/test artifacts
+*.test
+*.out
+go.work
+go.work.sum
+
+# Go module cache (if accidentally vendored)
+vendor/
+
+# Environment files — NEVER commit secrets
+.env
+.env.local
+*.env
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS-specific
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+
+# Docker
+docker-compose.override.yml
