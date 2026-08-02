@@ -1,4 +1,4 @@
-package com.MS_code_execution_platform.user_service.dto;
+package com.MS_code_execution_platform.auth_service.dto;
 
 import lombok.Data;
 
@@ -9,4 +9,3 @@ public class LoginRequest {
 
     private String password;
 }
-

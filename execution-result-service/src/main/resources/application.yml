@@ -18,6 +18,14 @@ spring:
   kafka:
     bootstrap-servers: localhost:9092
 
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          jwk-set-uri: http://localhost:8086/.well-known/jwks.json
+          issuer-uri: https://auth-service
+          audiences: ms-code-execution
+
 eureka:
   client:
     service-url:

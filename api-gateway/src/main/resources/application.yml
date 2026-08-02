@@ -1,19 +1,32 @@
-serevr:
+server:
   port: 8080
 
 spring:
   application:
     name: api-gateway
 
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          jwk-set-uri: http://localhost:8086/.well-known/jwks.json
+          issuer-uri: https://auth-service
+          audiences: ms-code-execution
+
   cloud:
     gateway:
       server:
         webflux:
           routes:
+            - id: auth-service
+              uri: lb://AUTH-SERVICE
+              predicates:
+                - Path=/auth/**
+
             - id: user-service
               uri: lb://USER-SERVICE
               predicates:
-                - Path=/auth/**,/users/**
+                - Path=/users/**
 
             - id: problem-service
               uri: lb://PROBLEM-SERVICE
@@ -39,7 +52,3 @@ eureka:
   client:
     service-url:
       defaultZone: http://localhost:8761/eureka/
-
-
-jwt:
-  secret: mysupersecretkeymysupersecretkey1
