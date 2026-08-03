@@ -1,0 +1,167 @@
+/* This is the app's ONE global stylesheet, loaded once in main.tsx.
+   Nearly all styling in this app is done inline via style={{...}} props
+   in each component instead — this file only holds the things inline
+   styles CAN'T do: html/body resets, ::selection, @keyframes animations,
+   and :hover states (inline styles have no way to express pseudo-classes
+   like :hover, so any element that needs a hover effect is given a
+   className like "op-btn-primary" that points back to a rule here). */
+
+* {
+  /* box-sizing: border-box makes width/height include padding+border,
+     which matches how most people intuitively expect sizing to work
+     (the default, content-box, does not). Nearly every CSS reset sets this. */
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: #080a14; /* dark background even before React has mounted anything */
+}
+
+#root {
+  /* #root is the <div> in index.html that React renders into */
+  min-height: 100vh;
+}
+
+::selection {
+  /* styles the highlight color when a user selects/drags over text */
+  background: rgba(167, 139, 250, 0.3);
+}
+
+/* @keyframes defines a named animation timeline. Any element can play it
+   via `animation: riseIn 0.9s ease both` (see Hero.tsx for real usage) —
+   CSS looks up the animation by this name. `from`/`to` are shorthand for
+   0%/100%. */
+@keyframes riseIn {
+  from {
+    opacity: 0;
+    transform: translateY(22px); /* start 22px lower and invisible... */
+  }
+  to {
+    opacity: 1;
+    transform: none; /* ...end at full opacity, in its natural position */
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes floatY {
+  /* A looping animation (multiple keyframe stops, not just from/to):
+     starts and ends at the same position (0% and 100% match), with a
+     peak displacement at the halfway point — creates a smooth up/down bob. */
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+@keyframes scrollDot {
+  /* The little dot inside Hero's "SCROLL" pill: falls down and fades out,
+     then (because the animation loops) snaps back and repeats. */
+  0% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+  70% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(15px);
+    opacity: 0;
+  }
+}
+
+@keyframes shimmer {
+  /* Used on the gradient-filled headline text in Hero.tsx — animates
+     background-position from its default to 200%, sliding the gradient
+     sideways across the text for a shimmering effect. */
+  to {
+    background-position: 200% center;
+  }
+}
+
+/* ---- Hover-state classes. Each of these pairs a base rule with a
+   `:hover` rule. Components apply the base class via className="..."
+   while ALSO setting their default look with inline style={{}} — the
+   className only supplies the parts (hover, active) inline styles can't. ---- */
+
+.op-nav-link {
+  color: #aab2c5;
+  transition: color 0.15s ease; /* animate color changes smoothly instead of snapping */
+}
+.op-nav-link:hover {
+  color: #fff;
+}
+
+.op-btn-primary {
+  transition:
+    filter 0.15s ease,
+    transform 0.15s ease;
+}
+.op-btn-primary:hover {
+  filter: brightness(1.08);
+  transform: translateY(-1px); /* subtle "lift" on hover */
+}
+
+.op-btn-secondary {
+  transition: background 0.15s ease;
+}
+.op-btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.op-cta-btn {
+  transition: transform 0.15s ease;
+}
+.op-cta-btn:hover {
+  transform: translateY(-2px);
+}
+
+.op-footer-link {
+  transition: color 0.15s ease;
+}
+.op-footer-link:hover {
+  color: #fff;
+}
+
+.op-problem-row {
+  /* used on each clickable row in PracticePage's problem table */
+  transition: background 0.15s ease;
+}
+.op-problem-row:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.op-tab {
+  /* the Testcase/Result tab buttons in SolvePage — only a transition, no
+     hover color change, since their color is driven by React state
+     (active vs. inactive tab) rather than by hovering */
+  transition: color 0.15s ease;
+}
+
+.op-run-btn {
+  /* the Run/Submit buttons in SolvePage */
+  transition:
+    filter 0.15s ease,
+    transform 0.15s ease;
+}
+.op-run-btn:hover {
+  filter: brightness(1.1);
+}
+.op-run-btn:active {
+  /* :active fires only while the mouse button is actually held down —
+     gives a quick "press" feedback effect */
+  transform: scale(0.97);
+}
