@@ -25,9 +25,18 @@ type Producer struct {
 }
 
 // NewProducer creates a producer connected to all configured brokers.
-func NewProducer(cfg *config.Config) *Producer {
+func NewProducer(cfg *config.Config) (*Producer, error) {
+	tlsConfig, err := buildTLSConfig(cfg.KafkaTLSCACertPath)
+	if err != nil {
+		return nil, fmt.Errorf("kafka producer TLS config: %w", err)
+	}
+
 	w := &kafkago.Writer{
-		Addr:                   kafkago.TCP(cfg.KafkaBrokers...),
+		Addr: kafkago.TCP(cfg.KafkaBrokers...),
+		Transport: &kafkago.Transport{
+			TLS:  tlsConfig,
+			SASL: buildSASLMechanism(cfg.KafkaSASLUsername, cfg.KafkaSASLPassword),
+		},
 		Balancer:               &kafkago.Hash{}, // partition by message key
 		RequiredAcks:           kafkago.RequireAll, // wait for all in-sync replicas
 		Async:                  false,              // synchronous — caller knows if publish succeeded
@@ -44,7 +53,7 @@ func NewProducer(cfg *config.Config) *Producer {
 			log.Error().Msgf("kafka-go writer error: "+s, a...)
 		}),
 	}
-	return &Producer{writer: w, cfg: cfg}
+	return &Producer{writer: w, cfg: cfg}, nil
 }
 
 // Publish writes a single message to the specified topic.

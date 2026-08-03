@@ -58,3 +58,8 @@ desktop.ini
 
 # Docker
 docker-compose.override.yml
+
+# Kafka/Postgres TLS private keys - never commit (public certs/CA are fine to track)
+infra/kafka/certs/*.key
+infra/postgres/certs/*.key
+infra/kafka/certs/broker-keystore.pem

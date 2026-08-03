@@ -4,6 +4,19 @@ server:
 
 spring:
   kafka:
+    # SASL_SSL, principal "worker": Read on submission-topic (consumer group
+    # worker-group), Write on execution-result-topic only (see infra/kafka/acls.sh)
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9093}
+    security:
+      protocol: SASL_SSL
+    properties:
+      sasl:
+        mechanism: PLAIN
+        jaas:
+          config: org.apache.kafka.common.security.plain.PlainLoginModule required username="worker" password="${KAFKA_WORKER_PASSWORD:worker-dev-secret}";
+    ssl:
+      trust-store-location: ${KAFKA_TRUSTSTORE_LOCATION:file:/certs/ca.crt}
+      trust-store-type: PEM
     consumer:
       group-id: worker-group
       auto-offset-reset: earliest
@@ -20,6 +33,17 @@ spring:
 
 problem-service:
   url: http://localhost:8082
+
+# Service identity for calls to problem-service - this worker authenticates
+# as itself via OAuth2 client-credentials (see client.AuthTokenClient), not
+# with a user's token, since it has none to forward. Same client_id/secret
+# worker-service-go uses - they're the same trust boundary.
+auth-service:
+  url: ${AUTH_SERVICE_URL:http://localhost:8086}
+
+worker:
+  client-id: ${WORKER_CLIENT_ID:worker-service}
+  client-secret: ${WORKER_CLIENT_SECRET:dev-only-secret-change-me}
 
 topics:
   submission: submission-topic

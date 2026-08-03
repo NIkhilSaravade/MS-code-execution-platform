@@ -9,9 +9,10 @@ async def register_with_eureka():
     ip_address = socket.gethostbyname(hostname)
 
     port = int(os.getenv("PORT", 8000))
+    eureka_server = os.getenv("EUREKA_SERVER_URL", "http://localhost:8761/eureka")
 
     await eureka_client.init_async(
-        eureka_server="http://localhost:8761/eureka",
+        eureka_server=eureka_server,
         app_name="AI-ANALYSIS-SERVICE",
         instance_port=port,
         instance_ip=ip_address,

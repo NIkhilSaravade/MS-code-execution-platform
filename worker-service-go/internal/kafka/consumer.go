@@ -37,11 +37,24 @@ type Consumer struct {
 }
 
 // NewConsumer creates a consumer that reads from the submissions.created.v1 topic.
-func NewConsumer(cfg *config.Config, handler Handler, dlq *Producer) *Consumer {
+func NewConsumer(cfg *config.Config, handler Handler, dlq *Producer) (*Consumer, error) {
+	tlsConfig, err := buildTLSConfig(cfg.KafkaTLSCACertPath)
+	if err != nil {
+		return nil, fmt.Errorf("kafka consumer TLS config: %w", err)
+	}
+
+	dialer := &kafkago.Dialer{
+		Timeout:       10 * time.Second,
+		DualStack:     true,
+		TLS:           tlsConfig,
+		SASLMechanism: buildSASLMechanism(cfg.KafkaSASLUsername, cfg.KafkaSASLPassword),
+	}
+
 	r := kafkago.NewReader(kafkago.ReaderConfig{
 		Brokers:        cfg.KafkaBrokers,
 		GroupID:        cfg.KafkaConsumerGroupID,
 		Topic:          cfg.KafkaSubmissionTopic,
+		Dialer:         dialer,
 		MinBytes:       1,
 		MaxBytes:       10 << 20, // 10 MB — submission events are small but code can be large
 		CommitInterval: 0,        // manual commit only
@@ -61,7 +74,7 @@ func NewConsumer(cfg *config.Config, handler Handler, dlq *Producer) *Consumer {
 		handler: handler,
 		dlq:     dlq,
 		cfg:     cfg,
-	}
+	}, nil
 }
 
 // Run blocks and processes messages until ctx is cancelled.

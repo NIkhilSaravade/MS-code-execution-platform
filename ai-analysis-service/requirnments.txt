@@ -1,2 +1,14 @@
+fastapi
+uvicorn[standard]
+pydantic
+httpx
+sqlalchemy
+psycopg2-binary
+python-dotenv
 py-eureka-client
 pyjwt[crypto]
+langchain-groq
+langchain-community
+langchain-core
+chromadb
+sentence-transformers

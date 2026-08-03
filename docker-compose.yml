@@ -1,36 +1,455 @@
 version: '3.8'
 
+x-eureka-env: &eureka-env
+  EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://discovery-service:8761/eureka/
+  EUREKA_INSTANCE_PREFER_IP_ADDRESS: "true"
+
+x-eureka-resourceserver-env: &eureka-resourceserver-env
+  EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://discovery-service:8761/eureka/
+  EUREKA_INSTANCE_PREFER_IP_ADDRESS: "true"
+  SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: http://auth-service:8086/.well-known/jwks.json
+  SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: https://auth-service
+  SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_AUDIENCES: ms-code-execution
+
 services:
+
+  # ── Infra ────────────────────────────────────────────────────────────────
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: postgres
+      # Per-service DB role passwords - see infra/postgres/init-multiple-databases.sh.
+      # "owner" = DDL rights on its own DB only (Flyway); "app" = DML only,
+      # used by the running service. Rotate all of these before any real deployment.
+      USER_SERVICE_DB_OWNER_PASSWORD: ${USER_SERVICE_DB_OWNER_PASSWORD:-user-service-owner-dev-secret}
+      USER_SERVICE_DB_APP_PASSWORD: ${USER_SERVICE_DB_APP_PASSWORD:-user-service-app-dev-secret}
+      AUTH_SERVICE_DB_OWNER_PASSWORD: ${AUTH_SERVICE_DB_OWNER_PASSWORD:-auth-service-owner-dev-secret}
+      AUTH_SERVICE_DB_APP_PASSWORD: ${AUTH_SERVICE_DB_APP_PASSWORD:-auth-service-app-dev-secret}
+      PROBLEM_SERVICE_DB_OWNER_PASSWORD: ${PROBLEM_SERVICE_DB_OWNER_PASSWORD:-problem-service-owner-dev-secret}
+      PROBLEM_SERVICE_DB_APP_PASSWORD: ${PROBLEM_SERVICE_DB_APP_PASSWORD:-problem-service-app-dev-secret}
+      SUBMISSION_SERVICE_DB_OWNER_PASSWORD: ${SUBMISSION_SERVICE_DB_OWNER_PASSWORD:-submission-service-owner-dev-secret}
+      SUBMISSION_SERVICE_DB_APP_PASSWORD: ${SUBMISSION_SERVICE_DB_APP_PASSWORD:-submission-service-app-dev-secret}
+      EXECUTION_RESULT_SERVICE_DB_OWNER_PASSWORD: ${EXECUTION_RESULT_SERVICE_DB_OWNER_PASSWORD:-execution-result-service-owner-dev-secret}
+      EXECUTION_RESULT_SERVICE_DB_APP_PASSWORD: ${EXECUTION_RESULT_SERVICE_DB_APP_PASSWORD:-execution-result-service-app-dev-secret}
+      AI_ANALYSIS_DB_OWNER_PASSWORD: ${AI_ANALYSIS_DB_OWNER_PASSWORD:-ai-analysis-owner-dev-secret}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init-multiple-databases.sh:/docker-entrypoint-initdb.d/01-init-multiple-databases.sh
+      - ./infra/postgres/configure-ssl.sh:/docker-entrypoint-initdb.d/02-configure-ssl.sh
+      - ./infra/postgres/certs/server.crt:/certs-src/server.crt:ro
+      - ./infra/postgres/certs/server.key:/certs-src/server.key:ro
+      - ./infra/postgres/certs/ca.crt:/certs-src/ca.crt:ro
+      - ./infra/postgres/pg_hba.conf:/certs-src/pg_hba.conf:ro
+    # TLS only - see infra/postgres/pg_hba.conf (hostssl-only, no plaintext
+    # "host" entry at all) and configure-ssl.sh (installs the cert/key/pg_hba
+    # into $PGDATA on first init).
+    command:
+      - "postgres"
+      - "-c"
+      - "ssl=on"
+      - "-c"
+      - "ssl_cert_file=/var/lib/postgresql/data/server.crt"
+      - "-c"
+      - "ssl_key_file=/var/lib/postgresql/data/server.key"
+      - "-c"
+      - "ssl_ca_file=/var/lib/postgresql/data/ca.crt"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin};
+      mc mb -p local/platform-test-cases;
+      mc mb -p local/platform-artifacts;
+      exit 0;
+      "
 
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
     container_name: zookeeper
-    ports:
-      - "2181:2181"
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
 
+  # SASL_SSL only - no plaintext listener at all, on purpose. A security
+  # control with a plaintext bypass port isn't a security control.
   kafka:
     image: confluentinc/cp-kafka:7.5.0
     container_name: kafka
     depends_on:
       - zookeeper
     ports:
-      - "9092:9092"
+      - "9093:9093"
+    volumes:
+      - ./infra/kafka/certs/broker-keystore.pem:/certs/broker-keystore.pem:ro
+      - ./infra/kafka/certs/ca.crt:/certs/ca.crt:ro
+      - ./infra/kafka/kafka_server_jaas.conf:/etc/kafka/kafka_server_jaas.conf:ro
+      - ./infra/kafka/admin-client.properties:/certs/admin-client.properties:ro
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: SASL_SSL:SASL_SSL
+      KAFKA_ADVERTISED_LISTENERS: SASL_SSL://kafka:9093
+      KAFKA_LISTENERS: SASL_SSL://0.0.0.0:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: SASL_SSL
+      KAFKA_SASL_ENABLED_MECHANISMS: PLAIN
+      KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL: PLAIN
+      KAFKA_SSL_KEYSTORE_LOCATION: /certs/broker-keystore.pem
+      KAFKA_SSL_KEYSTORE_TYPE: PEM
+      KAFKA_SSL_TRUSTSTORE_LOCATION: /certs/ca.crt
+      KAFKA_SSL_TRUSTSTORE_TYPE: PEM
+      KAFKA_SSL_CLIENT_AUTH: none
+      KAFKA_AUTHORIZER_CLASS_NAME: kafka.security.authorizer.AclAuthorizer
+      KAFKA_SUPER_USERS: User:admin
+      KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND: "false"
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_OPTS: -Djava.security.auth.login.config=/etc/kafka/kafka_server_jaas.conf
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "kafka:9093", "--command-config", "/certs/admin-client.properties"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
 
+  # One-shot: creates topics and grants least-privilege ACLs, then exits.
+  # See infra/kafka/acls.sh for exactly who can do what.
+  kafka-init:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka-init
+    volumes:
+      - ./infra/kafka/certs/ca.crt:/certs/ca.crt:ro
+      - ./infra/kafka/admin-client.properties:/certs/admin-client.properties:ro
+      - ./infra/kafka/acls.sh:/acls.sh:ro
+    entrypoint: ["/bin/bash", "/acls.sh"]
+    depends_on:
+      kafka:
+        condition: service_healthy
 
   kafka-ui:
     image: provectuslabs/kafka-ui
+    container_name: kafka-ui
     ports:
       - "8090:8080"
+    volumes:
+      - ./infra/kafka/certs/ca.crt:/certs/ca.crt:ro
     environment:
       KAFKA_CLUSTERS_0_NAME: local
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9093
+      KAFKA_CLUSTERS_0_PROPERTIES_SECURITY_PROTOCOL: SASL_SSL
+      KAFKA_CLUSTERS_0_PROPERTIES_SASL_MECHANISM: PLAIN
+      KAFKA_CLUSTERS_0_PROPERTIES_SASL_JAAS_CONFIG: org.apache.kafka.common.security.plain.PlainLoginModule required username="admin" password="admin-dev-secret";
+      KAFKA_CLUSTERS_0_PROPERTIES_SSL_TRUSTSTORE_LOCATION: /certs/ca.crt
+      KAFKA_CLUSTERS_0_PROPERTIES_SSL_TRUSTSTORE_TYPE: PEM
     depends_on:
-      - kafka
+      kafka:
+        condition: service_healthy
+
+  # ── Platform infra ───────────────────────────────────────────────────────
+
+  discovery-service:
+    build: ./discovery-service
+    container_name: discovery-service
+    ports:
+      - "8761:8761"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8761/"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+
+  config-service:
+    build: ./config-service
+    container_name: config-service
+    ports:
+      - "8888:8888"
+    environment:
+      <<: *eureka-env
+      GITHUB_PASSWORD: ${GITHUB_PASSWORD:?set GITHUB_PASSWORD in .env - a GitHub PAT for the private config repo}
+    depends_on:
+      discovery-service:
+        condition: service_healthy
+    restart: on-failure:3
+    # Note: nothing else in this stack currently consumes config-service
+    # (no service has spring-cloud-starter-config on its classpath yet) -
+    # it's included for completeness but is inert until something does.
+
+  # ── Application services ─────────────────────────────────────────────────
+
+  auth-service:
+    build: ./auth-service
+    container_name: auth-service
+    ports:
+      - "8086:8086"
+    volumes:
+      - ./infra/postgres/certs/ca.crt:/certs/postgres-ca.crt:ro
+    environment:
+      <<: *eureka-env
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/auth_service?sslmode=verify-full&sslrootcert=/certs/postgres-ca.crt
+      SPRING_DATASOURCE_USERNAME: auth_service_app
+      SPRING_DATASOURCE_PASSWORD: ${AUTH_SERVICE_DB_APP_PASSWORD:-auth-service-app-dev-secret}
+      SPRING_FLYWAY_URL: jdbc:postgresql://postgres:5432/auth_service?sslmode=verify-full&sslrootcert=/certs/postgres-ca.crt
+      SPRING_FLYWAY_USER: auth_service_owner
+      SPRING_FLYWAY_PASSWORD: ${AUTH_SERVICE_DB_OWNER_PASSWORD:-auth-service-owner-dev-secret}
+      # grpc.client.user-service.address stays at its default (discovery:///USER-SERVICE)
+      # from application.properties - it's already Eureka-based, no override needed here.
+      WORKER_SERVICE_CLIENT_SECRET: ${WORKER_SERVICE_CLIENT_SECRET:-dev-only-secret-change-me}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      discovery-service:
+        condition: service_healthy
+    restart: on-failure:5
+
+  user-service:
+    build: ./user-service
+    container_name: user-service
+    ports:
+      - "8081:8081"
+      - "9090:9090"
+    volumes:
+      - ./infra/postgres/certs/ca.crt:/certs/postgres-ca.crt:ro
+    environment:
+      <<: *eureka-resourceserver-env
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/user_service?sslmode=verify-full&sslrootcert=/certs/postgres-ca.crt
+      SPRING_DATASOURCE_USERNAME: user_service_app
+      SPRING_DATASOURCE_PASSWORD: ${USER_SERVICE_DB_APP_PASSWORD:-user-service-app-dev-secret}
+      SPRING_FLYWAY_URL: jdbc:postgresql://postgres:5432/user_service?sslmode=verify-full&sslrootcert=/certs/postgres-ca.crt
+      SPRING_FLYWAY_USER: user_service_owner
+      SPRING_FLYWAY_PASSWORD: ${USER_SERVICE_DB_OWNER_PASSWORD:-user-service-owner-dev-secret}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change-me-admin-password}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      discovery-service:
+        condition: service_healthy
+      auth-service:
+        condition: service_started
+    restart: on-failure:5
+
+  api-gateway:
+    build: ./api-gateway
+    container_name: api-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      <<: *eureka-resourceserver-env
+    depends_on:
+      discovery-service:
+        condition: service_healthy
+      auth-service:
+        condition: service_started
+    restart: on-failure:5
+
+  problem-service:
+    build: ./problem-service
+    container_name: problem-service
+    ports:
+      - "8082:8082"
+    volumes:
+      - ./infra/postgres/certs/ca.crt:/certs/postgres-ca.crt:ro
+    environment:
+      <<: *eureka-resourceserver-env
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/problem_service?sslmode=verify-full&sslrootcert=/certs/postgres-ca.crt
+      SPRING_DATASOURCE_USERNAME: problem_service_app
+      SPRING_DATASOURCE_PASSWORD: ${PROBLEM_SERVICE_DB_APP_PASSWORD:-problem-service-app-dev-secret}
+      SPRING_FLYWAY_URL: jdbc:postgresql://postgres:5432/problem_service?sslmode=verify-full&sslrootcert=/certs/postgres-ca.crt
+      SPRING_FLYWAY_USER: problem_service_owner
+      SPRING_FLYWAY_PASSWORD: ${PROBLEM_SERVICE_DB_OWNER_PASSWORD:-problem-service-owner-dev-secret}
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      discovery-service:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      auth-service:
+        condition: service_started
+    restart: on-failure:5
+
+  submission-service:
+    build: ./submission-service
+    container_name: submission-service
+    ports:
+      - "8083:8083"
+    volumes:
+      - ./infra/kafka/certs/ca.crt:/certs/ca.crt:ro
+      - ./infra/postgres/certs/ca.crt:/certs/postgres-ca.crt:ro
+    environment:
+      <<: *eureka-resourceserver-env
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/submission_service?sslmode=verify-full&sslrootcert=/certs/postgres-ca.crt
+      SPRING_DATASOURCE_USERNAME: submission_service_app
+      SPRING_DATASOURCE_PASSWORD: ${SUBMISSION_SERVICE_DB_APP_PASSWORD:-submission-service-app-dev-secret}
+      SPRING_FLYWAY_URL: jdbc:postgresql://postgres:5432/submission_service?sslmode=verify-full&sslrootcert=/certs/postgres-ca.crt
+      SPRING_FLYWAY_USER: submission_service_owner
+      SPRING_FLYWAY_PASSWORD: ${SUBMISSION_SERVICE_DB_OWNER_PASSWORD:-submission-service-owner-dev-secret}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
+      KAFKA_SUBMISSION_SERVICE_PASSWORD: ${KAFKA_SUBMISSION_SERVICE_PASSWORD:-submission-service-dev-secret}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      discovery-service:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      auth-service:
+        condition: service_started
+    restart: on-failure:5
+
+  execution-result-service:
+    build: ./execution-result-service
+    container_name: execution-result-service
+    ports:
+      - "8085:8085"
+    volumes:
+      - ./infra/kafka/certs/ca.crt:/certs/ca.crt:ro
+      - ./infra/postgres/certs/ca.crt:/certs/postgres-ca.crt:ro
+    environment:
+      <<: *eureka-resourceserver-env
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/execution_result_service?sslmode=verify-full&sslrootcert=/certs/postgres-ca.crt
+      SPRING_DATASOURCE_USERNAME: execution_result_service_app
+      SPRING_DATASOURCE_PASSWORD: ${EXECUTION_RESULT_SERVICE_DB_APP_PASSWORD:-execution-result-service-app-dev-secret}
+      SPRING_FLYWAY_URL: jdbc:postgresql://postgres:5432/execution_result_service?sslmode=verify-full&sslrootcert=/certs/postgres-ca.crt
+      SPRING_FLYWAY_USER: execution_result_service_owner
+      SPRING_FLYWAY_PASSWORD: ${EXECUTION_RESULT_SERVICE_DB_OWNER_PASSWORD:-execution-result-service-owner-dev-secret}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
+      KAFKA_EXECUTION_RESULT_SERVICE_PASSWORD: ${KAFKA_EXECUTION_RESULT_SERVICE_PASSWORD:-execution-result-service-dev-secret}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      discovery-service:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      auth-service:
+        condition: service_started
+    restart: on-failure:5
+
+  # Old Java worker - kept for coexistence with worker-service-go (see repo
+  # history) for a side-by-side performance comparison. Authenticates to
+  # problem-service via OAuth2 client-credentials (see client.AuthTokenClient),
+  # same trust boundary/credentials as worker-service-go's "worker" identity.
+  worker-service:
+    build: ./worker-service
+    container_name: worker-service
+    ports:
+      - "8084:8084"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./infra/kafka/certs/ca.crt:/certs/ca.crt:ro
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
+      KAFKA_WORKER_PASSWORD: ${KAFKA_WORKER_PASSWORD:-worker-dev-secret}
+      PROBLEM_SERVICE_URL: http://problem-service:8082
+      AUTH_SERVICE_URL: http://auth-service:8086
+      WORKER_CLIENT_ID: worker-service
+      WORKER_CLIENT_SECRET: ${WORKER_SERVICE_CLIENT_SECRET:-dev-only-secret-change-me}
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      problem-service:
+        condition: service_started
+      auth-service:
+        condition: service_started
+    restart: on-failure:5
+
+  worker-service-go:
+    build: ./worker-service-go
+    container_name: worker-service-go
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./infra/kafka/certs/ca.crt:/certs/ca.crt:ro
+    environment:
+      KAFKA_BROKERS: kafka:9093
+      KAFKA_TLS_CA_CERT_PATH: /certs/ca.crt
+      KAFKA_SASL_USERNAME: worker
+      KAFKA_SASL_PASSWORD: ${KAFKA_WORKER_PASSWORD:-worker-dev-secret}
+      SUBMISSION_SERVICE_URL: http://submission-service:8083
+      PROBLEM_SERVICE_URL: http://problem-service:8082
+      AUTH_SERVICE_URL: http://auth-service:8086
+      WORKER_CLIENT_ID: worker-service
+      WORKER_CLIENT_SECRET: ${WORKER_SERVICE_CLIENT_SECRET:-dev-only-secret-change-me}
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      SANDBOX_RUNTIME: runc  # gVisor (runsc) isn't installed on the host by default; see README
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      minio:
+        condition: service_healthy
+      problem-service:
+        condition: service_started
+      submission-service:
+        condition: service_started
+      auth-service:
+        condition: service_started
+    restart: on-failure:5
+
+  ai-analysis-service:
+    build: ./ai-analysis-service
+    container_name: ai-analysis-service
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./infra/postgres/certs/ca.crt:/certs/postgres-ca.crt:ro
+    environment:
+      # No separate app role for this DB - see infra/postgres/init-multiple-databases.sh's note on why.
+      DATABASE_URL: postgresql://ai_analysis_owner:${AI_ANALYSIS_DB_OWNER_PASSWORD:-ai-analysis-owner-dev-secret}@postgres:5432/ai_analysis_db?sslmode=verify-full&sslrootcert=/certs/postgres-ca.crt
+      PORT: "8000"
+      EUREKA_SERVER_URL: http://discovery-service:8761/eureka
+      AUTH_SERVICE_JWKS_URL: http://auth-service:8086/.well-known/jwks.json
+      JWT_ISSUER: https://auth-service
+      JWT_AUDIENCE: ms-code-execution
+      GROQ_API_KEY: ${GROQ_API_KEY:?set GROQ_API_KEY in .env - required by langchain-groq}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      discovery-service:
+        condition: service_healthy
+    restart: on-failure:5
+
+volumes:
+  # Encryption at rest for this volume's underlying disk is a host/OS concern,
+  # not something Docker Compose (or Postgres itself) provides - it depends on
+  # whatever the Docker daemon's storage lives on being encrypted (e.g.
+  # FileVault on macOS, LUKS on Linux, or the cloud provider's encrypted-disk
+  # option in a real deployment). Nothing to configure here; verify at the
+  # host level, not in this file.
+  postgres-data:
+  minio-data:

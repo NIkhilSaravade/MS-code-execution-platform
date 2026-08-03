@@ -27,6 +27,12 @@ type Config struct {
 	KafkaDialTimeout         time.Duration
 	KafkaSessionTimeout      time.Duration
 
+	// Kafka SASL_SSL - principal "worker": read-only on the submission topic,
+	// write-only on the execution-result topics (see infra/kafka/acls.sh).
+	KafkaTLSCACertPath string
+	KafkaSASLUsername  string
+	KafkaSASLPassword  string
+
 	// Upstream service URLs
 	SubmissionServiceBaseURL string
 	ProblemServiceBaseURL    string
@@ -84,6 +90,10 @@ func Load() (*Config, error) {
 	cfg.KafkaMaxRetryAttempts = getEnvInt("KAFKA_MAX_RETRY_ATTEMPTS", 3, &errs)
 	cfg.KafkaDialTimeout = getEnvDuration("KAFKA_DIAL_TIMEOUT", 10*time.Second, &errs)
 	cfg.KafkaSessionTimeout = getEnvDuration("KAFKA_SESSION_TIMEOUT", 30*time.Second, &errs)
+
+	cfg.KafkaTLSCACertPath = getEnvOrDefault("KAFKA_TLS_CA_CERT_PATH", "/certs/ca.crt")
+	cfg.KafkaSASLUsername = getEnvOrDefault("KAFKA_SASL_USERNAME", "worker")
+	cfg.KafkaSASLPassword = getEnvOrDefault("KAFKA_SASL_PASSWORD", "worker-dev-secret")
 
 	// Upstream services
 	cfg.SubmissionServiceBaseURL = getEnvOrDefault("SUBMISSION_SERVICE_URL", "http://localhost:8083")

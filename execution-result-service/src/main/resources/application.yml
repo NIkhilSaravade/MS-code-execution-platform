@@ -5,18 +5,38 @@ spring:
   application:
     name: execution-result-service
 
+  # The running app connects with a DML-only role (no DDL rights, see
+  # infra/postgres/init-multiple-databases.sh) - Flyway alone gets the owner
+  # role, since it's the only thing here allowed to change schema.
   datasource:
-    url: jdbc:postgresql://localhost:5432/execution_result_service
-    username: postgres
-    password: postgres
+    url: jdbc:postgresql://localhost:5432/execution_result_service?sslmode=verify-full&sslrootcert=../infra/postgres/certs/ca.crt
+    username: execution_result_service_app
+    password: execution-result-service-app-dev-secret
+
+  flyway:
+    url: jdbc:postgresql://localhost:5432/execution_result_service?sslmode=verify-full&sslrootcert=../infra/postgres/certs/ca.crt
+    user: execution_result_service_owner
+    password: execution-result-service-owner-dev-secret
 
   jpa:
     hibernate:
-      ddl-auto: update
+      ddl-auto: validate
     show-sql: true
 
+  # SASL_SSL, principal "execution_result_service": Read on execution-result-topic
+  # only (see infra/kafka/acls.sh)
   kafka:
-    bootstrap-servers: localhost:9092
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9093}
+    security:
+      protocol: SASL_SSL
+    properties:
+      sasl:
+        mechanism: PLAIN
+        jaas:
+          config: org.apache.kafka.common.security.plain.PlainLoginModule required username="execution_result_service" password="${KAFKA_EXECUTION_RESULT_SERVICE_PASSWORD:execution-result-service-dev-secret}";
+    ssl:
+      trust-store-location: ${KAFKA_TRUSTSTORE_LOCATION:file:/certs/ca.crt}
+      trust-store-type: PEM
 
   security:
     oauth2:

@@ -26,8 +26,17 @@ public class TestCase {
     // S3-backed fields for worker-service-go (see TestCaseStorageService).
     // input/expectedOutput above stay populated too, for the older Java
     // worker-service's GET /problems/{id}/testcases, which returns inline content.
+    //
+    // Explicit @Column names: Hibernate's default naming strategy handles a
+    // digit next to an uppercase letter surprisingly - "inputS3Key" becomes
+    // "inputs3key" with no underscores at all, not the readable "input_s3_key"
+    // - found by actually booting this service against a real migration.
+    @Column(name = "input_s3_key")
     private String inputS3Key;
+
+    @Column(name = "expected_s3_key")
     private String expectedS3Key;
+
     private Integer ordinal;
     private boolean isSample;
     private Integer weight;

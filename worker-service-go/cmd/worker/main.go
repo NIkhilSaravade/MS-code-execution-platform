@@ -86,7 +86,10 @@ func main() {
 	problemClient := clients.NewProblemClient(cfg, tokenSource)
 
 	// ── Kafka producer (used by executor to publish result events) ────────────
-	producer := kafka.NewProducer(cfg)
+	producer, err := kafka.NewProducer(cfg)
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to create kafka producer")
+	}
 
 	// ── Sandbox ───────────────────────────────────────────────────────────────
 	sb := sandbox.New(cfg)
@@ -96,8 +99,14 @@ func main() {
 
 	// ── Kafka consumer ────────────────────────────────────────────────────────
 	// DLQ producer shares the same underlying writer; it just targets a different topic.
-	dlqProducer := kafka.NewProducer(cfg)
-	consumer := kafka.NewConsumer(cfg, exec, dlqProducer)
+	dlqProducer, err := kafka.NewProducer(cfg)
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to create kafka DLQ producer")
+	}
+	consumer, err := kafka.NewConsumer(cfg, exec, dlqProducer)
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to create kafka consumer")
+	}
 
 	// ── Run ───────────────────────────────────────────────────────────────────
 	// cancelCtx controls the consumer loop. On signal, we cancel it and give
