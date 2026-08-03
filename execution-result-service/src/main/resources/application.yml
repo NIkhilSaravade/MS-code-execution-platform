@@ -35,7 +35,7 @@ spring:
         jaas:
           config: org.apache.kafka.common.security.plain.PlainLoginModule required username="execution_result_service" password="${KAFKA_EXECUTION_RESULT_SERVICE_PASSWORD:execution-result-service-dev-secret}";
     ssl:
-      trust-store-location: ${KAFKA_TRUSTSTORE_LOCATION:file:/certs/ca.crt}
+      trust-store-location: ${KAFKA_TRUSTSTORE_LOCATION:/certs/ca.crt}
       trust-store-type: PEM
 
   security:

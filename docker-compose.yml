@@ -48,17 +48,9 @@ services:
       - ./infra/postgres/pg_hba.conf:/certs-src/pg_hba.conf:ro
     # TLS only - see infra/postgres/pg_hba.conf (hostssl-only, no plaintext
     # "host" entry at all) and configure-ssl.sh (installs the cert/key/pg_hba
-    # into $PGDATA on first init).
-    command:
-      - "postgres"
-      - "-c"
-      - "ssl=on"
-      - "-c"
-      - "ssl_cert_file=/var/lib/postgresql/data/server.crt"
-      - "-c"
-      - "ssl_key_file=/var/lib/postgresql/data/server.key"
-      - "-c"
-      - "ssl_ca_file=/var/lib/postgresql/data/ca.crt"
+    # into $PGDATA on first init, and appends ssl=on to postgresql.conf so it
+    # only takes effect on the real server start, not the init-script
+    # bootstrap server - see configure-ssl.sh for why).
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
@@ -100,9 +92,20 @@ services:
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
     container_name: zookeeper
+    volumes:
+      - ./infra/kafka/zookeeper_jaas.conf:/etc/kafka/zookeeper_jaas.conf:ro
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
+      # SASL/DIGEST auth for Kafka's own connection to Zookeeper - see
+      # infra/kafka/zookeeper_jaas.conf and the Client section comment in
+      # infra/kafka/kafka_server_jaas.conf for why this exists (the Kafka
+      # broker's SASL_SSL listener config requires a JVM-wide JAAS
+      # login.config, which then also makes the Zookeeper client library
+      # used internally by Kafka - and by the base image's own "cub
+      # zk-ready" preflight check - assume SASL is required for the
+      # Zookeeper connection too).
+      KAFKA_OPTS: -Djava.security.auth.login.config=/etc/kafka/zookeeper_jaas.conf
 
   # SASL_SSL only - no plaintext listener at all, on purpose. A security
   # control with a plaintext bypass port isn't a security control.
@@ -113,11 +116,40 @@ services:
       - zookeeper
     ports:
       - "9093:9093"
+    # The base image's own /etc/confluent/docker/configure script
+    # unconditionally derives ssl.keystore.password from
+    # KAFKA_SSL_KEYSTORE_CREDENTIALS whenever any *SSL://* listener is
+    # present (no PEM-aware skip - see the comment on KAFKA_SSL_KEYSTORE_*
+    # below), but Kafka itself rejects startup if a keystore password is
+    # present at all alongside a PEM-format keystore, even an empty one.
+    # There's no env var that avoids this, so run the normal
+    # configure/ensure steps and then strip that one line out of the
+    # generated properties file before handing off to the real launch
+    # script, instead of reimplementing the whole entrypoint.
+    command:
+      - bash
+      - -c
+      - |
+        /etc/confluent/docker/configure
+        /etc/confluent/docker/ensure
+        # ssl.keystore.password: rejected outright alongside a PEM keystore.
+        # ssl.key.password: the broker's private key is a plain (unencrypted)
+        # PKCS8 key - if this property is present at all (even empty),
+        # Kafka's PEM loader assumes the key IS encrypted and tries to parse
+        # it as one, which fails on a plain key.
+        sed -i -e '/^ssl\.keystore\.password=/d' -e '/^ssl\.key\.password=/d' /etc/kafka/kafka.properties
+        exec /etc/confluent/docker/launch
     volumes:
-      - ./infra/kafka/certs/broker-keystore.pem:/certs/broker-keystore.pem:ro
+      # Confluent's docker entrypoint requires the FILENAME/CREDENTIALS trio
+      # below (not just _LOCATION) whenever SSL is on, and looks for them
+      # under /etc/kafka/secrets by convention.
+      - ./infra/kafka/certs/broker-keystore.pem:/etc/kafka/secrets/broker-keystore.pem:ro
+      - ./infra/kafka/certs/ca.crt:/etc/kafka/secrets/ca.crt:ro
+      - ./infra/kafka/certs/key-creds:/etc/kafka/secrets/key-creds:ro
+      - ./infra/kafka/certs/keystore-creds:/etc/kafka/secrets/keystore-creds:ro
       - ./infra/kafka/certs/ca.crt:/certs/ca.crt:ro
-      - ./infra/kafka/kafka_server_jaas.conf:/etc/kafka/kafka_server_jaas.conf:ro
       - ./infra/kafka/admin-client.properties:/certs/admin-client.properties:ro
+      - ./infra/kafka/kafka_server_jaas.conf:/etc/kafka/kafka_server_jaas.conf:ro
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
@@ -127,16 +159,44 @@ services:
       KAFKA_INTER_BROKER_LISTENER_NAME: SASL_SSL
       KAFKA_SASL_ENABLED_MECHANISMS: PLAIN
       KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL: PLAIN
-      KAFKA_SSL_KEYSTORE_LOCATION: /certs/broker-keystore.pem
+      # Global JAAS login.config (not just a listener-scoped JAAS property)
+      # is required here - Kafka's internal BrokerToControllerChannelManager
+      # looks up a default (non-listener-scoped) 'KafkaServer' JAAS context
+      # regardless of ZK mode, and fails startup outright without it. See
+      # infra/kafka/kafka_server_jaas.conf and zookeeper's matching
+      # infra/kafka/zookeeper_jaas.conf "Server" section for why the Client
+      # section in this same file (for Kafka's own connection to Zookeeper)
+      # has to actually succeed, not just be present/absent - the base
+      # image's "cub zk-ready" preflight check hangs forever if a JAAS
+      # login.config is set but the Zookeeper SASL handshake doesn't
+      # actually complete.
+      KAFKA_OPTS: -Djava.security.auth.login.config=/etc/kafka/kafka_server_jaas.conf
+      # PEM format keystores can only have a key password (ssl.key.password),
+      # not a keystore password (ssl.keystore.password) - Kafka rejects
+      # startup if both are set. The base image's "configure" script
+      # unconditionally derives ssl.keystore.password from
+      # KAFKA_SSL_KEYSTORE_CREDENTIALS whenever any *SSL://* listener is
+      # present (no PEM-aware skip), and its "dub ensure" preflight requires
+      # the var to exist - but an empty credentials file makes the derived
+      # password an empty string, which the property generator then omits,
+      # avoiding the conflict while still satisfying dub ensure.
+      KAFKA_SSL_KEYSTORE_FILENAME: broker-keystore.pem
+      KAFKA_SSL_KEYSTORE_CREDENTIALS: keystore-creds
+      KAFKA_SSL_KEY_CREDENTIALS: key-creds
       KAFKA_SSL_KEYSTORE_TYPE: PEM
-      KAFKA_SSL_TRUSTSTORE_LOCATION: /certs/ca.crt
+      # FILENAME-based derivation to ssl.truststore.location only happens in
+      # the base image's configure script when KAFKA_SSL_CLIENT_AUTH is
+      # required/requested - ours is "none", so that block never runs and
+      # ssl.truststore.location would otherwise never get set at all
+      # (no trust anchors loaded -> PKIX path building failure). LOCATION
+      # is handled by the generic property-mapping instead, unconditionally.
+      KAFKA_SSL_TRUSTSTORE_LOCATION: /etc/kafka/secrets/ca.crt
       KAFKA_SSL_TRUSTSTORE_TYPE: PEM
       KAFKA_SSL_CLIENT_AUTH: none
       KAFKA_AUTHORIZER_CLASS_NAME: kafka.security.authorizer.AclAuthorizer
       KAFKA_SUPER_USERS: User:admin
       KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND: "false"
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_OPTS: -Djava.security.auth.login.config=/etc/kafka/kafka_server_jaas.conf
     healthcheck:
       test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "kafka:9093", "--command-config", "/certs/admin-client.properties"]
       interval: 10s
