@@ -60,11 +60,12 @@ export function createSubmission(
   problemId: number,
   code: string,
   language: string,
+  includeHidden: boolean = true,
 ): Promise<SubmissionCreatedResponse> {
   return apiFetch<SubmissionCreatedResponse>('/submissions', {
     method: 'POST',
     headers: { Authorization: `Bearer ${accessToken}` },
-    body: JSON.stringify({ userId, problemId, code, language }),
+    body: JSON.stringify({ userId, problemId, code, language, includeHidden }),
   });
 }
 

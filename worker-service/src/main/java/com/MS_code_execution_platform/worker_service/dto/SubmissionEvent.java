@@ -12,4 +12,5 @@ public class SubmissionEvent {
     private UUID userId;
     private String code;
     private String language;
+    private boolean includeHidden;
 }

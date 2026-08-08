@@ -13,8 +13,14 @@ import java.util.stream.Collectors;
  * not their types.
  */
 @Component
-public class PythonHarnessGenerator {
+public class PythonHarnessGenerator implements HarnessGenerator {
 
+    @Override
+    public String language() {
+        return "python";
+    }
+
+    @Override
     public String generate(FunctionSignature sig) {
         sig.getParams().forEach(p -> TypeVocabulary.requireSupported(p.getType()));
 

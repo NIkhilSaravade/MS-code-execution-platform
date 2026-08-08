@@ -23,6 +23,15 @@ public class ProblemController {
         return problemService.createProblem(request);
     }
 
+    // Backfills an existing problem's harnessByLanguage using every
+    // currently-registered HarnessGenerator - the way an already-seeded
+    // problem picks up a language added after it was created (see
+    // ProblemService.regenerateHarness).
+    @PostMapping("/{problemId}/harness/regenerate")
+    public ProblemResponse regenerateHarness(@PathVariable Long problemId) {
+        return problemService.regenerateHarness(problemId);
+    }
+
     @GetMapping("/getAll")
     public Page<ProblemResponse> getProblems(
             @RequestParam(defaultValue = "0") int page,

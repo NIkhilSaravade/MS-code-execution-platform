@@ -12,10 +12,10 @@ type Verdict string
 const (
 	VerdictPassed      Verdict = "PASSED"
 	VerdictFailed      Verdict = "FAILED"
-	VerdictTLE         Verdict = "TLE"  // time limit exceeded
-	VerdictMLE         Verdict = "MLE"  // memory limit exceeded
-	VerdictRE          Verdict = "RE"   // runtime error
-	VerdictCE          Verdict = "CE"   // compilation error
+	VerdictTLE         Verdict = "TLE" // time limit exceeded
+	VerdictMLE         Verdict = "MLE" // memory limit exceeded
+	VerdictRE          Verdict = "RE"  // runtime error
+	VerdictCE          Verdict = "CE"  // compilation error
 	VerdictSystemError Verdict = "SYSTEM_ERROR"
 )
 
@@ -26,16 +26,24 @@ const (
 type Language string
 
 const (
-	LangPython Language = "python"
-	LangJava   Language = "java"
-	LangCPP    Language = "cpp"
+	LangPython     Language = "python"
+	LangJava       Language = "java"
+	LangCPP        Language = "cpp"
+	LangC          Language = "c"
+	LangJavaScript Language = "javascript"
+	LangTypeScript Language = "typescript"
+	LangGo         Language = "go"
 )
 
 // SupportedLanguages is the allow-list checked before spawning any container.
 var SupportedLanguages = map[Language]bool{
-	LangPython: true,
-	LangJava:   true,
-	LangCPP:    true,
+	LangPython:     true,
+	LangJava:       true,
+	LangCPP:        true,
+	LangC:          true,
+	LangJavaScript: true,
+	LangTypeScript: true,
+	LangGo:         true,
 }
 
 // --------------------------------------------------------------------------
@@ -44,12 +52,12 @@ var SupportedLanguages = map[Language]bool{
 // --------------------------------------------------------------------------
 
 type TestCase struct {
-	ID              string
-	Ordinal         int
-	IsSample        bool
-	InputS3Key      string
-	ExpectedS3Key   string
-	Weight          int
+	ID            string
+	Ordinal       int
+	IsSample      bool
+	InputS3Key    string
+	ExpectedS3Key string
+	Weight        int
 
 	// Populated after S3 fetch
 	Input    []byte
@@ -61,15 +69,16 @@ type TestCase struct {
 // --------------------------------------------------------------------------
 
 type SubmissionJob struct {
-	EventID         string
-	SubmissionID    string
-	UserID          string
-	ProblemID       string
+	EventID          string
+	SubmissionID     string
+	UserID           string
+	ProblemID        string
 	ProblemVersionID string
-	Language        Language
-	CodeS3Key       string
-	CodeHash        string
-	OccurredAt      time.Time
+	Language         Language
+	CodeS3Key        string
+	CodeHash         string
+	IncludeHidden    bool
+	OccurredAt       time.Time
 
 	// Trace context forwarded from the Kafka header so spans chain correctly.
 	TraceParent string
@@ -107,22 +116,22 @@ type TestCaseResult struct {
 // --------------------------------------------------------------------------
 
 type ExecutionResult struct {
-	SubmissionID    string
-	UserID          string
-	ProblemID       string
+	SubmissionID     string
+	UserID           string
+	ProblemID        string
 	ProblemVersionID string
-	Verdict         Verdict
-	TestCaseResults []TestCaseResult
-	TestCasesPassed int
-	TestCasesTotal  int
-	WallTimeMS      int64   // best-case (fastest passing case or case that triggered terminal verdict)
-	CPUTimeMS       int64
-	MaxMemoryKB     int64
-	StdoutS3Key     string
-	StderrS3Key     string
-	WorkerID        string
-	SandboxRuntime  string
-	CompletedAt     time.Time
+	Verdict          Verdict
+	TestCaseResults  []TestCaseResult
+	TestCasesPassed  int
+	TestCasesTotal   int
+	WallTimeMS       int64 // best-case (fastest passing case or case that triggered terminal verdict)
+	CPUTimeMS        int64
+	MaxMemoryKB      int64
+	StdoutS3Key      string
+	StderrS3Key      string
+	WorkerID         string
+	SandboxRuntime   string
+	CompletedAt      time.Time
 
 	// Populated on system-level failure (not user-code failure).
 	SystemError string

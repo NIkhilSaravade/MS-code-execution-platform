@@ -28,7 +28,7 @@ import java.util.stream.Collectors;
  * checkable/editable as real Java source, not an escaped blob.
  */
 @Component
-public class JavaHarnessGenerator {
+public class JavaHarnessGenerator implements HarnessGenerator {
 
     private static final Map<String, String> JAVA_TYPE = Map.of(
             "int", "int",
@@ -60,6 +60,12 @@ public class JavaHarnessGenerator {
         }
     }
 
+    @Override
+    public String language() {
+        return "java";
+    }
+
+    @Override
     public String generate(FunctionSignature sig) {
         for (FunctionParam p : sig.getParams()) {
             TypeVocabulary.requireSupported(p.getType());

@@ -71,6 +71,14 @@ type langDescriptor struct {
 	// SourceFilename is the name given to the user's code file inside the container.
 	// Java requires the class name to match the filename, so we always use Main.java.
 	SourceFilename string
+
+	// Env holds extra "KEY=VALUE" environment variables passed to every
+	// container run for this language. Every other language needs none of
+	// this (nil); Go needs GOCACHE/HOME pointed at a writable path - by
+	// default the go tool wants to write its build cache under $HOME, which
+	// doesn't exist as a writable location for the sandbox's non-root user
+	// on a read-only rootfs.
+	Env []string
 }
 
 func buildLangDescriptors(images map[string]string) map[domain.Language]*langDescriptor {
@@ -100,10 +108,55 @@ func buildLangDescriptors(images map[string]string) map[domain.Language]*langDes
 			SourceFilename: "Main.java",
 		},
 		domain.LangCPP: {
-			Image:          images["cpp"],
-			CompileCmd:     []string{"g++", "-O2", "-o", "/sandbox/solution", "/sandbox/solution.cpp"},
+			Image: images["cpp"],
+			// -std=c++17 pinned explicitly (rather than trusting gcc's
+			// implicit default, which varies by version) - the frontend's
+			// C++ language option is labeled "C++17", so this is what
+			// actually has to compile against.
+			CompileCmd:     []string{"g++", "-std=c++17", "-O2", "-o", "/sandbox/solution", "/sandbox/solution.cpp"},
 			ExecCmd:        []string{"/sandbox/solution"},
 			SourceFilename: "solution.cpp",
+		},
+		domain.LangC: {
+			Image: images["c"],
+			// -std=c11 pinned to match the frontend's "C11" label - see the
+			// -std=c++17 comment above.
+			CompileCmd:     []string{"gcc", "-std=c11", "-O2", "-o", "/sandbox/solution", "/sandbox/solution.c", "-lm"},
+			ExecCmd:        []string{"/sandbox/solution"},
+			SourceFilename: "solution.c",
+		},
+		domain.LangJavaScript: {
+			Image:          images["javascript"],
+			CompileCmd:     nil, // interpreted — no compilation step
+			ExecCmd:        []string{"node", "/sandbox/solution.js"},
+			SourceFilename: "solution.js",
+		},
+		domain.LangTypeScript: {
+			// images["typescript"] must be a locally-built image with tsc
+			// preinstalled - see infra/sandbox-images/node-typescript. No
+			// official Node image ships the TypeScript compiler, and the
+			// compile step can't `npm install` it at request time since the
+			// sandbox always runs with --network none.
+			Image:          images["typescript"],
+			CompileCmd:     []string{"tsc", "--target", "es2016", "--module", "commonjs", "/sandbox/solution.ts"},
+			ExecCmd:        []string{"node", "/sandbox/solution.js"},
+			SourceFilename: "solution.ts",
+		},
+		domain.LangGo: {
+			Image:          images["go"],
+			CompileCmd:     []string{"go", "build", "-o", "/sandbox/solution", "/sandbox/solution.go"},
+			ExecCmd:        []string{"/sandbox/solution"},
+			SourceFilename: "solution.go",
+			// GOMAXPROCS=1 / GOFLAGS=-p=1 force the go tool to compile one
+			// package at a time. Without this, a cold GOCACHE (fresh every
+			// submission - see below) makes `go build` compile the user's
+			// file's entire stdlib dependency chain (encoding/json, fmt,
+			// reflect, unicode, sync, ...) with many packages' compile/asm
+			// subprocesses running concurrently, which blew straight through
+			// --pids-limit (fork-bomb protection, default 64) and failed
+			// every submission with "resource temporarily unavailable" -
+			// caught via direct reproduction outside the full pipeline.
+			Env: []string{"GOCACHE=/tmp/gocache", "HOME=/tmp", "GOMAXPROCS=1", "GOFLAGS=-p=1"},
 		},
 	}
 }
@@ -114,12 +167,12 @@ func buildLangDescriptors(images map[string]string) map[domain.Language]*langDes
 
 // RunRequest is a single test case execution request.
 type RunRequest struct {
-	Language     domain.Language
-	SourceCode   []byte
-	Stdin        []byte
-	WallTimeout  time.Duration // enforced by the worker host, not the container
+	Language      domain.Language
+	SourceCode    []byte
+	Stdin         []byte
+	WallTimeout   time.Duration // enforced by the worker host, not the container
 	MemoryLimitMB int
-	CPUQuota     float64 // fractional CPUs
+	CPUQuota      float64 // fractional CPUs
 }
 
 // RunResult is the outcome of one test case run inside the sandbox.
@@ -130,14 +183,14 @@ type RunResult struct {
 	WallTimeMS      int64
 	CPUTimeMS       int64
 	MaxMemoryKB     int64
-	TimedOut        bool  // wall-clock timeout hit
-	OOMKilled       bool  // container OOM-killed by Docker
+	TimedOut        bool // wall-clock timeout hit
+	OOMKilled       bool // container OOM-killed by Docker
 	StdoutTruncated bool
 	StderrTruncated bool
 
 	// CompileError is set when the compilation step fails; ExecCmd is not run.
-	CompileError    bool
-	CompileOutput   []byte
+	CompileError  bool
+	CompileOutput []byte
 }
 
 // --------------------------------------------------------------------------
@@ -384,13 +437,13 @@ func (s *Sandbox) buildDockerArgs(
 
 	args := []string{
 		"run",
-		"--rm",   // auto-remove the container on exit — no zombie containers
-		"-i",     // attach stdin — without this, `docker run` never connects
-		          // the container's stdin at all, so a program that actually
-		          // reads from it (e.g. the harness's sys.stdin.read() - see
-		          // problem-service's harness package) gets nothing instead
-		          // of the test case input. Never caught before since nothing
-		          // previously submitted actually read stdin.
+		"--rm", // auto-remove the container on exit — no zombie containers
+		"-i",   // attach stdin — without this, `docker run` never connects
+		// the container's stdin at all, so a program that actually
+		// reads from it (e.g. the harness's sys.stdin.read() - see
+		// problem-service's harness package) gets nothing instead
+		// of the test case input. Never caught before since nothing
+		// previously submitted actually read stdin.
 
 		// ── Runtime ─────────────────────────────────────────────────────────
 		// gVisor provides a user-space kernel implementation that intercepts
@@ -402,7 +455,7 @@ func (s *Sandbox) buildDockerArgs(
 		"--network", "none", // no inbound or outbound network — ever
 
 		// ── Filesystem isolation ─────────────────────────────────────────────
-		"--read-only", // root filesystem is read-only
+		"--read-only",                            // root filesystem is read-only
 		"--tmpfs", "/tmp:size=64m,noexec,nosuid", // only writable space; non-executable
 
 		// User code, normally mounted read-only. This worker only ever talks
@@ -446,17 +499,23 @@ func (s *Sandbox) buildDockerArgs(
 		"--security-opt", "seccomp=/etc/docker/seccomp/execution.json",
 
 		// ── Resource limits ──────────────────────────────────────────────────
-		"--memory", memoryFlag,       // hard memory cap
-		"--memory-swap", memoryFlag,  // no swap (swap == memory cap → disables swap)
-		"--cpus", cpuFlag,            // fractional CPU limit via CFS bandwidth
+		"--memory", memoryFlag, // hard memory cap
+		"--memory-swap", memoryFlag, // no swap (swap == memory cap → disables swap)
+		"--cpus", cpuFlag, // fractional CPU limit via CFS bandwidth
 		"--pids-limit", strconv.Itoa(s.cfg.SandboxPidsLimit), // fork bomb prevention
 
 		// ── Logging ──────────────────────────────────────────────────────────
 		"--log-driver", "none", // don't route container logs to Docker daemon
-
-		// ── Image ────────────────────────────────────────────────────────────
-		desc.Image,
 	}
+
+	// ── Language-specific environment ─────────────────────────────────────
+	// Only Go currently needs this (GOCACHE/HOME) - see langDescriptor.Env.
+	for _, kv := range desc.Env {
+		args = append(args, "-e", kv)
+	}
+
+	// ── Image ────────────────────────────────────────────────────────────
+	args = append(args, desc.Image)
 
 	// Append the command (compile or exec).
 	args = append(args, cmd...)

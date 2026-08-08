@@ -1,0 +1,172 @@
+namespace __json {
+
+struct Value;
+using Array = std::vector<Value>;
+using Object = std::map<std::string, Value>;
+
+struct Value {
+    enum class Type { Null, Bool, Number, String, Array, Object } type = Type::Null;
+    bool boolVal = false;
+    long long numVal = 0;
+    std::string strVal;
+    std::shared_ptr<Array> arrVal;
+    std::shared_ptr<Object> objVal;
+};
+
+class Parser {
+public:
+    explicit Parser(const std::string& src) : s(src) {}
+    Value parse() { return parseValue(); }
+
+private:
+    const std::string& s;
+    size_t i = 0;
+
+    void skipWs() { while (i < s.size() && std::isspace((unsigned char) s[i])) i++; }
+
+    Value parseValue() {
+        skipWs();
+        char c = s[i];
+        if (c == '{') return parseObject();
+        if (c == '[') return parseArray();
+        if (c == '"') return parseString();
+        if (c == 't' || c == 'f') return parseBool();
+        if (c == 'n') { i += 4; Value v; v.type = Value::Type::Null; return v; }
+        return parseNumber();
+    }
+
+    Value parseObject() {
+        Value v; v.type = Value::Type::Object; v.objVal = std::make_shared<Object>();
+        i++; skipWs();
+        if (s[i] == '}') { i++; return v; }
+        while (true) {
+            skipWs();
+            Value key = parseString();
+            skipWs(); i++; // ':'
+            Value val = parseValue();
+            (*v.objVal)[key.strVal] = val;
+            skipWs();
+            if (s[i] == ',') { i++; continue; }
+            i++;
+            break;
+        }
+        return v;
+    }
+
+    Value parseArray() {
+        Value v; v.type = Value::Type::Array; v.arrVal = std::make_shared<Array>();
+        i++; skipWs();
+        if (s[i] == ']') { i++; return v; }
+        while (true) {
+            v.arrVal->push_back(parseValue());
+            skipWs();
+            if (s[i] == ',') { i++; skipWs(); continue; }
+            i++;
+            break;
+        }
+        return v;
+    }
+
+    Value parseString() {
+        i++;
+        std::string sb;
+        while (s[i] != '"') {
+            char c = s[i];
+            if (c == '\\') {
+                i++;
+                char esc = s[i];
+                switch (esc) {
+                    case 'n': sb += '\n'; break;
+                    case 't': sb += '\t'; break;
+                    case 'r': sb += '\r'; break;
+                    case '"': sb += '"'; break;
+                    case '\\': sb += '\\'; break;
+                    default: sb += esc;
+                }
+            } else {
+                sb += c;
+            }
+            i++;
+        }
+        i++;
+        Value v; v.type = Value::Type::String; v.strVal = sb; return v;
+    }
+
+    Value parseBool() {
+        Value v; v.type = Value::Type::Bool;
+        if (s[i] == 't') { i += 4; v.boolVal = true; } else { i += 5; v.boolVal = false; }
+        return v;
+    }
+
+    Value parseNumber() {
+        size_t start = i;
+        if (s[i] == '-') i++;
+        while (i < s.size() && std::isdigit((unsigned char) s[i])) i++;
+        Value v; v.type = Value::Type::Number;
+        v.numVal = std::stoll(s.substr(start, i - start));
+        return v;
+    }
+};
+
+inline Value parse(const std::string& s) {
+    Parser p(s);
+    return p.parse();
+}
+
+inline const Value& get(const Value& obj, const std::string& key) {
+    return obj.objVal->at(key);
+}
+
+inline int toInt(const Value& v) { return static_cast<int>(v.numVal); }
+
+inline std::vector<int> toIntArray(const Value& v) {
+    std::vector<int> result;
+    for (const auto& e : *v.arrVal) result.push_back(static_cast<int>(e.numVal));
+    return result;
+}
+
+inline std::vector<std::vector<int>> toIntArray2D(const Value& v) {
+    std::vector<std::vector<int>> result;
+    for (const auto& e : *v.arrVal) result.push_back(toIntArray(e));
+    return result;
+}
+
+inline std::string toStr(const Value& v) { return v.strVal; }
+
+inline bool toBool(const Value& v) { return v.boolVal; }
+
+inline std::string toJson(int v) { return std::to_string(v); }
+
+inline std::string toJson(bool v) { return v ? "true" : "false"; }
+
+inline std::string toJson(const std::string& v) {
+    std::string sb = "\"";
+    for (char c : v) {
+        if (c == '\\' || c == '"') sb += '\\';
+        sb += c;
+    }
+    sb += "\"";
+    return sb;
+}
+
+inline std::string toJson(const std::vector<int>& v) {
+    std::string sb = "[";
+    for (size_t idx = 0; idx < v.size(); idx++) {
+        if (idx > 0) sb += ",";
+        sb += std::to_string(v[idx]);
+    }
+    sb += "]";
+    return sb;
+}
+
+inline std::string toJson(const std::vector<std::vector<int>>& v) {
+    std::string sb = "[";
+    for (size_t idx = 0; idx < v.size(); idx++) {
+        if (idx > 0) sb += ",";
+        sb += toJson(v[idx]);
+    }
+    sb += "]";
+    return sb;
+}
+
+} // namespace __json

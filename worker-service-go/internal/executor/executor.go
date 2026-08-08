@@ -120,6 +120,21 @@ func (e *Executor) Handle(ctx context.Context, job *domain.SubmissionJob) error 
 	if len(testCases) == 0 {
 		return e.publishSystemError(ctx, job, "problem version has no test cases")
 	}
+
+	// Run (IncludeHidden=false) only judges the visible/sample cases -
+	// matching LeetCode's "Run Code" vs "Submit" distinction.
+	if !job.IncludeHidden {
+		visible := make([]*domain.TestCase, 0, len(testCases))
+		for _, tc := range testCases {
+			if tc.IsSample {
+				visible = append(visible, tc)
+			}
+		}
+		testCases = visible
+		if len(testCases) == 0 {
+			return e.publishSystemError(ctx, job, "problem version has no visible test cases")
+		}
+	}
 	logger.Info().Int("test_cases", len(testCases)).Msg("fetched test cases")
 
 	// ── Step 4: Download source code ─────────────────────────────────────────
@@ -202,6 +217,11 @@ func (e *Executor) executeAllTestCases(
 	}
 
 	var maxWall, maxCPU, maxMem int64
+	// firstFailureVerdict becomes the submission's overall verdict once set -
+	// every test case still runs regardless (see the comment at the bottom
+	// of the loop for why), but the REPORTED status matches the first thing
+	// that went wrong, same as before this behavior changed.
+	var firstFailureVerdict domain.Verdict
 
 	for _, tc := range testCases {
 		tcCtx, tcSpan := otel.Tracer("worker-service/executor.Executor").Start(ctx, "executor.runTestCase")
@@ -281,22 +301,21 @@ func (e *Executor) executeAllTestCases(
 		)
 		tcSpan.End()
 
-		// Short-circuit on the first terminal non-pass verdict.
-		// Matches the behaviour of most competitive programming judges:
-		// once a test case fails, remaining cases are not evaluated.
-		// CE is special — it fails before any test case runs.
-		if verdict != domain.VerdictPassed {
-			result.Verdict = verdict
-			result.WallTimeMS = maxWall
-			result.CPUTimeMS = maxCPU
-			result.MaxMemoryKB = maxMem
-			result.CompletedAt = time.Now().UTC()
-			return result, nil
+		// Every test case runs regardless of earlier failures - the user
+		// asked to see ALL of them judged, not just up to the first miss
+		// (unlike most competitive programming judges' default). CE is
+		// still a hard stop, but that happens before this loop even starts
+		// (compilation is a single, one-time step - see the caller).
+		if verdict != domain.VerdictPassed && firstFailureVerdict == "" {
+			firstFailureVerdict = verdict
 		}
 	}
 
-	// All test cases passed.
-	result.Verdict = domain.VerdictPassed
+	if firstFailureVerdict != "" {
+		result.Verdict = firstFailureVerdict
+	} else {
+		result.Verdict = domain.VerdictPassed
+	}
 	result.WallTimeMS = maxWall
 	result.CPUTimeMS = maxCPU
 	result.MaxMemoryKB = maxMem

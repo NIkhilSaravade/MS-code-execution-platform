@@ -457,6 +457,7 @@ services:
       # internal layouts (per-submission subdirs here vs MkdirTemp there).
       - worker-scratch-java:/scratch
     environment:
+      <<: *eureka-env
       KAFKA_BOOTSTRAP_SERVERS: kafka:9093
       KAFKA_WORKER_PASSWORD: ${KAFKA_WORKER_PASSWORD:-worker-dev-secret}
       PROBLEM_SERVICE_URL: http://problem-service:8082
@@ -472,6 +473,8 @@ services:
     depends_on:
       kafka-init:
         condition: service_completed_successfully
+      discovery-service:
+        condition: service_healthy
       problem-service:
         condition: service_started
       auth-service:
@@ -503,10 +506,18 @@ services:
       SANDBOX_RUNTIME: runc  # gVisor (runsc) isn't installed on the host by default; see README
       SCRATCH_CONTAINER_DIR: /scratch
       SCRATCH_VOLUME_NAME: worker-scratch
+      # Registers with discovery-service (see internal/eureka) and resolves
+      # PROBLEM_SERVICE_URL/SUBMISSION_SERVICE_URL/AUTH_SERVICE_URL above
+      # through it instead - those three env vars are now only a fallback
+      # used if Eureka has no UP instance registered yet.
+      EUREKA_SERVER_URL: http://discovery-service:8761/eureka
+      EUREKA_APP_NAME: WORKER-SERVICE-GO
     depends_on:
       kafka-init:
         condition: service_completed_successfully
       minio:
+        condition: service_healthy
+      discovery-service:
         condition: service_healthy
       problem-service:
         condition: service_started

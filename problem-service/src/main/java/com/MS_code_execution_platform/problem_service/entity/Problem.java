@@ -1,11 +1,13 @@
 package com.MS_code_execution_platform.problem_service.entity;
 
 
+import com.MS_code_execution_platform.problem_service.harness.HarnessMapConverter;
 import com.fasterxml.jackson.annotation.JsonManagedReference;
 import jakarta.persistence.*;
 import lombok.*;
 
 import java.util.List;
+import java.util.Map;
 
 @Entity
 @Getter
@@ -43,11 +45,15 @@ public class Problem {
 
     private String returnType;
 
+    // language id (e.g. "python", "java", "cpp") -> generated boilerplate for
+    // that language, one entry per HarnessGenerator registered at the time
+    // this problem's signature was last (re)generated - see
+    // ProblemService.createProblem/regenerateHarness and
+    // harness.HarnessGenerator. A single JSON column instead of one column
+    // per language, so adding a language never needs a schema migration.
+    @Convert(converter = HarnessMapConverter.class)
     @Column(columnDefinition = "TEXT")
-    private String harnessPython;
-
-    @Column(columnDefinition = "TEXT")
-    private String harnessJava;
+    private Map<String, String> harnessByLanguage;
 
     // @JsonManagedReference/@JsonBackReference (paired with TestCase.problem)
     // break the Problem<->TestCase serialization cycle - without them, Jackson

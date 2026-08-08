@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 @Service
@@ -33,6 +34,14 @@ public class WorkerService {
 
         if (testCases == null || testCases.length == 0) {
             throw new RuntimeException("No test cases found for problem: " + event.getProblemId());
+        }
+
+        // Run (includeHidden=false) only judges the visible/sample cases -
+        // matching LeetCode's "Run Code" vs "Submit" distinction.
+        if (!event.isIncludeHidden()) {
+            testCases = Arrays.stream(testCases)
+                    .filter(tc -> !tc.isHidden())
+                    .toArray(TestCaseResponse[]::new);
         }
 
         boolean allPassed = true;
@@ -75,9 +84,11 @@ public class WorkerService {
             }
             results.add(result.build());
 
+            // Every test case runs regardless of earlier failures - the user
+            // wants to see ALL of them judged, not just up to the first miss
+            // (unlike most competitive programming judges' default).
             if (!passed) {
                 allPassed = false;
-                break;
             }
         }
 

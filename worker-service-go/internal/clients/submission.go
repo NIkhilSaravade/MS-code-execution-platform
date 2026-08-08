@@ -16,6 +16,7 @@ import (
 	"github.com/nikhilsaravade95/code-execution-platform/worker-service/internal/auth"
 	"github.com/nikhilsaravade95/code-execution-platform/worker-service/internal/config"
 	"github.com/nikhilsaravade95/code-execution-platform/worker-service/internal/domain"
+	"github.com/nikhilsaravade95/code-execution-platform/worker-service/internal/eureka"
 )
 
 // SubmissionClient calls the submission-service internal API to transition
@@ -26,19 +27,21 @@ import (
 // executions.completed.v1 Kafka event that submission-service consumes.
 // The direct HTTP call here provides faster optimistic feedback to the client.
 type SubmissionClient struct {
-	baseURL string
-	http    *http.Client
-	tokens  *auth.TokenSource
+	eureka      *eureka.Client
+	fallbackURL string // used only if Eureka has no UP instance registered
+	http        *http.Client
+	tokens      *auth.TokenSource
 }
 
 // NewSubmissionClient creates a client with conservative timeouts.
 // Total timeout (5s) is shorter than the caller's own deadline so the
 // worker still has time to handle the error gracefully. tokens supplies the
 // bearer token attached to every request - see ProblemClient.authorize for why.
-func NewSubmissionClient(cfg *config.Config, tokens *auth.TokenSource) *SubmissionClient {
+func NewSubmissionClient(cfg *config.Config, tokens *auth.TokenSource, ec *eureka.Client) *SubmissionClient {
 	return &SubmissionClient{
-		baseURL: cfg.SubmissionServiceBaseURL,
-		tokens:  tokens,
+		eureka:      ec,
+		fallbackURL: cfg.SubmissionServiceBaseURL,
+		tokens:      tokens,
 		http: &http.Client{
 			Timeout: 5 * time.Second,
 			Transport: &http.Transport{
@@ -48,6 +51,18 @@ func NewSubmissionClient(cfg *config.Config, tokens *auth.TokenSource) *Submissi
 			},
 		},
 	}
+}
+
+// resolveBaseURL asks Eureka for a live SUBMISSION-SERVICE instance instead
+// of using a fixed, env-configured URL - see ProblemClient.resolveBaseURL
+// for the identical reasoning (falls back to the env-configured URL only if
+// Eureka has nothing).
+func (c *SubmissionClient) resolveBaseURL(ctx context.Context) string {
+	url, err := c.eureka.ResolveBaseURL(ctx, "SUBMISSION-SERVICE")
+	if err != nil {
+		return c.fallbackURL
+	}
+	return url
 }
 
 // authorize attaches a service access token to the outgoing request.
@@ -98,7 +113,7 @@ func (c *SubmissionClient) updateState(ctx context.Context, submissionID, state,
 	)
 
 	body, _ := json.Marshal(stateUpdateRequest{State: state, Reason: reason, Output: output, TestCaseResults: testCaseResults})
-	url := fmt.Sprintf("%s/internal/submissions/%s/state", c.baseURL, submissionID)
+	url := fmt.Sprintf("%s/internal/submissions/%s/state", c.resolveBaseURL(ctx), submissionID)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, url, bytes.NewReader(body))
 	if err != nil {

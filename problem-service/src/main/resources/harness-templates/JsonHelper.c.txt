@@ -1,0 +1,227 @@
+typedef enum { __JSON_NULL, __JSON_BOOL, __JSON_NUMBER, __JSON_STRING, __JSON_ARRAY, __JSON_OBJECT } __json_type;
+
+typedef struct __json_value __json_value;
+
+typedef struct {
+    char* key;
+    __json_value* value;
+} __json_member;
+
+struct __json_value {
+    __json_type type;
+    long long num;
+    int boolean;
+    char* str;
+    __json_value* items;
+    int item_count;
+    __json_member* members;
+    int member_count;
+};
+
+typedef struct {
+    const char* s;
+    int i;
+} __json_parser;
+
+static void __json_skip_ws(__json_parser* p) {
+    while (p->s[p->i] != '\0' && isspace((unsigned char) p->s[p->i])) p->i++;
+}
+
+static __json_value __json_parse_value(__json_parser* p);
+
+static __json_value __json_parse_string_raw(__json_parser* p) {
+    p->i++; // opening quote
+    size_t cap = 16, len = 0;
+    char* buf = (char*) malloc(cap);
+    while (p->s[p->i] != '"') {
+        char c = p->s[p->i];
+        if (c == '\\') {
+            p->i++;
+            char esc = p->s[p->i];
+            switch (esc) {
+                case 'n': c = '\n'; break;
+                case 't': c = '\t'; break;
+                case 'r': c = '\r'; break;
+                case '"': c = '"'; break;
+                case '\\': c = '\\'; break;
+                default: c = esc;
+            }
+        }
+        if (len + 1 >= cap) { cap *= 2; buf = (char*) realloc(buf, cap); }
+        buf[len++] = c;
+        p->i++;
+    }
+    p->i++; // closing quote
+    buf[len] = '\0';
+    __json_value v;
+    memset(&v, 0, sizeof(v));
+    v.type = __JSON_STRING;
+    v.str = buf;
+    return v;
+}
+
+static __json_value __json_parse_number(__json_parser* p) {
+    int start = p->i;
+    if (p->s[p->i] == '-') p->i++;
+    while (isdigit((unsigned char) p->s[p->i])) p->i++;
+    int len = p->i - start;
+    char buf[32];
+    memcpy(buf, p->s + start, len);
+    buf[len] = '\0';
+    __json_value v;
+    memset(&v, 0, sizeof(v));
+    v.type = __JSON_NUMBER;
+    v.num = atoll(buf);
+    return v;
+}
+
+static __json_value __json_parse_bool(__json_parser* p) {
+    __json_value v;
+    memset(&v, 0, sizeof(v));
+    v.type = __JSON_BOOL;
+    if (p->s[p->i] == 't') { p->i += 4; v.boolean = 1; } else { p->i += 5; v.boolean = 0; }
+    return v;
+}
+
+static __json_value __json_parse_array(__json_parser* p) {
+    __json_value v;
+    memset(&v, 0, sizeof(v));
+    v.type = __JSON_ARRAY;
+    p->i++; __json_skip_ws(p);
+    int cap = 4;
+    v.items = (__json_value*) malloc(sizeof(__json_value) * cap);
+    v.item_count = 0;
+    if (p->s[p->i] == ']') { p->i++; return v; }
+    while (1) {
+        if (v.item_count >= cap) { cap *= 2; v.items = (__json_value*) realloc(v.items, sizeof(__json_value) * cap); }
+        v.items[v.item_count++] = __json_parse_value(p);
+        __json_skip_ws(p);
+        if (p->s[p->i] == ',') { p->i++; __json_skip_ws(p); continue; }
+        p->i++;
+        break;
+    }
+    return v;
+}
+
+static __json_value __json_parse_object(__json_parser* p) {
+    __json_value v;
+    memset(&v, 0, sizeof(v));
+    v.type = __JSON_OBJECT;
+    p->i++; __json_skip_ws(p);
+    int cap = 4;
+    v.members = (__json_member*) malloc(sizeof(__json_member) * cap);
+    v.member_count = 0;
+    if (p->s[p->i] == '}') { p->i++; return v; }
+    while (1) {
+        __json_skip_ws(p);
+        __json_value key = __json_parse_string_raw(p);
+        __json_skip_ws(p);
+        p->i++; // ':'
+        __json_value val = __json_parse_value(p);
+        if (v.member_count >= cap) { cap *= 2; v.members = (__json_member*) realloc(v.members, sizeof(__json_member) * cap); }
+        v.members[v.member_count].key = key.str;
+        v.members[v.member_count].value = (__json_value*) malloc(sizeof(__json_value));
+        *v.members[v.member_count].value = val;
+        v.member_count++;
+        __json_skip_ws(p);
+        if (p->s[p->i] == ',') { p->i++; continue; }
+        p->i++;
+        break;
+    }
+    return v;
+}
+
+static __json_value __json_parse_value(__json_parser* p) {
+    __json_skip_ws(p);
+    char c = p->s[p->i];
+    if (c == '{') return __json_parse_object(p);
+    if (c == '[') return __json_parse_array(p);
+    if (c == '"') return __json_parse_string_raw(p);
+    if (c == 't' || c == 'f') return __json_parse_bool(p);
+    if (c == 'n') { p->i += 4; __json_value v; memset(&v, 0, sizeof(v)); v.type = __JSON_NULL; return v; }
+    return __json_parse_number(p);
+}
+
+static __json_value __json_parse(const char* s) {
+    __json_parser p;
+    p.s = s;
+    p.i = 0;
+    return __json_parse_value(&p);
+}
+
+static __json_value* __json_get(__json_value* obj, const char* key) {
+    for (int idx = 0; idx < obj->member_count; idx++) {
+        if (strcmp(obj->members[idx].key, key) == 0) return obj->members[idx].value;
+    }
+    return NULL;
+}
+
+// Reads all of stdin into a single malloc'd, NUL-terminated buffer -
+// deliberately unbounded (unlike a fixed-size read) so a large test case
+// input never gets silently truncated.
+static char* __read_all_stdin(void) {
+    size_t cap = 4096, len = 0;
+    char* buf = (char*) malloc(cap);
+    size_t n;
+    while ((n = fread(buf + len, 1, cap - len, stdin)) > 0) {
+        len += n;
+        if (len == cap) { cap *= 2; buf = (char*) realloc(buf, cap); }
+    }
+    buf[len] = '\0';
+    return buf;
+}
+
+static int __json_to_int(__json_value* v) { return (int) v->num; }
+
+static int* __json_to_int_array(__json_value* v, int* outSize) {
+    int* arr = (int*) malloc(sizeof(int) * (v->item_count > 0 ? v->item_count : 1));
+    for (int idx = 0; idx < v->item_count; idx++) arr[idx] = (int) v->items[idx].num;
+    *outSize = v->item_count;
+    return arr;
+}
+
+static int** __json_to_int_array2d(__json_value* v, int* outSize, int** outColSizes) {
+    int** arr = (int**) malloc(sizeof(int*) * (v->item_count > 0 ? v->item_count : 1));
+    int* colSizes = (int*) malloc(sizeof(int) * (v->item_count > 0 ? v->item_count : 1));
+    for (int idx = 0; idx < v->item_count; idx++) {
+        arr[idx] = __json_to_int_array(&v->items[idx], &colSizes[idx]);
+    }
+    *outSize = v->item_count;
+    *outColSizes = colSizes;
+    return arr;
+}
+
+static char* __json_to_str(__json_value* v) { return v->str; }
+
+static bool __json_to_bool(__json_value* v) { return v->boolean ? true : false; }
+
+static void __json_print_int(int v) { printf("%d", v); }
+
+static void __json_print_bool(bool v) { printf("%s", v ? "true" : "false"); }
+
+static void __json_print_str(const char* v) {
+    putchar('"');
+    for (const char* c = v; *c; c++) {
+        if (*c == '\\' || *c == '"') putchar('\\');
+        putchar(*c);
+    }
+    putchar('"');
+}
+
+static void __json_print_int_array(int* v, int size) {
+    putchar('[');
+    for (int idx = 0; idx < size; idx++) {
+        if (idx > 0) putchar(',');
+        printf("%d", v[idx]);
+    }
+    putchar(']');
+}
+
+static void __json_print_int_array2d(int** v, int size, int* colSizes) {
+    putchar('[');
+    for (int idx = 0; idx < size; idx++) {
+        if (idx > 0) putchar(',');
+        __json_print_int_array(v[idx], colSizes[idx]);
+    }
+    putchar(']');
+}

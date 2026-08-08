@@ -19,7 +19,7 @@ export interface Example {
 }
 
 // Another string literal union, this time for programming languages.
-export type Language = 'javascript' | 'python' | 'java' | 'cpp';
+export type Language = 'javascript' | 'typescript' | 'python' | 'java' | 'cpp' | 'c' | 'go';
 
 // The main shape for one coding problem. Every object in the `problems`
 // array below must match this shape exactly, or TypeScript will error.
@@ -51,11 +51,22 @@ export interface Problem {
 // selection. The type annotation `: { id: Language; label: string }[]`
 // is an "inline" object type — same idea as an interface, just not given
 // its own name since it's only used here.
+// Labels include the version that actually judges a submission - i.e. the
+// Go worker's version (worker-service-go is the default ACTIVE_WORKER; the
+// legacy Java worker runs older versions for some languages - see
+// CLAUDE.md's "Multi-language judging" section). C/C++ show the compiled
+// LANGUAGE STANDARD (-std=c++17/-std=c11, pinned explicitly in both
+// workers' compile commands), not the compiler version, since that's what
+// programmers actually care about and matches how LeetCode itself labels
+// these two.
 export const LANGUAGES: { id: Language; label: string }[] = [
-  { id: 'javascript', label: 'JavaScript' },
-  { id: 'python', label: 'Python' },
-  { id: 'java', label: 'Java' },
-  { id: 'cpp', label: 'C++' },
+  { id: 'javascript', label: 'JavaScript (Node 20)' },
+  { id: 'typescript', label: 'TypeScript 7.0' },
+  { id: 'python', label: 'Python 3.12' },
+  { id: 'java', label: 'Java 21' },
+  { id: 'cpp', label: 'C++17' },
+  { id: 'c', label: 'C11' },
+  { id: 'go', label: 'Go 1.22' },
 ];
 
 // `problems: Problem[]` means: an array where every element must satisfy
@@ -82,11 +93,15 @@ export const problems: Problem[] = [
     starterCode: {
       javascript:
         '/**\n * @param {number[]} nums\n * @param {number} target\n * @return {number[]}\n */\nfunction twoSum(nums, target) {\n  \n}\n',
+      typescript: 'function twoSum(nums: number[], target: number): number[] {\n  \n};\n',
       python: 'class Solution:\n    def twoSum(self, nums: list[int], target: int) -> list[int]:\n        pass\n',
       java:
         'class Solution {\n    public int[] twoSum(int[] nums, int target) {\n        \n    }\n}\n',
       cpp:
         'class Solution {\npublic:\n    vector<int> twoSum(vector<int>& nums, int target) {\n        \n    }\n};\n',
+      c:
+        '/**\n * Note: The returned array must be malloced, assume caller calls free().\n */\nint* twoSum(int* nums, int numsSize, int target, int* returnSize) {\n    \n}\n',
+      go: 'func twoSum(nums []int, target int) []int {\n\t\n}\n',
     },
   },
   {
@@ -106,9 +121,12 @@ export const problems: Problem[] = [
     constraints: ['1 <= s.length <= 10^4', "s consists only of parentheses '()[]{}'"],
     starterCode: {
       javascript: '/**\n * @param {string} s\n * @return {boolean}\n */\nfunction isValid(s) {\n  \n}\n',
+      typescript: 'function isValid(s: string): boolean {\n  \n};\n',
       python: 'class Solution:\n    def isValid(self, s: str) -> bool:\n        pass\n',
       java: 'class Solution {\n    public boolean isValid(String s) {\n        \n    }\n}\n',
       cpp: 'class Solution {\npublic:\n    bool isValid(string s) {\n        \n    }\n};\n',
+      c: 'bool isValid(char* s) {\n    \n}\n',
+      go: 'func isValid(s string) bool {\n\t\n}\n',
     },
   },
   {
@@ -129,11 +147,15 @@ export const problems: Problem[] = [
     starterCode: {
       javascript:
         '/**\n * @param {number[][]} intervals\n * @return {number[][]}\n */\nfunction merge(intervals) {\n  \n}\n',
+      typescript: 'function merge(intervals: number[][]): number[][] {\n  \n};\n',
       python: 'class Solution:\n    def merge(self, intervals: list[list[int]]) -> list[list[int]]:\n        pass\n',
       java:
         'class Solution {\n    public int[][] merge(int[][] intervals) {\n        \n    }\n}\n',
       cpp:
         'class Solution {\npublic:\n    vector<vector<int>> merge(vector<vector<int>>& intervals) {\n        \n    }\n};\n',
+      c:
+        '/**\n * Return an array of arrays. The sizes of the arrays are returned as *returnColumnSizes array.\n * Note: Both returned array and *columnSizes array must be malloced.\n */\nint** merge(int** intervals, int intervalsSize, int* intervalsColSize, int* returnSize, int** returnColumnSizes) {\n    \n}\n',
+      go: 'func merge(intervals [][]int) [][]int {\n\t\n}\n',
     },
   },
   {
@@ -153,9 +175,12 @@ export const problems: Problem[] = [
     starterCode: {
       javascript:
         '/**\n * @param {string} s\n * @return {number}\n */\nfunction lengthOfLongestSubstring(s) {\n  \n}\n',
+      typescript: 'function lengthOfLongestSubstring(s: string): number {\n  \n};\n',
       python: 'class Solution:\n    def lengthOfLongestSubstring(self, s: str) -> int:\n        pass\n',
       java: 'class Solution {\n    public int lengthOfLongestSubstring(String s) {\n        \n    }\n}\n',
       cpp: 'class Solution {\npublic:\n    int lengthOfLongestSubstring(string s) {\n        \n    }\n};\n',
+      c: 'int lengthOfLongestSubstring(char* s) {\n    \n}\n',
+      go: 'func lengthOfLongestSubstring(s string) int {\n\t\n}\n',
     },
   },
   {
@@ -176,12 +201,17 @@ export const problems: Problem[] = [
     starterCode: {
       javascript:
         '/**\n * @param {number[]} nums1\n * @param {number[]} nums2\n * @return {number}\n */\nfunction findMedianSortedArrays(nums1, nums2) {\n  \n}\n',
+      typescript:
+        'function findMedianSortedArrays(nums1: number[], nums2: number[]): number {\n  \n};\n',
       python:
         'class Solution:\n    def findMedianSortedArrays(self, nums1: list[int], nums2: list[int]) -> float:\n        pass\n',
       java:
         'class Solution {\n    public double findMedianSortedArrays(int[] nums1, int[] nums2) {\n        \n    }\n}\n',
       cpp:
         'class Solution {\npublic:\n    double findMedianSortedArrays(vector<int>& nums1, vector<int>& nums2) {\n        \n    }\n};\n',
+      c:
+        'double findMedianSortedArrays(int* nums1, int nums1Size, int* nums2, int nums2Size) {\n    \n}\n',
+      go: 'func findMedianSortedArrays(nums1 []int, nums2 []int) float64 {\n\t\n}\n',
     },
   },
   {
@@ -202,11 +232,15 @@ export const problems: Problem[] = [
     starterCode: {
       javascript:
         '/**\n * @param {TreeNode} root\n * @return {number[][]}\n */\nfunction levelOrder(root) {\n  \n}\n',
+      typescript: 'function levelOrder(root: TreeNode | null): number[][] {\n  \n};\n',
       python: 'class Solution:\n    def levelOrder(self, root: Optional[TreeNode]) -> list[list[int]]:\n        pass\n',
       java:
         'class Solution {\n    public List<List<Integer>> levelOrder(TreeNode root) {\n        \n    }\n}\n',
       cpp:
         'class Solution {\npublic:\n    vector<vector<int>> levelOrder(TreeNode* root) {\n        \n    }\n};\n',
+      c:
+        'int** levelOrder(struct TreeNode* root, int* returnSize, int** returnColumnSizes) {\n    \n}\n',
+      go: 'func levelOrder(root *TreeNode) [][]int {\n\t\n}\n',
     },
   },
   {
@@ -227,12 +261,17 @@ export const problems: Problem[] = [
     starterCode: {
       javascript:
         '/**\n * @param {number} numCourses\n * @param {number[][]} prerequisites\n * @return {boolean}\n */\nfunction canFinish(numCourses, prerequisites) {\n  \n}\n',
+      typescript:
+        'function canFinish(numCourses: number, prerequisites: number[][]): boolean {\n  \n};\n',
       python:
         'class Solution:\n    def canFinish(self, numCourses: int, prerequisites: list[list[int]]) -> bool:\n        pass\n',
       java:
         'class Solution {\n    public boolean canFinish(int numCourses, int[][] prerequisites) {\n        \n    }\n}\n',
       cpp:
         'class Solution {\npublic:\n    bool canFinish(int numCourses, vector<vector<int>>& prerequisites) {\n        \n    }\n};\n',
+      c:
+        'bool canFinish(int numCourses, int** prerequisites, int prerequisitesSize, int* prerequisitesColSize) {\n    \n}\n',
+      go: 'func canFinish(numCourses int, prerequisites [][]int) bool {\n\t\n}\n',
     },
   },
   {
@@ -252,9 +291,12 @@ export const problems: Problem[] = [
     constraints: ['1 <= n <= 45'],
     starterCode: {
       javascript: '/**\n * @param {number} n\n * @return {number}\n */\nfunction climbStairs(n) {\n  \n}\n',
+      typescript: 'function climbStairs(n: number): number {\n  \n};\n',
       python: 'class Solution:\n    def climbStairs(self, n: int) -> int:\n        pass\n',
       java: 'class Solution {\n    public int climbStairs(int n) {\n        \n    }\n}\n',
       cpp: 'class Solution {\npublic:\n    int climbStairs(int n) {\n        \n    }\n};\n',
+      c: 'int climbStairs(int n) {\n    \n}\n',
+      go: 'func climbStairs(n int) int {\n\t\n}\n',
     },
   },
   {
@@ -275,11 +317,15 @@ export const problems: Problem[] = [
     starterCode: {
       javascript:
         '/**\n * @param {character[][]} board\n * @param {string} word\n * @return {boolean}\n */\nfunction exist(board, word) {\n  \n}\n',
+      typescript: 'function exist(board: string[][], word: string): boolean {\n  \n};\n',
       python: 'class Solution:\n    def exist(self, board: list[list[str]], word: str) -> bool:\n        pass\n',
       java:
         'class Solution {\n    public boolean exist(char[][] board, String word) {\n        \n    }\n}\n',
       cpp:
         'class Solution {\npublic:\n    bool exist(vector<vector<char>>& board, string word) {\n        \n    }\n};\n',
+      c:
+        'bool exist(char** board, int boardSize, int* boardColSize, char* word) {\n    \n}\n',
+      go: 'func exist(board [][]byte, word string) bool {\n\t\n}\n',
     },
   },
   {
@@ -302,12 +348,18 @@ export const problems: Problem[] = [
     starterCode: {
       javascript:
         '/**\n * @param {number} capacity\n */\nfunction LRUCache(capacity) {\n  \n}\n\nLRUCache.prototype.get = function(key) {\n  \n};\n\nLRUCache.prototype.put = function(key, value) {\n  \n};\n',
+      typescript:
+        'class LRUCache {\n    constructor(capacity: number) {\n        \n    }\n\n    get(key: number): number {\n        \n    }\n\n    put(key: number, value: number): void {\n        \n    }\n}\n',
       python:
         'class LRUCache:\n    def __init__(self, capacity: int):\n        pass\n\n    def get(self, key: int) -> int:\n        pass\n\n    def put(self, key: int, value: int) -> None:\n        pass\n',
       java:
         'class LRUCache {\n    public LRUCache(int capacity) {\n        \n    }\n\n    public int get(int key) {\n        \n    }\n\n    public void put(int key, int value) {\n        \n    }\n}\n',
       cpp:
         'class LRUCache {\npublic:\n    LRUCache(int capacity) {\n        \n    }\n\n    int get(int key) {\n        \n    }\n\n    void put(int key, int value) {\n        \n    }\n};\n',
+      c:
+        'typedef struct {\n    \n} LRUCache;\n\nLRUCache* lRUCacheCreate(int capacity) {\n    \n}\n\nint lRUCacheGet(LRUCache* obj, int key) {\n    \n}\n\nvoid lRUCachePut(LRUCache* obj, int key, int value) {\n    \n}\n\nvoid lRUCacheFree(LRUCache* obj) {\n    \n}\n',
+      go:
+        'type LRUCache struct {\n\t\n}\n\nfunc Constructor(capacity int) LRUCache {\n\t\n}\n\nfunc (c *LRUCache) Get(key int) int {\n\t\n}\n\nfunc (c *LRUCache) Put(key int, value int) {\n\t\n}\n',
     },
   },
   {
@@ -328,9 +380,12 @@ export const problems: Problem[] = [
     constraints: ['1 <= nums.length <= 10^5'],
     starterCode: {
       javascript: '/**\n * @param {number[]} nums\n * @return {number}\n */\nfunction maxSubArray(nums) {\n  \n}\n',
+      typescript: 'function maxSubArray(nums: number[]): number {\n  \n};\n',
       python: 'class Solution:\n    def maxSubArray(self, nums: list[int]) -> int:\n        pass\n',
       java: 'class Solution {\n    public int maxSubArray(int[] nums) {\n        \n    }\n}\n',
       cpp: 'class Solution {\npublic:\n    int maxSubArray(vector<int>& nums) {\n        \n    }\n};\n',
+      c: 'int maxSubArray(int* nums, int numsSize) {\n    \n}\n',
+      go: 'func maxSubArray(nums []int) int {\n\t\n}\n',
     },
   },
   {
@@ -353,10 +408,14 @@ export const problems: Problem[] = [
     starterCode: {
       javascript:
         '/**\n * @param {character[][]} grid\n * @return {number}\n */\nfunction numIslands(grid) {\n  \n}\n',
+      typescript: 'function numIslands(grid: string[][]): number {\n  \n};\n',
       python: 'class Solution:\n    def numIslands(self, grid: list[list[str]]) -> int:\n        pass\n',
       java: 'class Solution {\n    public int numIslands(char[][] grid) {\n        \n    }\n}\n',
       cpp:
         'class Solution {\npublic:\n    int numIslands(vector<vector<char>>& grid) {\n        \n    }\n};\n',
+      c:
+        'int numIslands(char** grid, int gridSize, int* gridColSize) {\n    \n}\n',
+      go: 'func numIslands(grid [][]byte) int {\n\t\n}\n',
     },
   },
 ];

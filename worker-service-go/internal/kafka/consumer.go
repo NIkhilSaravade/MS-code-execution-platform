@@ -179,6 +179,7 @@ func (c *Consumer) process(ctx context.Context, msg kafkago.Message) (retErr err
 		Language:         domain.Language(event.Language),
 		CodeS3Key:        event.CodeS3Key,
 		CodeHash:         event.CodeHash,
+		IncludeHidden:    event.IncludeHidden,
 		OccurredAt:       event.OccurredAt,
 		TraceParent:      carrier.Get(domain.HeaderTraceParent),
 		TraceState:       carrier.Get(domain.HeaderTraceState),

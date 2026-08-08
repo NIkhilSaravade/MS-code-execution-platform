@@ -2,6 +2,17 @@ spring.application.name : worker-service
 server:
   port: 8084
 
+# Registers this service with discovery-service under the app name
+# WORKER-SERVICE (derived from spring.application.name above) - matches
+# CLAUDE.md's documented Eureka service list, which already named this
+# service despite it never actually having registered until now.
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+  instance:
+    prefer-ip-address: true
+
 spring:
   kafka:
     # SASL_SSL, principal "worker": Read on submission-topic (consumer group

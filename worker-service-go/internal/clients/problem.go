@@ -14,15 +14,17 @@ import (
 	"github.com/nikhilsaravade95/code-execution-platform/worker-service/internal/auth"
 	"github.com/nikhilsaravade95/code-execution-platform/worker-service/internal/config"
 	"github.com/nikhilsaravade95/code-execution-platform/worker-service/internal/domain"
+	"github.com/nikhilsaravade95/code-execution-platform/worker-service/internal/eureka"
 )
 
 // ProblemClient fetches test case metadata from problem-service.
 // The actual test case content (input, expected output) lives in S3;
 // this client only retrieves the S3 keys and ordering metadata.
 type ProblemClient struct {
-	baseURL string
-	http    *http.Client
-	tokens  *auth.TokenSource
+	eureka      *eureka.Client
+	fallbackURL string // used only if Eureka has no UP instance registered
+	http        *http.Client
+	tokens      *auth.TokenSource
 }
 
 // NewProblemClient creates the client with a generous timeout because
@@ -31,10 +33,11 @@ type ProblemClient struct {
 // to every request: problem-service's /internal/** routes require a service
 // access token (client-credentials grant), not a user's token, since the
 // worker has no inbound HTTP request to forward one from.
-func NewProblemClient(cfg *config.Config, tokens *auth.TokenSource) *ProblemClient {
+func NewProblemClient(cfg *config.Config, tokens *auth.TokenSource, ec *eureka.Client) *ProblemClient {
 	return &ProblemClient{
-		baseURL: cfg.ProblemServiceBaseURL,
-		tokens:  tokens,
+		eureka:      ec,
+		fallbackURL: cfg.ProblemServiceBaseURL,
+		tokens:      tokens,
 		http: &http.Client{
 			Timeout: 8 * time.Second,
 			Transport: &http.Transport{
@@ -44,6 +47,18 @@ func NewProblemClient(cfg *config.Config, tokens *auth.TokenSource) *ProblemClie
 			},
 		},
 	}
+}
+
+// resolveBaseURL asks Eureka for a live PROBLEM-SERVICE instance instead of
+// using a fixed, env-configured URL - see internal/eureka's package doc.
+// Falls back to the env-configured URL only if Eureka has nothing (e.g.
+// briefly during startup, before its registration has propagated).
+func (c *ProblemClient) resolveBaseURL(ctx context.Context) string {
+	url, err := c.eureka.ResolveBaseURL(ctx, "PROBLEM-SERVICE")
+	if err != nil {
+		return c.fallbackURL
+	}
+	return url
 }
 
 // authorize attaches a service access token to the outgoing request.
@@ -64,7 +79,7 @@ func (c *ProblemClient) GetTestCases(ctx context.Context, problemVersionID strin
 	defer span.End()
 	span.SetAttributes(attribute.String("problem_version_id", problemVersionID))
 
-	url := fmt.Sprintf("%s/internal/problem-versions/%s/test-cases", c.baseURL, problemVersionID)
+	url := fmt.Sprintf("%s/internal/problem-versions/%s/test-cases", c.resolveBaseURL(ctx), problemVersionID)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -93,12 +108,12 @@ func (c *ProblemClient) GetTestCases(ctx context.Context, problemVersionID strin
 	tcs := make([]*domain.TestCase, 0, len(body.TestCases))
 	for _, tc := range body.TestCases {
 		tcs = append(tcs, &domain.TestCase{
-			ID:             tc.ID,
-			Ordinal:        tc.Ordinal,
-			IsSample:       tc.IsSample,
-			InputS3Key:     tc.InputS3Key,
-			ExpectedS3Key:  tc.ExpectedS3Key,
-			Weight:         tc.Weight,
+			ID:            tc.ID,
+			Ordinal:       tc.Ordinal,
+			IsSample:      tc.IsSample,
+			InputS3Key:    tc.InputS3Key,
+			ExpectedS3Key: tc.ExpectedS3Key,
+			Weight:        tc.Weight,
 		})
 	}
 	return tcs, nil
@@ -112,7 +127,7 @@ func (c *ProblemClient) GetProblemLimits(ctx context.Context, problemID string) 
 	defer span.End()
 	span.SetAttributes(attribute.String("problem_id", problemID))
 
-	url := fmt.Sprintf("%s/internal/problems/%s/limits", c.baseURL, problemID)
+	url := fmt.Sprintf("%s/internal/problems/%s/limits", c.resolveBaseURL(ctx), problemID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return 0, 0, fmt.Errorf("build request: %w", err)

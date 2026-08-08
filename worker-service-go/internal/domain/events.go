@@ -18,6 +18,7 @@ type SubmissionCreatedEvent struct {
 	Language         string    `json:"language"`
 	CodeS3Key        string    `json:"code_s3_key"`
 	CodeHash         string    `json:"code_hash"`
+	IncludeHidden    bool      `json:"include_hidden"`
 }
 
 // --------------------------------------------------------------------------

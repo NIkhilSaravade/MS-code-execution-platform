@@ -4,6 +4,7 @@ import lombok.Builder;
 import lombok.Data;
 
 import java.util.List;
+import java.util.Map;
 
 @Data
 @Builder
@@ -18,11 +19,11 @@ public class ProblemResponse {
     // harness package) - submission-service falls back to raw-code judging
     // in that case. functionName/params/returnType are the signature itself
     // (also useful for the frontend to render a matching starter stub);
-    // harnessPython/harnessJava are the actual generated boilerplate text,
-    // appended after the user's code before it's judged.
+    // harnessByLanguage (language id -> generated boilerplate text) is the
+    // actual generated code, appended after the user's code before it's
+    // judged - see harness.HarnessGenerator.
     private String functionName;
     private List<FunctionParam> params;
     private String returnType;
-    private String harnessPython;
-    private String harnessJava;
+    private Map<String, String> harnessByLanguage;
 }

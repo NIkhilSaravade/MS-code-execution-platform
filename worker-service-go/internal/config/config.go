@@ -17,15 +17,15 @@ type Config struct {
 	WorkerID       string
 
 	// Kafka
-	KafkaBrokers             []string
-	KafkaConsumerGroupID     string
-	KafkaSubmissionTopic     string
-	KafkaExecutionDoneTopic  string
-	KafkaExecutionFailTopic  string
-	KafkaDLQTopic            string
-	KafkaMaxRetryAttempts    int
-	KafkaDialTimeout         time.Duration
-	KafkaSessionTimeout      time.Duration
+	KafkaBrokers            []string
+	KafkaConsumerGroupID    string
+	KafkaSubmissionTopic    string
+	KafkaExecutionDoneTopic string
+	KafkaExecutionFailTopic string
+	KafkaDLQTopic           string
+	KafkaMaxRetryAttempts   int
+	KafkaDialTimeout        time.Duration
+	KafkaSessionTimeout     time.Duration
 
 	// Kafka SASL_SSL - principal "worker": read-only on the submission topic,
 	// write-only on the execution-result topics (see infra/kafka/acls.sh).
@@ -33,7 +33,16 @@ type Config struct {
 	KafkaSASLUsername  string
 	KafkaSASLPassword  string
 
-	// Upstream service URLs
+	// Eureka (discovery-service). EurekaAppName is what THIS worker registers
+	// itself as; EurekaServerURL is used both for that registration and to
+	// resolve problem-service/submission-service/auth-service's instances
+	// (see internal/eureka) instead of the fixed URLs below.
+	EurekaServerURL string
+	EurekaAppName   string
+
+	// Fallback upstream service URLs, used only if Eureka has no registered
+	// instance for a service yet (e.g. briefly during startup, before its
+	// first registration has propagated) - see clients.resolveBaseURL.
 	SubmissionServiceBaseURL string
 	ProblemServiceBaseURL    string
 
@@ -54,12 +63,12 @@ type Config struct {
 	S3ForcePathStyle  bool
 
 	// Sandbox resource limits (enforced per execution, not per test case)
-	SandboxRuntime      string        // "runsc" for gVisor, "runc" for plain Docker
-	SandboxMemoryMB     int
-	SandboxCPUQuota     float64       // fractional CPUs, e.g. 1.0
-	SandboxPidsLimit    int
-	SandboxOutputCapKB  int           // stdout+stderr combined cap
-	SandboxWallTimeout  time.Duration // enforced by worker, not the container
+	SandboxRuntime     string // "runsc" for gVisor, "runc" for plain Docker
+	SandboxMemoryMB    int
+	SandboxCPUQuota    float64 // fractional CPUs, e.g. 1.0
+	SandboxPidsLimit   int
+	SandboxOutputCapKB int           // stdout+stderr combined cap
+	SandboxWallTimeout time.Duration // enforced by worker, not the container
 
 	// Docker-outside-of-Docker scratch storage. This worker talks to the
 	// HOST's Docker daemon over the mounted /var/run/docker.sock to launch
@@ -110,7 +119,11 @@ func Load() (*Config, error) {
 	cfg.KafkaSASLUsername = getEnvOrDefault("KAFKA_SASL_USERNAME", "worker")
 	cfg.KafkaSASLPassword = getEnvOrDefault("KAFKA_SASL_PASSWORD", "worker-dev-secret")
 
-	// Upstream services
+	// Eureka
+	cfg.EurekaServerURL = getEnvOrDefault("EUREKA_SERVER_URL", "http://localhost:8761/eureka")
+	cfg.EurekaAppName = getEnvOrDefault("EUREKA_APP_NAME", "WORKER-SERVICE-GO")
+
+	// Upstream services (fallback only - see Config.SubmissionServiceBaseURL's comment)
 	cfg.SubmissionServiceBaseURL = getEnvOrDefault("SUBMISSION_SERVICE_URL", "http://localhost:8083")
 	cfg.ProblemServiceBaseURL = getEnvOrDefault("PROBLEM_SERVICE_URL", "http://localhost:8082")
 
@@ -144,8 +157,20 @@ func Load() (*Config, error) {
 		// jdk, not jre - Java submissions need javac to compile, which the
 		// JRE-only image doesn't have. Never caught before since this was
 		// the first Java submission ever run through this worker.
-		"java":   getEnvOrDefault("LANG_IMAGE_JAVA", "eclipse-temurin:21-jdk-alpine"),
-		"cpp":    getEnvOrDefault("LANG_IMAGE_CPP", "gcc:14-slim"),
+		"java": getEnvOrDefault("LANG_IMAGE_JAVA", "eclipse-temurin:21-jdk-alpine"),
+		// gcc has no "-slim" variant on Docker Hub (only bare version tags) -
+		// "gcc:14-slim" doesn't exist and every C++ submission failed to
+		// even start a container until this was caught.
+		"cpp":        getEnvOrDefault("LANG_IMAGE_CPP", "gcc:14"),
+		"c":          getEnvOrDefault("LANG_IMAGE_C", "gcc:14"),
+		"javascript": getEnvOrDefault("LANG_IMAGE_JAVASCRIPT", "node:20-slim"),
+		// Locally-built image (docker build -t platform/node-typescript:20
+		// infra/sandbox-images/node-typescript) - no official image ships
+		// both Node and tsc, and the sandbox's --network none rules out
+		// installing typescript at request time. Must be built once before
+		// this default resolves to a real image.
+		"typescript": getEnvOrDefault("LANG_IMAGE_TYPESCRIPT", "platform/node-typescript:20"),
+		"go":         getEnvOrDefault("LANG_IMAGE_GO", "golang:1.22-alpine"),
 	}
 
 	// Observability

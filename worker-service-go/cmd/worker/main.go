@@ -28,6 +28,7 @@ import (
 	"github.com/nikhilsaravade95/code-execution-platform/worker-service/internal/auth"
 	"github.com/nikhilsaravade95/code-execution-platform/worker-service/internal/clients"
 	"github.com/nikhilsaravade95/code-execution-platform/worker-service/internal/config"
+	"github.com/nikhilsaravade95/code-execution-platform/worker-service/internal/eureka"
 	"github.com/nikhilsaravade95/code-execution-platform/worker-service/internal/executor"
 	"github.com/nikhilsaravade95/code-execution-platform/worker-service/internal/kafka"
 	"github.com/nikhilsaravade95/code-execution-platform/worker-service/internal/sandbox"
@@ -76,14 +77,22 @@ func main() {
 		log.Fatal().Err(err).Msg("failed to create S3 client")
 	}
 
+	// ── Eureka (discovery-service) ─────────────────────────────────────────────
+	// Registers this worker for dashboard visibility and resolves
+	// problem-service/submission-service/auth-service through Eureka instead
+	// of fixed URLs - see internal/eureka's package doc for why a hand-rolled
+	// client instead of a third-party library.
+	eurekaClient := eureka.New(cfg.EurekaServerURL, cfg.EurekaAppName)
+	go eurekaClient.RunLifecycle(ctx)
+
 	// ── HTTP clients ──────────────────────────────────────────────────────────
 	// The worker authenticates to problem-service/submission-service as itself
 	// (OAuth2 client-credentials against auth-service), since it has no inbound
 	// user request to forward a token from. Both clients share one TokenSource
 	// so they share its cache instead of each re-authenticating independently.
-	tokenSource := auth.NewTokenSource(cfg.AuthServiceBaseURL, cfg.WorkerClientID, cfg.WorkerClientSecret)
-	submissionClient := clients.NewSubmissionClient(cfg, tokenSource)
-	problemClient := clients.NewProblemClient(cfg, tokenSource)
+	tokenSource := auth.NewTokenSource(cfg.AuthServiceBaseURL, cfg.WorkerClientID, cfg.WorkerClientSecret, eurekaClient)
+	submissionClient := clients.NewSubmissionClient(cfg, tokenSource, eurekaClient)
+	problemClient := clients.NewProblemClient(cfg, tokenSource, eurekaClient)
 
 	// ── Kafka producer (used by executor to publish result events) ────────────
 	producer, err := kafka.NewProducer(cfg)
@@ -137,6 +146,15 @@ func main() {
 	// ── Graceful shutdown ─────────────────────────────────────────────────────
 	log.Info().Msg("initiating graceful shutdown")
 	cancel()
+
+	// Deregister immediately rather than leaving Eureka to expire the lease
+	// on its own after ~90s of missed heartbeats - keeps the dashboard
+	// accurate right away.
+	deregisterCtx, deregisterCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	if err := eurekaClient.Deregister(deregisterCtx); err != nil {
+		log.Warn().Err(err).Msg("eureka: deregistration failed")
+	}
+	deregisterCancel()
 
 	// Give in-flight executions a generous drain window.
 	// Sandboxes have their own wall-clock timeout (cfg.SandboxWallTimeout),

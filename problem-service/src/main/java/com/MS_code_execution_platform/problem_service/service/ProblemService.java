@@ -8,8 +8,7 @@ import com.MS_code_execution_platform.problem_service.dto.TestCaseDTO;
 import com.MS_code_execution_platform.problem_service.dto.TestCaseResponse;
 import com.MS_code_execution_platform.problem_service.entity.Problem;
 import com.MS_code_execution_platform.problem_service.entity.TestCase;
-import com.MS_code_execution_platform.problem_service.harness.JavaHarnessGenerator;
-import com.MS_code_execution_platform.problem_service.harness.PythonHarnessGenerator;
+import com.MS_code_execution_platform.problem_service.harness.HarnessGenerator;
 import com.MS_code_execution_platform.problem_service.repository.ProblemRepository;
 import com.MS_code_execution_platform.problem_service.repository.TestCaseRepository;
 import com.MS_code_execution_platform.problem_service.storage.TestCaseStorageService;
@@ -17,17 +16,17 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.persistence.EntityNotFoundException;
-import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.*;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 @Service
-@RequiredArgsConstructor
 public class ProblemService {
 
     private static final int DEFAULT_TIME_LIMIT_MS = 2000;
@@ -37,9 +36,22 @@ public class ProblemService {
     private final ProblemRepository problemRepository;
     private final TestCaseRepository testCaseRepository;
     private final TestCaseStorageService testCaseStorageService;
-    private final PythonHarnessGenerator pythonHarnessGenerator;
-    private final JavaHarnessGenerator javaHarnessGenerator;
+    private final Map<String, HarnessGenerator> harnessGenerators;
     private final ObjectMapper objectMapper = new ObjectMapper();
+
+    // Discovers every HarnessGenerator bean (one per supported language) and
+    // indexes it by language() - adding a new language is registering one
+    // new @Component, nothing here needs to change.
+    public ProblemService(ProblemRepository problemRepository,
+                           TestCaseRepository testCaseRepository,
+                           TestCaseStorageService testCaseStorageService,
+                           List<HarnessGenerator> generators) {
+        this.problemRepository = problemRepository;
+        this.testCaseRepository = testCaseRepository;
+        this.testCaseStorageService = testCaseStorageService;
+        this.harnessGenerators = generators.stream()
+                .collect(Collectors.toMap(HarnessGenerator::language, g -> g));
+    }
 
     // Redundant with the route-level rule in SecurityConfig by design: two
     // independent layers, so a missed/changed route pattern alone can't open
@@ -59,8 +71,7 @@ public class ProblemService {
             builder.functionName(signature.getFunctionName())
                     .paramsJson(writeJson(signature.getParams()))
                     .returnType(signature.getReturnType())
-                    .harnessPython(pythonHarnessGenerator.generate(signature))
-                    .harnessJava(javaHarnessGenerator.generate(signature));
+                    .harnessByLanguage(generateHarnessByLanguage(signature));
         }
 
         Problem problem = builder.build();
@@ -122,6 +133,33 @@ public class ProblemService {
         return testCaseRepository.findByProblemId(problemVersionId);
     }
 
+    // Re-runs every currently-registered HarnessGenerator against a problem's
+    // already-stored function signature, overwriting harnessByLanguage. This
+    // is how an existing problem picks up support for a language added
+    // after it was created - re-POSTing the whole problem isn't necessary.
+    @PreAuthorize("hasRole('ADMIN')")
+    public ProblemResponse regenerateHarness(Long problemId) {
+        Problem problem = getProblemOrThrow(problemId);
+        if (problem.getFunctionName() == null) {
+            throw new IllegalStateException(
+                    "Problem " + problemId + " has no function signature - nothing to regenerate");
+        }
+
+        FunctionSignature signature = new FunctionSignature(
+                problem.getFunctionName(), readParams(problem.getParamsJson()), problem.getReturnType());
+
+        problem.setHarnessByLanguage(generateHarnessByLanguage(signature));
+        problem = problemRepository.save(problem);
+
+        return toResponse(problem);
+    }
+
+    private Map<String, String> generateHarnessByLanguage(FunctionSignature signature) {
+        Map<String, String> result = new HashMap<>();
+        harnessGenerators.forEach((lang, generator) -> result.put(lang, generator.generate(signature)));
+        return result;
+    }
+
     public Problem getProblemOrThrow(Long problemId) {
         return problemRepository.findById(problemId)
                 .orElseThrow(() -> new EntityNotFoundException(
@@ -141,8 +179,7 @@ public class ProblemService {
                 .functionName(problem.getFunctionName())
                 .params(readParams(problem.getParamsJson()))
                 .returnType(problem.getReturnType())
-                .harnessPython(problem.getHarnessPython())
-                .harnessJava(problem.getHarnessJava())
+                .harnessByLanguage(problem.getHarnessByLanguage())
                 .build();
     }
 

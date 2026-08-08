@@ -30,14 +30,15 @@ public class SubmissionProducer {
     // HarnessApplier) - the worker needs the combined, runnable version.
 
     // Legacy event, consumed by worker-service (Java) — carries the code inline.
-    public void sendSubmissionEvent(Submission submission, String codeToRun) {
+    public void sendSubmissionEvent(Submission submission, String codeToRun, boolean includeHidden) {
 
         SubmissionEvent event = new SubmissionEvent(
                 submission.getId(),
                 submission.getUserId(),
                 submission.getProblemId(),
                 codeToRun,
-                submission.getLanguage()
+                submission.getLanguage(),
+                includeHidden
         );
 
         kafkaTemplate.send("submission-topic", event);
@@ -47,7 +48,7 @@ public class SubmissionProducer {
     // platform-artifacts first and referenced by key (job.CodeS3Key) instead
     // of being embedded, matching worker-service-go's SubmissionCreatedEvent
     // envelope (internal/domain/events.go).
-    public void sendSubmissionCreatedEvent(Submission submission, String codeToRun) {
+    public void sendSubmissionCreatedEvent(Submission submission, String codeToRun, boolean includeHidden) {
 
         SubmissionCodeStorageService.UploadResult upload = submissionCodeStorageService.upload(
                 submission.getId(), submission.getLanguage(), codeToRun);
@@ -68,7 +69,8 @@ public class SubmissionProducer {
                 problemId,
                 submission.getLanguage(),
                 upload.s3Key(),
-                upload.codeHash()
+                upload.codeHash(),
+                includeHidden
         );
 
         submissionCreatedKafkaTemplate.send(submissionsCreatedTopic, event);

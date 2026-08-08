@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/nikhilsaravade95/code-execution-platform/worker-service/internal/eureka"
 )
 
 // refreshSkew is how far ahead of the real expiry we refresh, so a token
@@ -24,27 +26,40 @@ const refreshSkew = 30 * time.Second
 // auth-service. Safe for concurrent use; refreshes the token shortly before
 // it expires rather than re-authenticating on every call.
 type TokenSource struct {
-	authServiceURL string
-	clientID       string
-	clientSecret   string
-	http           *http.Client
+	eureka       *eureka.Client
+	fallbackURL  string // used only if Eureka has no UP instance registered
+	clientID     string
+	clientSecret string
+	http         *http.Client
 
 	mu        sync.Mutex
 	cached    string
 	expiresAt time.Time
 }
 
-// NewTokenSource creates a TokenSource pointed at auth-service's
-// /auth/token endpoint.
-func NewTokenSource(authServiceURL, clientID, clientSecret string) *TokenSource {
+// NewTokenSource creates a TokenSource that resolves auth-service through
+// Eureka (see internal/eureka's package doc) rather than a fixed URL,
+// falling back to authServiceURL only if Eureka has no UP instance
+// registered yet.
+func NewTokenSource(authServiceURL, clientID, clientSecret string, ec *eureka.Client) *TokenSource {
 	return &TokenSource{
-		authServiceURL: strings.TrimRight(authServiceURL, "/"),
-		clientID:       clientID,
-		clientSecret:   clientSecret,
+		eureka:       ec,
+		fallbackURL:  strings.TrimRight(authServiceURL, "/"),
+		clientID:     clientID,
+		clientSecret: clientSecret,
 		http: &http.Client{
 			Timeout: 5 * time.Second,
 		},
 	}
+}
+
+// resolveBaseURL asks Eureka for a live AUTH-SERVICE instance.
+func (t *TokenSource) resolveBaseURL(ctx context.Context) string {
+	baseURL, err := t.eureka.ResolveBaseURL(ctx, "AUTH-SERVICE")
+	if err != nil {
+		return t.fallbackURL
+	}
+	return baseURL
 }
 
 // Token returns a valid access token, fetching a new one if the cached
@@ -79,7 +94,7 @@ func (t *TokenSource) fetch(ctx context.Context) (string, int64, error) {
 	form.Set("client_id", t.clientID)
 	form.Set("client_secret", t.clientSecret)
 
-	tokenURL := fmt.Sprintf("%s/auth/token", t.authServiceURL)
+	tokenURL := fmt.Sprintf("%s/auth/token", t.resolveBaseURL(ctx))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
 	if err != nil {

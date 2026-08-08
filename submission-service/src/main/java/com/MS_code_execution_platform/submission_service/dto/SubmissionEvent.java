@@ -7,5 +7,6 @@ public record SubmissionEvent(
         UUID userId,
         Long problemId,
         String code,
-        String language
+        String language,
+        boolean includeHidden
 ) {}

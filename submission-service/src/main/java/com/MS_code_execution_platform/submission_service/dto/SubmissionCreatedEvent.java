@@ -23,5 +23,6 @@ public record SubmissionCreatedEvent(
         @JsonProperty("problem_version_id") String problemVersionId,
         String language,
         @JsonProperty("code_s3_key") String codeS3Key,
-        @JsonProperty("code_hash") String codeHash
+        @JsonProperty("code_hash") String codeHash,
+        @JsonProperty("include_hidden") boolean includeHidden
 ) {}

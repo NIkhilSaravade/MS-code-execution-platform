@@ -21,9 +21,14 @@ import { createSubmission, pollSubmissionResult, type TestCaseResult } from '../
 // obvious where the two systems connect (and easy to fix if they diverge).
 const MONACO_LANGUAGE: Record<Language, string> = {
   javascript: 'javascript',
+  typescript: 'typescript',
   python: 'python',
   java: 'java',
   cpp: 'cpp',
+  // monaco-editor ships no separate "c" language contribution - only "cpp"
+  // covers the whole C/C++ family, so C source reuses its highlighting.
+  c: 'cpp',
+  go: 'go',
 };
 
 // A string literal union describing the three states our "Run" flow can be
@@ -109,15 +114,13 @@ export default function SolvePage() {
   }
 
   // Calls the real backend judge: POST /submissions, then poll
-  // GET /submissions/{id} until it reaches a terminal status. Both "Run"
-  // and "Submit" call this the same way - submission-service's API doesn't
-  // currently distinguish "check against the visible example only" from
-  // "judge against everything", so both send the same real request and
-  // judge against every test case (hidden ones included).
+  // GET /submissions/{id} until it reaches a terminal status. "Run" only
+  // judges the visible/sample test cases; "Submit" judges everything,
+  // hidden cases included - matching LeetCode's "Run Code" vs "Submit".
   //
   // Only works for problems with a real backendProblemId (see
   // data/problems.ts) - the button is disabled otherwise (see the JSX below).
-  async function runCode() {
+  async function runCode(includeHidden: boolean) {
     if (!problem!.backendProblemId || !accessToken || !userId) return;
 
     setConsoleTab('result'); // auto-switch to the Result tab so the user sees feedback
@@ -132,6 +135,7 @@ export default function SolvePage() {
         problem!.backendProblemId,
         code,
         language,
+        includeHidden,
       );
       const final = await pollSubmissionResult(accessToken, submissionId);
       setResult({
@@ -214,7 +218,7 @@ export default function SolvePage() {
         </select>
 
         <button
-          onClick={() => runCode()}
+          onClick={() => runCode(false)}
           // real HTML disabled attribute — browser blocks clicks while true.
           // Also disabled for problems with no backendProblemId (see
           // data/problems.ts) - there's no real test data to judge against.
@@ -237,7 +241,7 @@ export default function SolvePage() {
           Run
         </button>
         <button
-          onClick={() => runCode()}
+          onClick={() => runCode(true)}
           disabled={runStatus === 'running' || !problem.backendProblemId}
           title={!problem.backendProblemId ? 'This problem is browsing-only — not wired to the real judge yet.' : undefined}
           className="op-run-btn"

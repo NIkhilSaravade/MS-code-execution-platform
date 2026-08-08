@@ -2,6 +2,7 @@ package com.MS_code_execution_platform.worker_service.service;
 
 import com.github.dockerjava.api.DockerClient;
 import com.github.dockerjava.api.command.CreateContainerResponse;
+import com.github.dockerjava.api.exception.NotFoundException;
 import com.github.dockerjava.api.model.Bind;
 import com.github.dockerjava.api.model.Frame;
 import com.github.dockerjava.api.model.HostConfig;
@@ -59,7 +60,18 @@ public class DockerExecutionService {
                           String image,
                           String command) throws Exception {
 
-        dockerClient.pullImageCmd(image).start().awaitCompletion();
+        // Only pull if the image isn't already present locally. An
+        // unconditional pull works for every public image (python, gcc,
+        // eclipse-temurin, ...) but hard-fails for locally-built-only
+        // images like platform/node-typescript (see
+        // infra/sandbox-images/node-typescript) - Docker Hub has no such
+        // repository, so `pullImageCmd` 404s even though the image already
+        // exists in the local Docker daemon this worker talks to.
+        try {
+            dockerClient.inspectImageCmd(image).exec();
+        } catch (NotFoundException e) {
+            dockerClient.pullImageCmd(image).start().awaitCompletion();
+        }
 
         String linuxPath = directory.replace("\\", "/");
 

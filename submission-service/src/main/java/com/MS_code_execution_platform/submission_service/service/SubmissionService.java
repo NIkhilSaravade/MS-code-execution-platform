@@ -56,10 +56,14 @@ public class SubmissionService {
         String codeToRun = harnessApplier.apply(
                 submission.getProblemId(), submission.getLanguage(), submission.getCode());
 
+        // Default to true (full Submit semantics) unless the frontend
+        // explicitly asked for a Run (visible-only) evaluation.
+        boolean includeHidden = !Boolean.FALSE.equals(request.getIncludeHidden());
+
         if ("go".equalsIgnoreCase(activeWorker)) {
-            submissionProducer.sendSubmissionCreatedEvent(submission, codeToRun);
+            submissionProducer.sendSubmissionCreatedEvent(submission, codeToRun, includeHidden);
         } else {
-            submissionProducer.sendSubmissionEvent(submission, codeToRun);
+            submissionProducer.sendSubmissionEvent(submission, codeToRun, includeHidden);
         }
 
         return SubmissionResponse.builder()
