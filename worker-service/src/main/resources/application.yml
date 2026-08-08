@@ -34,6 +34,13 @@ spring:
 problem-service:
   url: http://localhost:8082
 
+# Windows named pipe by default (this service's original, Windows-only local
+# dev setup) - docker-compose.yml overrides this to the bind-mounted
+# unix:///var/run/docker.sock, which is what actually exists inside this
+# service's own (Linux) container. See DockerExecutionService.
+docker:
+  host: ${DOCKER_HOST:npipe:////./pipe/docker_engine}
+
 # Service identity for calls to problem-service - this worker authenticates
 # as itself via OAuth2 client-credentials (see client.AuthTokenClient), not
 # with a user's token, since it has none to forward. Same client_id/secret
@@ -44,6 +51,15 @@ auth-service:
 worker:
   client-id: ${WORKER_CLIENT_ID:worker-service}
   client-secret: ${WORKER_CLIENT_SECRET:dev-only-secret-change-me}
+  # See DockerExecutionService and CodeExecutionService's comments.
+  # scratch-dir: where submission source/input files are written - a plain
+  # relative folder for local/non-Docker Windows dev, a shared named-volume
+  # mount point (e.g. /scratch) in docker-compose.
+  # scratch-volume: the Docker volume NAME to bind into sandbox containers.
+  # Blank (default) means "not running against a shared volume" - use the
+  # original per-submission host-path bind instead.
+  scratch-dir: ${WORKER_SCRATCH_DIR:docker-code}
+  scratch-volume: ${WORKER_SCRATCH_VOLUME:}
 
 topics:
   submission: submission-topic

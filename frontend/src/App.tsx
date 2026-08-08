@@ -10,7 +10,11 @@ import { Route, Routes } from 'react-router-dom';
 import LandingPage from './pages/LandingPage';
 import PracticePage from './pages/PracticePage';
 import SolvePage from './pages/SolvePage';
-// These are our three "page" components, each living in src/pages/.
+import LoginPage from './pages/LoginPage';
+import SignupPage from './pages/SignupPage';
+import ProtectedRoute from './components/shared/ProtectedRoute';
+import PublicOnlyRoute from './components/shared/PublicOnlyRoute';
+// These are our "page" components, each living in src/pages/.
 // A "page" is not a special React concept — it's just a regular component
 // that we've chosen to treat as a full screen.
 
@@ -24,16 +28,62 @@ function App() {
   return (
     <Routes>
       {/* path="/" matches the site root (e.g. http://localhost:5173/)
-          element={<LandingPage />} says "render this component when it matches" */}
-      <Route path="/" element={<LandingPage />} />
+          element={<LandingPage />} says "render this component when it matches".
+          PublicOnlyRoute bounces already-logged-in visitors to /practice —
+          the only way back to the landing page is to log out first. */}
+      <Route
+        path="/"
+        element={
+          <PublicOnlyRoute>
+            <LandingPage />
+          </PublicOnlyRoute>
+        }
+      />
 
-      {/* Matches http://localhost:5173/practice exactly */}
-      <Route path="/practice" element={<PracticePage />} />
+      {/* Matches http://localhost:5173/practice exactly. Wrapped in
+          ProtectedRoute — logged-out visitors get bounced to /login. */}
+      <Route
+        path="/practice"
+        element={
+          <ProtectedRoute>
+            <PracticePage />
+          </ProtectedRoute>
+        }
+      />
 
       {/* The `:slug` part is a URL PARAMETER — a placeholder. It matches
           anything, e.g. /practice/two-sum or /practice/lru-cache.
-          Inside SolvePage, useParams() reads out whatever was in that slot. */}
-      <Route path="/practice/:slug" element={<SolvePage />} />
+          Inside SolvePage, useParams() reads out whatever was in that slot.
+          Also protected — same login requirement as /practice. */}
+      <Route
+        path="/practice/:slug"
+        element={
+          <ProtectedRoute>
+            <SolvePage />
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Auth pages. Both redirect to /practice on success — see
+          LoginPage/SignupPage's navigate() calls. Also wrapped in
+          PublicOnlyRoute: no reason to show a login form to someone
+          who's already logged in. */}
+      <Route
+        path="/login"
+        element={
+          <PublicOnlyRoute>
+            <LoginPage />
+          </PublicOnlyRoute>
+        }
+      />
+      <Route
+        path="/signup"
+        element={
+          <PublicOnlyRoute>
+            <SignupPage />
+          </PublicOnlyRoute>
+        }
+      />
     </Routes>
   );
 }

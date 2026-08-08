@@ -32,12 +32,13 @@ kafka-acls --bootstrap-server "$BOOTSTRAP" --command-config "$CONFIG" \
   --topic execution-result-topic --topic executions.completed.v1 \
   --topic executions.failed.v1 --topic dlq.submissions.created.v1
 
-# submission-service: produces submission-topic, consumes execution-result-topic
+# submission-service: produces submission-topic (legacy Java worker) and
+# submissions.created.v1 (worker-service-go), consumes execution-result-topic
 # to update a submission's status once the worker finishes.
 kafka-acls --bootstrap-server "$BOOTSTRAP" --command-config "$CONFIG" \
   --add --allow-principal User:submission_service \
   --operation Write --operation Describe \
-  --topic submission-topic
+  --topic submission-topic --topic submissions.created.v1
 
 kafka-acls --bootstrap-server "$BOOTSTRAP" --command-config "$CONFIG" \
   --add --allow-principal User:submission_service \

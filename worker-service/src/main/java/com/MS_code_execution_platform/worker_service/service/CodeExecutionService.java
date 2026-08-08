@@ -2,6 +2,7 @@ package com.MS_code_execution_platform.worker_service.service;
 
 import com.MS_code_execution_platform.worker_service.util.FileUtils;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.nio.file.Path;
@@ -12,13 +13,21 @@ public class CodeExecutionService {
 
     private final DockerExecutionService dockerExecutionService;
 
+    // Same value DockerExecutionService gets - see its worker.scratch-dir
+    // comment. "docker-code" for local/non-Docker Windows dev (a plain
+    // relative directory next to wherever the JVM runs); "/scratch" in
+    // docker-compose (a named-volume mount point shared with sandbox
+    // containers).
+    @Value("${worker.scratch-dir}")
+    private String scratchDir;
+
     public String execute(Long submissionId,
                           String code,
                           String language,
                           String input) {
 
         try {
-            Path dir = FileUtils.createTempDirectory(submissionId);
+            Path dir = FileUtils.createTempDirectory(scratchDir, submissionId);
 
             switch (language.toLowerCase()) {
 

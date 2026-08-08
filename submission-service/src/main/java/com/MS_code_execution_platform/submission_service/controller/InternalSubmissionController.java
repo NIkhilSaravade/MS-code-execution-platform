@@ -19,6 +19,9 @@ public class InternalSubmissionController {
 
     @PatchMapping("/{id}/state")
     public void updateState(@PathVariable Long id, @RequestBody InternalStateUpdateRequest request) {
-        submissionService.updateState(id, request.getState(), request.getReason());
+        String testCaseResults = request.getTestCaseResults() == null || request.getTestCaseResults().isNull()
+                ? null
+                : request.getTestCaseResults().toString();
+        submissionService.updateState(id, request.getState(), request.getReason(), request.getOutput(), testCaseResults);
     }
 }

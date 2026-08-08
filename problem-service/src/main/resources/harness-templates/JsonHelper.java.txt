@@ -1,0 +1,148 @@
+class __Json {
+    private final String s;
+    private int i;
+    private __Json(String s) { this.s = s; this.i = 0; }
+
+    static Object parse(String s) {
+        __Json p = new __Json(s);
+        return p.parseValue();
+    }
+
+    private void skipWs() { while (i < s.length() && Character.isWhitespace(s.charAt(i))) i++; }
+
+    private Object parseValue() {
+        skipWs();
+        char c = s.charAt(i);
+        if (c == '{') return parseObject();
+        if (c == '[') return parseArray();
+        if (c == '"') return parseString();
+        if (c == 't' || c == 'f') return parseBool();
+        if (c == 'n') { i += 4; return null; }
+        return parseNumber();
+    }
+
+    private java.util.Map<String, Object> parseObject() {
+        java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
+        i++; skipWs();
+        if (s.charAt(i) == '}') { i++; return m; }
+        while (true) {
+            skipWs();
+            String key = parseString();
+            skipWs(); i++;
+            Object val = parseValue();
+            m.put(key, val);
+            skipWs();
+            if (s.charAt(i) == ',') { i++; continue; }
+            i++;
+            break;
+        }
+        return m;
+    }
+
+    private java.util.List<Object> parseArray() {
+        java.util.List<Object> l = new java.util.ArrayList<>();
+        i++; skipWs();
+        if (s.charAt(i) == ']') { i++; return l; }
+        while (true) {
+            l.add(parseValue());
+            skipWs();
+            if (s.charAt(i) == ',') { i++; skipWs(); continue; }
+            i++;
+            break;
+        }
+        return l;
+    }
+
+    private String parseString() {
+        i++;
+        StringBuilder sb = new StringBuilder();
+        while (s.charAt(i) != '"') {
+            char c = s.charAt(i);
+            if (c == '\\') {
+                i++;
+                char esc = s.charAt(i);
+                switch (esc) {
+                    case 'n': sb.append('\n'); break;
+                    case 't': sb.append('\t'); break;
+                    case 'r': sb.append('\r'); break;
+                    case '"': sb.append('"'); break;
+                    case '\\': sb.append('\\'); break;
+                    default: sb.append(esc);
+                }
+            } else {
+                sb.append(c);
+            }
+            i++;
+        }
+        i++;
+        return sb.toString();
+    }
+
+    private Boolean parseBool() {
+        if (s.charAt(i) == 't') { i += 4; return Boolean.TRUE; }
+        i += 5; return Boolean.FALSE;
+    }
+
+    private Long parseNumber() {
+        int start = i;
+        if (s.charAt(i) == '-') i++;
+        while (i < s.length() && Character.isDigit(s.charAt(i))) i++;
+        return Long.parseLong(s.substring(start, i));
+    }
+
+    static int toInt(Object o) { return ((Long) o).intValue(); }
+
+    @SuppressWarnings("unchecked")
+    static int[] toIntArray(Object o) {
+        java.util.List<Object> l = (java.util.List<Object>) o;
+        int[] arr = new int[l.size()];
+        for (int idx = 0; idx < l.size(); idx++) arr[idx] = ((Long) l.get(idx)).intValue();
+        return arr;
+    }
+
+    @SuppressWarnings("unchecked")
+    static int[][] toIntArray2D(Object o) {
+        java.util.List<Object> l = (java.util.List<Object>) o;
+        int[][] arr = new int[l.size()][];
+        for (int idx = 0; idx < l.size(); idx++) arr[idx] = toIntArray(l.get(idx));
+        return arr;
+    }
+
+    static String toStr(Object o) { return (String) o; }
+
+    static boolean toBool(Object o) { return (Boolean) o; }
+
+    static String toJson(Object o) {
+        if (o == null) return "null";
+        if (o instanceof int[]) {
+            int[] a = (int[]) o;
+            StringBuilder sb = new StringBuilder("[");
+            for (int idx = 0; idx < a.length; idx++) {
+                if (idx > 0) sb.append(",");
+                sb.append(a[idx]);
+            }
+            return sb.append("]").toString();
+        }
+        if (o instanceof int[][]) {
+            int[][] a = (int[][]) o;
+            StringBuilder sb = new StringBuilder("[");
+            for (int idx = 0; idx < a.length; idx++) {
+                if (idx > 0) sb.append(",");
+                sb.append(toJson(a[idx]));
+            }
+            return sb.append("]").toString();
+        }
+        if (o instanceof String) {
+            String str = (String) o;
+            StringBuilder sb = new StringBuilder("\"");
+            for (int idx = 0; idx < str.length(); idx++) {
+                char c = str.charAt(idx);
+                if (c == '\\' || c == '"') sb.append('\\');
+                sb.append(c);
+            }
+            return sb.append("\"").toString();
+        }
+        if (o instanceof Boolean) return o.toString();
+        return o.toString();
+    }
+}

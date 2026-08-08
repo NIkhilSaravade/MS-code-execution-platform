@@ -165,3 +165,26 @@ body {
      gives a quick "press" feedback effect */
   transform: scale(0.97);
 }
+
+/* Text inputs on LoginPage/SignupPage — the border needs to visibly light
+   up on :focus, which (like :hover) inline styles can't express. */
+.op-auth-input {
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.op-auth-input:focus {
+  outline: none;
+  border-color: rgba(167, 139, 250, 0.6);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.op-auth-submit {
+  transition: filter 0.15s ease, transform 0.15s ease, opacity 0.15s ease;
+}
+.op-auth-submit:hover:not(:disabled) {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+}
+.op-auth-submit:disabled {
+  opacity: 0.6;
+  cursor: default;
+}

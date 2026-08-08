@@ -62,6 +62,7 @@ AI-Analysis-Service (Python FastAPI, :8000)
 | `config-service` | Java | 8888 | Centralized config server (currently unused) |
 | `auth-service` | Java | 8086 | Token issuance, JWKS, client-credentials grants |
 | `user-service` | Java | 8081 (+ gRPC 9090) | User CRUD, roles, admin bootstrap |
+
 | `problem-service` | Java | 8082 | Problem CRUD, test case storage (MinIO) |
 | `submission-service` | Java | 8083 | Accepts submissions, publishes to Kafka |
 | `worker-service` | Java | 8084 | Docker code executor, Kafka consumer (legacy, kept for comparison) |

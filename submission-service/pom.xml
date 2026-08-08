@@ -29,11 +29,19 @@
 	<properties>
 		<java.version>17</java.version>
 		<spring-cloud.version>2025.0.1</spring-cloud.version>
+		<aws-sdk.version>2.25.60</aws-sdk.version>
 	</properties>
 	<dependencies>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-data-jpa</artifactId>
+		</dependency>
+
+		<!-- S3-compatible storage (MinIO in local/dev) for submitted code, uploaded
+		     so worker-service-go can fetch it by code_s3_key from submissions.created.v1 -->
+		<dependency>
+			<groupId>software.amazon.awssdk</groupId>
+			<artifactId>s3</artifactId>
 		</dependency>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
@@ -106,6 +114,13 @@
 				<groupId>org.springframework.cloud</groupId>
 				<artifactId>spring-cloud-dependencies</artifactId>
 				<version>${spring-cloud.version}</version>
+				<type>pom</type>
+				<scope>import</scope>
+			</dependency>
+			<dependency>
+				<groupId>software.amazon.awssdk</groupId>
+				<artifactId>bom</artifactId>
+				<version>${aws-sdk.version}</version>
 				<type>pom</type>
 				<scope>import</scope>
 			</dependency>

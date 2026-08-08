@@ -1,5 +1,6 @@
 package com.MS_code_execution_platform.problem_service.entity;
 
+import com.fasterxml.jackson.annotation.JsonBackReference;
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -43,5 +44,6 @@ public class TestCase {
 
     @ManyToOne
     @JoinColumn(name = "problem_id")
+    @JsonBackReference
     private Problem problem;
 }

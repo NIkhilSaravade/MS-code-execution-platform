@@ -51,17 +51,17 @@
 			<version>3.3.4</version>
 		</dependency>
 
-		<!-- Docker Java HTTPClient5 Transport -->
+		<!-- Docker Java zerodep Transport - the httpclient5 transport has a known
+		     bug connecting over a unix:// socket URI (silently falls back to a
+		     bogus localhost:2375 TCP target instead), which is exactly the
+		     transport this service needs once it's running in its own
+		     container talking to the host's bind-mounted docker.sock instead
+		     of a Windows named pipe. zerodep is docker-java's own recommended,
+		     dependency-free transport with solid unix-socket support. -->
 		<dependency>
 			<groupId>com.github.docker-java</groupId>
-			<artifactId>docker-java-transport-httpclient5</artifactId>
+			<artifactId>docker-java-transport-zerodep</artifactId>
 			<version>3.3.4</version>
-		</dependency>
-
-		<dependency>
-			<groupId>org.apache.httpcomponents.core5</groupId>
-			<artifactId>httpcore5-h2</artifactId>
-			<version>5.2.4</version>
 		</dependency>
 
 

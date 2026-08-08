@@ -36,7 +36,21 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   // fetch() does NOT throw an error for HTTP error statuses like 404 or
   // 500 — you have to check response.ok yourself and throw manually.
   if (!response.ok) {
-    throw new Error(`Request to ${path} failed with status ${response.status}`);
+    // The Java services (auth-service included) report errors as RFC 7807
+    // "Problem Details" JSON, e.g. { "detail": "Email already registered" }.
+    // Try to pull that human-readable message out so forms can show it
+    // instead of a generic "failed with status 409".
+    let message = `Request to ${path} failed with status ${response.status}`;
+    try {
+      const body = await response.json();
+      if (typeof body?.detail === 'string' && body.detail.length > 0) {
+        message = body.detail;
+      }
+    } catch {
+      // Response body wasn't JSON (or was empty) — fall back to the
+      // generic message above instead of letting this parse error escape.
+    }
+    throw new Error(message);
   }
 
   // response.json() parses the response body as JSON and returns a Promise.

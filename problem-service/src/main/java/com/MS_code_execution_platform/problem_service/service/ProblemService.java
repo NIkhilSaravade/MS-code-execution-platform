@@ -1,14 +1,21 @@
 package com.MS_code_execution_platform.problem_service.service;
 
+import com.MS_code_execution_platform.problem_service.dto.FunctionParam;
+import com.MS_code_execution_platform.problem_service.dto.FunctionSignature;
 import com.MS_code_execution_platform.problem_service.dto.ProblemRequest;
 import com.MS_code_execution_platform.problem_service.dto.ProblemResponse;
 import com.MS_code_execution_platform.problem_service.dto.TestCaseDTO;
 import com.MS_code_execution_platform.problem_service.dto.TestCaseResponse;
 import com.MS_code_execution_platform.problem_service.entity.Problem;
 import com.MS_code_execution_platform.problem_service.entity.TestCase;
+import com.MS_code_execution_platform.problem_service.harness.JavaHarnessGenerator;
+import com.MS_code_execution_platform.problem_service.harness.PythonHarnessGenerator;
 import com.MS_code_execution_platform.problem_service.repository.ProblemRepository;
 import com.MS_code_execution_platform.problem_service.repository.TestCaseRepository;
 import com.MS_code_execution_platform.problem_service.storage.TestCaseStorageService;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.persistence.EntityNotFoundException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.*;
@@ -30,6 +37,9 @@ public class ProblemService {
     private final ProblemRepository problemRepository;
     private final TestCaseRepository testCaseRepository;
     private final TestCaseStorageService testCaseStorageService;
+    private final PythonHarnessGenerator pythonHarnessGenerator;
+    private final JavaHarnessGenerator javaHarnessGenerator;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     // Redundant with the route-level rule in SecurityConfig by design: two
     // independent layers, so a missed/changed route pattern alone can't open
@@ -37,13 +47,23 @@ public class ProblemService {
     @PreAuthorize("hasRole('ADMIN')")
     public Problem createProblem(ProblemRequest request) {
 
-        Problem problem = Problem.builder()
+        Problem.ProblemBuilder builder = Problem.builder()
                 .name(request.getName())
                 .description(request.getDescription())
                 .constraints(request.getConstraints())
                 .timeLimitMs(request.getTimeLimitMs() != null ? request.getTimeLimitMs() : DEFAULT_TIME_LIMIT_MS)
-                .memoryLimitMb(request.getMemoryLimitMb() != null ? request.getMemoryLimitMb() : DEFAULT_MEMORY_LIMIT_MB)
-                .build();
+                .memoryLimitMb(request.getMemoryLimitMb() != null ? request.getMemoryLimitMb() : DEFAULT_MEMORY_LIMIT_MB);
+
+        FunctionSignature signature = request.getSignature();
+        if (signature != null) {
+            builder.functionName(signature.getFunctionName())
+                    .paramsJson(writeJson(signature.getParams()))
+                    .returnType(signature.getReturnType())
+                    .harnessPython(pythonHarnessGenerator.generate(signature))
+                    .harnessJava(javaHarnessGenerator.generate(signature));
+        }
+
+        Problem problem = builder.build();
 
         // Save first so we have an id to key the S3 objects by.
         problem = problemRepository.save(problem);
@@ -80,13 +100,7 @@ public class ProblemService {
         Pageable pageable = PageRequest.of(page, size);
         Page<Problem> problems = problemRepository.findAll(pageable);
 
-        return problems.map(problem ->
-                ProblemResponse.builder()
-                        .id(problem.getId())
-                        .name(problem.getName())
-                        .description(problem.getDescription())
-                        .constraints(problem.getConstraints())
-                        .build());
+        return problems.map(this::toResponse);
     }
 
     public List<TestCaseResponse> getTestCasesForWorker(Long problemId) {
@@ -96,6 +110,7 @@ public class ProblemService {
                 .map(tc -> TestCaseResponse.builder()
                         .input(tc.getInput())
                         .expectedOutput(tc.getExpectedOutput())
+                        .hidden(tc.isHidden())
                         .build())
                 .collect(Collectors.toList());
     }
@@ -114,12 +129,39 @@ public class ProblemService {
     }
 
     public ProblemResponse getProblemResponse(Long problemId) {
-        Problem problem = getProblemOrThrow(problemId);
+        return toResponse(getProblemOrThrow(problemId));
+    }
+
+    private ProblemResponse toResponse(Problem problem) {
         return ProblemResponse.builder()
                 .id(problem.getId())
                 .name(problem.getName())
                 .description(problem.getDescription())
                 .constraints(problem.getConstraints())
+                .functionName(problem.getFunctionName())
+                .params(readParams(problem.getParamsJson()))
+                .returnType(problem.getReturnType())
+                .harnessPython(problem.getHarnessPython())
+                .harnessJava(problem.getHarnessJava())
                 .build();
+    }
+
+    private String writeJson(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("failed to serialize function signature params", e);
+        }
+    }
+
+    private List<FunctionParam> readParams(String paramsJson) {
+        if (paramsJson == null) {
+            return null;
+        }
+        try {
+            return objectMapper.readValue(paramsJson, new TypeReference<List<FunctionParam>>() {});
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("failed to deserialize function signature params", e);
+        }
     }
 }

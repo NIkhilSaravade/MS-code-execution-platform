@@ -61,6 +61,21 @@ type Config struct {
 	SandboxOutputCapKB  int           // stdout+stderr combined cap
 	SandboxWallTimeout  time.Duration // enforced by worker, not the container
 
+	// Docker-outside-of-Docker scratch storage. This worker talks to the
+	// HOST's Docker daemon over the mounted /var/run/docker.sock to launch
+	// sibling execution containers - it does NOT run code inside its own
+	// container. That means a scratch directory created on this container's
+	// own filesystem (e.g. under /tmp) is invisible to the host daemon, so a
+	// plain --volume bind-mount of that path into a sibling container would
+	// silently mount nothing. Instead, both this container and its sibling
+	// containers mount the SAME named Docker volume: this container writes
+	// source files under ScratchContainerDir (its own mount point), and
+	// sandbox.go mounts the matching sub-path of ScratchVolumeName (a name
+	// the host daemon resolves directly, no host filesystem path needed)
+	// into each sibling container via `--mount ...,volume-subpath=...`.
+	ScratchContainerDir string
+	ScratchVolumeName   string
+
 	// Language → Docker image mapping (loaded from env like LANG_IMAGE_PYTHON)
 	LanguageImages map[string]string
 
@@ -120,11 +135,16 @@ func Load() (*Config, error) {
 	cfg.SandboxPidsLimit = getEnvInt("SANDBOX_PIDS_LIMIT", 64, &errs)
 	cfg.SandboxOutputCapKB = getEnvInt("SANDBOX_OUTPUT_CAP_KB", 512, &errs)
 	cfg.SandboxWallTimeout = getEnvDuration("SANDBOX_WALL_TIMEOUT", 10*time.Second, &errs)
+	cfg.ScratchContainerDir = getEnvOrDefault("SCRATCH_CONTAINER_DIR", "/scratch")
+	cfg.ScratchVolumeName = getEnvOrDefault("SCRATCH_VOLUME_NAME", "worker-scratch")
 
 	// Language → image mapping
 	cfg.LanguageImages = map[string]string{
 		"python": getEnvOrDefault("LANG_IMAGE_PYTHON", "python:3.12-slim"),
-		"java":   getEnvOrDefault("LANG_IMAGE_JAVA", "eclipse-temurin:21-jre-alpine"),
+		// jdk, not jre - Java submissions need javac to compile, which the
+		// JRE-only image doesn't have. Never caught before since this was
+		// the first Java submission ever run through this worker.
+		"java":   getEnvOrDefault("LANG_IMAGE_JAVA", "eclipse-temurin:21-jdk-alpine"),
 		"cpp":    getEnvOrDefault("LANG_IMAGE_CPP", "gcc:14-slim"),
 	}
 

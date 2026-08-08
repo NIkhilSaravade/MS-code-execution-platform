@@ -144,6 +144,16 @@ func (e *Executor) Handle(ctx context.Context, job *domain.SubmissionJob) error 
 	// Best-effort — artifact upload failure doesn't change the verdict.
 	e.uploadArtifacts(ctx, result)
 
+	// ── Step 7.5: Report the terminal verdict to submission-service ──────────
+	// Best-effort, same as MarkRunning - the Kafka event below is still
+	// published regardless. But since nothing currently consumes
+	// executions.completed.v1 back into submission-service, this HTTP call is
+	// the only thing that actually closes out the submission's row for a
+	// Go-routed request; a failure here leaves it stuck at RUNNING.
+	if err := e.submissionClient.MarkTerminal(ctx, job.SubmissionID, result.Verdict, "", string(result.LastStdout), result.TestCaseResults); err != nil {
+		logger.Warn().Err(err).Msg("could not report terminal verdict to submission-service")
+	}
+
 	// ── Step 8: Publish executions.completed.v1 ───────────────────────────────
 	if err := e.publishCompleted(ctx, job, result); err != nil {
 		// This is the most critical failure path. We've executed the code and
@@ -230,8 +240,25 @@ func (e *Executor) executeAllTestCases(
 			MaxMemoryKB:     runResult.MaxMemoryKB,
 			StdoutTruncated: runResult.StdoutTruncated,
 			StderrTruncated: runResult.StderrTruncated,
+			Hidden:          !tc.IsSample,
+		}
+		// Never expose a hidden test case's actual content past this worker -
+		// only whether it passed (see domain.TestCaseResult's comment).
+		if tc.IsSample {
+			tcResult.Input = string(tc.Input)
+			tcResult.Expected = string(tc.Expected)
+			tcResult.Actual = string(runResult.Stdout)
 		}
 		result.TestCaseResults = append(result.TestCaseResults, tcResult)
+		if runResult.CompileError {
+			// On CE, Stdout is always empty (the program never ran) - the
+			// actual error is the compiler's stderr, previously discarded
+			// entirely, leaving the user with a bare "CE" verdict and no way
+			// to know what was actually wrong with their code.
+			result.LastStdout = runResult.CompileOutput
+		} else {
+			result.LastStdout = runResult.Stdout
+		}
 
 		if tcResult.Passed {
 			result.TestCasesPassed++
@@ -362,6 +389,15 @@ func (e *Executor) publishCompleted(ctx context.Context, job *domain.SubmissionJ
 }
 
 func (e *Executor) publishSystemError(ctx context.Context, job *domain.SubmissionJob, reason string) error {
+	// Same reasoning as the completed-path call in Handle(): without this,
+	// a system-level failure (as opposed to a user-code failure) leaves the
+	// submission stuck at RUNNING forever for a Go-routed request, since
+	// nothing consumes executions.failed.v1 back into submission-service either.
+	if err := e.submissionClient.MarkTerminal(ctx, job.SubmissionID, domain.VerdictSystemError, reason, "", nil); err != nil {
+		log.Warn().Err(err).Str("submission_id", job.SubmissionID).
+			Msg("could not report system error to submission-service")
+	}
+
 	event := domain.ExecutionFailedEvent{
 		EventID:      uuid.New().String(),
 		EventVersion: 1,

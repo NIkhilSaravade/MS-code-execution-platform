@@ -94,11 +94,25 @@ export default function Hero() {
           ))}
         </nav>
         <div style={{ flex: 1 }} />
-        <span style={{ fontSize: 14, color: '#cdd3e0', cursor: 'pointer', fontWeight: 600 }}>
-          Sign in
-        </span>
         <Link
-          to="/practice"
+          to="/login"
+          className="op-btn-secondary"
+          style={{
+            textDecoration: 'none',
+            fontSize: 14,
+            fontWeight: 700,
+            color: '#eef0f6',
+            background: 'rgba(255,255,255,.05)',
+            border: '1px solid rgba(255,255,255,.16)',
+            padding: '10px 18px',
+            borderRadius: 10,
+            cursor: 'pointer',
+          }}
+        >
+          Sign in
+        </Link>
+        <Link
+          to="/signup"
           className="op-btn-primary"
           style={{
             textDecoration: 'none',
@@ -111,7 +125,7 @@ export default function Hero() {
             cursor: 'pointer',
           }}
         >
-          Start free
+          Sign up
         </Link>
       </header>
 

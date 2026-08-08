@@ -65,12 +65,17 @@ func (c *SubmissionClient) authorize(ctx context.Context, req *http.Request) err
 // eventually reconcile the state, but the user sees the live update sooner
 // when this call succeeds.
 func (c *SubmissionClient) MarkRunning(ctx context.Context, submissionID string) error {
-	return c.updateState(ctx, submissionID, "RUNNING", "")
+	return c.updateState(ctx, submissionID, "RUNNING", "", "", nil)
 }
 
-// MarkTerminal transitions the submission to a terminal verdict state.
-func (c *SubmissionClient) MarkTerminal(ctx context.Context, submissionID string, verdict domain.Verdict) error {
-	return c.updateState(ctx, submissionID, string(verdict), "")
+// MarkTerminal transitions the submission to a terminal verdict state,
+// carrying the reason (e.g. a system-error detail), the output shown to the
+// user (e.g. the last test case's stdout), and the full per-test-case
+// breakdown along with it. This is the ONLY thing that moves a Go-routed
+// submission out of RUNNING - see submission-service's
+// SubmissionService.updateState for why.
+func (c *SubmissionClient) MarkTerminal(ctx context.Context, submissionID string, verdict domain.Verdict, reason, output string, testCaseResults []domain.TestCaseResult) error {
+	return c.updateState(ctx, submissionID, string(verdict), reason, output, testCaseResults)
 }
 
 // --------------------------------------------------------------------------
@@ -78,11 +83,13 @@ func (c *SubmissionClient) MarkTerminal(ctx context.Context, submissionID string
 // --------------------------------------------------------------------------
 
 type stateUpdateRequest struct {
-	State  string `json:"state"`
-	Reason string `json:"reason,omitempty"`
+	State           string                  `json:"state"`
+	Reason          string                  `json:"reason,omitempty"`
+	Output          string                  `json:"output,omitempty"`
+	TestCaseResults []domain.TestCaseResult `json:"testCaseResults,omitempty"`
 }
 
-func (c *SubmissionClient) updateState(ctx context.Context, submissionID, state, reason string) error {
+func (c *SubmissionClient) updateState(ctx context.Context, submissionID, state, reason, output string, testCaseResults []domain.TestCaseResult) error {
 	ctx, span := otel.Tracer("worker-service/clients.SubmissionClient").Start(ctx, "submission.updateState")
 	defer span.End()
 	span.SetAttributes(
@@ -90,7 +97,7 @@ func (c *SubmissionClient) updateState(ctx context.Context, submissionID, state,
 		attribute.String("target_state", state),
 	)
 
-	body, _ := json.Marshal(stateUpdateRequest{State: state, Reason: reason})
+	body, _ := json.Marshal(stateUpdateRequest{State: state, Reason: reason, Output: output, TestCaseResults: testCaseResults})
 	url := fmt.Sprintf("%s/internal/submissions/%s/state", c.baseURL, submissionID)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, url, bytes.NewReader(body))

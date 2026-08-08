@@ -35,9 +35,18 @@ const (
 	// wall-clock timeout than execution (compilation can be slow for Java/C++).
 	compilationTimeoutMultiplier = 3
 
-	// scratchDirPrefix is where per-execution temp directories are created.
-	// Each execution gets a unique directory; it is removed after the run.
-	scratchDirPrefix = "/tmp/worker-scratch-"
+	// minCompileTimeout is a floor under compilationTimeoutMultiplier*wallTimeout.
+	// A problem's timeLimitMs sizes the EXECUTION budget (how long the
+	// algorithm itself should take) - JVM/javac startup overhead is roughly
+	// constant regardless of that, so a fast problem (e.g. timeLimitMs=2000)
+	// could otherwise give compilation as little as 6s, nowhere near enough
+	// for a cold JVM to even start up.
+	minCompileTimeout = 15 * time.Second
+
+	// scratchDirPrefix names per-execution temp directories, created under
+	// cfg.ScratchContainerDir (see config.Config's Docker-outside-of-Docker
+	// comment). Each execution gets a unique directory, removed after the run.
+	scratchDirPrefix = "worker-scratch-"
 )
 
 // --------------------------------------------------------------------------
@@ -60,7 +69,7 @@ type langDescriptor struct {
 	ExecCmd []string
 
 	// SourceFilename is the name given to the user's code file inside the container.
-	// Java requires the class name to match the filename, so we always use Solution.java.
+	// Java requires the class name to match the filename, so we always use Main.java.
 	SourceFilename string
 }
 
@@ -73,10 +82,22 @@ func buildLangDescriptors(images map[string]string) map[domain.Language]*langDes
 			SourceFilename: "solution.py",
 		},
 		domain.LangJava: {
-			Image:          images["java"],
-			CompileCmd:     []string{"javac", "/sandbox/Solution.java"},
-			ExecCmd:        []string{"java", "-cp", "/sandbox", "Solution"},
-			SourceFilename: "Solution.java",
+			Image: images["java"],
+			// javac writes .class files alongside the source by default -
+			// fine here because the compile step's /sandbox mount is
+			// writable (see buildDockerArgs' writableSource); the SEPARATE
+			// exec-step container that runs afterward sees those same
+			// compiled files through its own (read-only) mount of the same
+			// underlying scratch subpath.
+			CompileCmd: []string{"javac", "/sandbox/Main.java"},
+			ExecCmd:    []string{"java", "-cp", "/sandbox", "Main"},
+			// Main, not Solution: the user's own class is already named
+			// Solution (matching the LeetCode-style stub - see
+			// problem-service's harness package), so the harness-generated
+			// entry point with main() must be named something else. Matches
+			// worker-service's (the legacy Java worker's) same convention,
+			// which the harness generator was written against.
+			SourceFilename: "Main.java",
 		},
 		domain.LangCPP: {
 			Image:          images["cpp"],
@@ -169,12 +190,26 @@ func (s *Sandbox) Run(ctx context.Context, req *RunRequest) (*RunResult, error) 
 		return nil, fmt.Errorf("unsupported language: %s", req.Language)
 	}
 
-	// Create a unique scratch directory on the host for this execution.
-	// It is mounted read-only into the container so the container cannot
-	// modify the source file. Cleanup happens in the deferred call below.
-	scratch, err := os.MkdirTemp("", scratchDirPrefix)
+	// Create a unique scratch directory for this execution, inside the named
+	// volume shared with sibling execution containers (see config.Config's
+	// ScratchContainerDir/ScratchVolumeName comment - this is NOT a host
+	// path, it's this container's own mount point of that shared volume).
+	// Cleanup happens in the deferred call below.
+	scratch, err := os.MkdirTemp(s.cfg.ScratchContainerDir, scratchDirPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("create scratch dir: %w", err)
+	}
+	// os.MkdirTemp creates directories 0700 (owner-only). The sandbox
+	// container runs as nobody:65534 (see --user in buildDockerArgs), a
+	// different UID than this process, so without relaxing the directory's
+	// own permissions it couldn't even traverse into it to read the source
+	// file - regardless of the file's own 0444 mode below. 0777 (not 0755):
+	// the compile step (see writableSource in buildDockerArgs) also needs to
+	// WRITE compiled output here as that same non-owner UID, and this
+	// directory only ever exists for one submission's lifetime before being
+	// removed - not a broader exposure.
+	if err := os.Chmod(scratch, 0o777); err != nil {
+		return nil, fmt.Errorf("relax scratch dir permissions: %w", err)
 	}
 	defer func() {
 		if rmErr := os.RemoveAll(scratch); rmErr != nil {
@@ -192,9 +227,9 @@ func (s *Sandbox) Run(ctx context.Context, req *RunRequest) (*RunResult, error) 
 
 	// ---------- compilation step (compiled languages only) ----------
 	if desc.CompileCmd != nil {
-		compileTimeout := req.WallTimeout * compilationTimeoutMultiplier
+		compileTimeout := max(req.WallTimeout*compilationTimeoutMultiplier, minCompileTimeout)
 		compileResult, err := s.runContainer(ctx, desc, scratch, nil, desc.CompileCmd,
-			compileTimeout, req.MemoryLimitMB, req.CPUQuota)
+			compileTimeout, req.MemoryLimitMB, req.CPUQuota, true)
 		if err != nil {
 			return nil, fmt.Errorf("run compilation container: %w", err)
 		}
@@ -209,7 +244,7 @@ func (s *Sandbox) Run(ctx context.Context, req *RunRequest) (*RunResult, error) 
 
 	// ---------- execution step ----------
 	execResult, err := s.runContainer(ctx, desc, scratch, req.Stdin, desc.ExecCmd,
-		req.WallTimeout, req.MemoryLimitMB, req.CPUQuota)
+		req.WallTimeout, req.MemoryLimitMB, req.CPUQuota, false)
 	if err != nil {
 		return nil, fmt.Errorf("run execution container: %w", err)
 	}
@@ -259,9 +294,10 @@ func (s *Sandbox) runContainer(
 	wallTimeout time.Duration,
 	memoryLimitMB int,
 	cpuQuota float64,
+	writableSource bool,
 ) (*containerResult, error) {
 	// Build the docker run command with every mandatory security flag.
-	args := s.buildDockerArgs(desc, scratchDir, memoryLimitMB, cpuQuota, cmd)
+	args := s.buildDockerArgs(desc, scratchDir, memoryLimitMB, cpuQuota, cmd, writableSource)
 
 	// The wall-clock timeout is enforced by the host via context cancellation.
 	// We do NOT rely on the container to time itself out — a compromised or
@@ -323,6 +359,15 @@ func (s *Sandbox) runContainer(
 	return result, nil
 }
 
+// readonlySuffix returns ",readonly" unless the caller needs to write into
+// the mount (see buildDockerArgs' writableSource parameter).
+func readonlySuffix(writable bool) string {
+	if writable {
+		return ""
+	}
+	return ",readonly"
+}
+
 // buildDockerArgs constructs the docker run argument list with all
 // mandatory security controls. Every flag here has a reason; do not remove
 // any without understanding the security implication.
@@ -332,6 +377,7 @@ func (s *Sandbox) buildDockerArgs(
 	memoryLimitMB int,
 	cpuQuota float64,
 	cmd []string,
+	writableSource bool,
 ) []string {
 	memoryFlag := strconv.Itoa(memoryLimitMB) + "m"
 	cpuFlag := strconv.FormatFloat(cpuQuota, 'f', 2, 64)
@@ -339,6 +385,12 @@ func (s *Sandbox) buildDockerArgs(
 	args := []string{
 		"run",
 		"--rm",   // auto-remove the container on exit — no zombie containers
+		"-i",     // attach stdin — without this, `docker run` never connects
+		          // the container's stdin at all, so a program that actually
+		          // reads from it (e.g. the harness's sys.stdin.read() - see
+		          // problem-service's harness package) gets nothing instead
+		          // of the test case input. Never caught before since nothing
+		          // previously submitted actually read stdin.
 
 		// ── Runtime ─────────────────────────────────────────────────────────
 		// gVisor provides a user-space kernel implementation that intercepts
@@ -352,7 +404,28 @@ func (s *Sandbox) buildDockerArgs(
 		// ── Filesystem isolation ─────────────────────────────────────────────
 		"--read-only", // root filesystem is read-only
 		"--tmpfs", "/tmp:size=64m,noexec,nosuid", // only writable space; non-executable
-		"--volume", scratchDir + ":/sandbox:ro", // user code mounted read-only
+
+		// User code, normally mounted read-only. This worker only ever talks
+		// to the HOST Docker daemon (via the mounted docker.sock) to launch
+		// this sibling container - a plain --volume bind-mount using this
+		// container's own filesystem path (scratchDir) would resolve against
+		// the HOST's filesystem and mount nothing/empty, since that path only
+		// exists inside this container. Mounting a SUB-PATH of the shared
+		// named volume instead works because the host daemon resolves the
+		// volume by name, not by this container's view of the filesystem.
+		//
+		// writableSource is true only for the COMPILE step of compiled
+		// languages: compile and exec are two SEPARATE `docker run`
+		// invocations, each getting its own fresh, unshared --tmpfs /tmp - a
+		// compiler can't write its output to /tmp and expect the later exec
+		// container to see it. The compiled .class/.o files have to land
+		// back in the shared scratch subpath instead, which is why that one
+		// step needs write access; the exec step (running the untrusted
+		// compiled/interpreted code itself) stays read-only as before.
+		"--mount", fmt.Sprintf(
+			"type=volume,source=%s,target=/sandbox%s,volume-subpath=%s",
+			s.cfg.ScratchVolumeName, readonlySuffix(writableSource), filepath.Base(scratchDir),
+		),
 
 		// ── Identity ─────────────────────────────────────────────────────────
 		// Run as a non-root user inside the container. UID 65534 is "nobody"
@@ -455,10 +528,17 @@ func VerdictFromResult(r *RunResult, outputMatches bool) domain.Verdict {
 }
 
 // OutputMatches does a normalised comparison between actual and expected output.
-// Trailing whitespace and newline differences are ignored — consistent with
-// the behaviour of most online judges.
+// ALL whitespace is stripped, not just leading/trailing (matches
+// worker-service's equivalent normalization) - harness-generated output is
+// compact JSON with no whitespace at all, so this only matters for
+// non-harness (raw script) problems, but stripping internal whitespace too
+// means e.g. "[0, 1]" and "[0,1]" are correctly treated as equivalent instead
+// of a spurious mismatch.
 func OutputMatches(actual, expected []byte) bool {
-	return strings.TrimSpace(string(actual)) == strings.TrimSpace(string(expected))
+	strip := func(b []byte) string {
+		return strings.Join(strings.Fields(string(b)), "")
+	}
+	return strip(actual) == strip(expected)
 }
 
 // Ensure codes and attribute packages are used (OTel lint check).

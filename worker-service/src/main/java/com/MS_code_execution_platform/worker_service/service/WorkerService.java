@@ -3,11 +3,15 @@ package com.MS_code_execution_platform.worker_service.service;
 import com.MS_code_execution_platform.worker_service.dto.ExecutionResultEvent;
 import com.MS_code_execution_platform.worker_service.dto.SubmissionEvent;
 import com.MS_code_execution_platform.worker_service.dto.TestCaseResponse;
+import com.MS_code_execution_platform.worker_service.dto.TestCaseResult;
 import com.MS_code_execution_platform.worker_service.kafka.ExecutionResultProducer;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
+
+import java.util.ArrayList;
+import java.util.List;
 
 @Service
 @RequiredArgsConstructor
@@ -33,8 +37,10 @@ public class WorkerService {
 
         boolean allPassed = true;
         String lastOutput = "";
+        List<TestCaseResult> results = new ArrayList<>();
 
-        for (TestCaseResponse testCase : testCases) {
+        for (int ordinal = 0; ordinal < testCases.length; ordinal++) {
+            TestCaseResponse testCase = testCases[ordinal];
 
             // 🔥 PASS test case input to execution service
             String actualOutput = codeExecutionService.execute(
@@ -54,7 +60,22 @@ public class WorkerService {
                     ? ""
                     : testCase.getExpectedOutput().trim().replaceAll("\\s+", "");
 
-            if (!normalizedActual.equals(normalizedExpected)) {
+            boolean passed = normalizedActual.equals(normalizedExpected);
+
+            // Never expose a hidden test case's content past this worker -
+            // only whether it passed (see dto.TestCaseResult's comment).
+            TestCaseResult.TestCaseResultBuilder result = TestCaseResult.builder()
+                    .ordinal(ordinal)
+                    .passed(passed)
+                    .hidden(testCase.isHidden());
+            if (!testCase.isHidden()) {
+                result.input(testCase.getInput())
+                        .expected(testCase.getExpectedOutput())
+                        .actual(actualOutput);
+            }
+            results.add(result.build());
+
+            if (!passed) {
                 allPassed = false;
                 break;
             }
@@ -62,12 +83,12 @@ public class WorkerService {
 
         String status = allPassed ? "PASSED" : "FAILED";
 
-        ExecutionResultEvent resultEvent =
-                new ExecutionResultEvent(
-                        event.getSubmissionId(),
-                        lastOutput,
-                        status
-                );
+        ExecutionResultEvent resultEvent = ExecutionResultEvent.builder()
+                .submissionId(event.getSubmissionId())
+                .output(lastOutput)
+                .status(status)
+                .testCaseResults(results)
+                .build();
 
         executionResultProducer.sendExecutionResult(resultEvent);
     }

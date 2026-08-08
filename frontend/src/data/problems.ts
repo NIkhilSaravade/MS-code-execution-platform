@@ -26,6 +26,12 @@ export type Language = 'javascript' | 'python' | 'java' | 'cpp';
 export interface Problem {
   id: number;
   slug: string;        // URL-safe id, e.g. "two-sum" -> /practice/two-sum
+  // The numeric problemId this maps to in the REAL problem-service database
+  // (see problem-service's POST /problems and its seeded test cases).
+  // Optional because most of the problems below are still browsing-only mock
+  // content with no matching real test cases - only entries with a
+  // backendProblemId can actually be Run/Submitted for real judging.
+  backendProblemId?: number;
   title: string;
   difficulty: Difficulty;    // reuses the union type above
   tags: string[];             // `string[]` = an array of strings
@@ -60,6 +66,7 @@ export const problems: Problem[] = [
   {
     id: 1,
     slug: 'two-sum',
+    backendProblemId: 14,
     title: 'Two Sum',
     difficulty: 'Easy',
     tags: ['Array', 'Hash Table'],
@@ -306,6 +313,7 @@ export const problems: Problem[] = [
   {
     id: 11,
     slug: 'maximum-subarray',
+    backendProblemId: 15,
     title: 'Maximum Subarray',
     difficulty: 'Medium',
     tags: ['Array', 'Dynamic Programming'],

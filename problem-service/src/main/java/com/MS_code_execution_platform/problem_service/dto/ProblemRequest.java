@@ -13,4 +13,8 @@ public class ProblemRequest {
     private Integer timeLimitMs;
     private Integer memoryLimitMb;
     private List<TestCaseDTO> testCases;
+
+    // Optional - see FunctionSignature. When present, ProblemService
+    // generates and stores Python/Java harness boilerplate at creation time.
+    private FunctionSignature signature;
 }

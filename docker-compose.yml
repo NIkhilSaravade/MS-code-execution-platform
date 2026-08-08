@@ -380,6 +380,21 @@ services:
       SPRING_FLYWAY_PASSWORD: ${SUBMISSION_SERVICE_DB_OWNER_PASSWORD:-submission-service-owner-dev-secret}
       KAFKA_BOOTSTRAP_SERVERS: kafka:9093
       KAFKA_SUBMISSION_SERVICE_PASSWORD: ${KAFKA_SUBMISSION_SERVICE_PASSWORD:-submission-service-dev-secret}
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      # THE WORKER SWITCH: "java" -> worker-service (legacy), "go" ->
+      # worker-service-go. Change this and `docker-compose up -d
+      # submission-service` (no rebuild needed) to flip which worker judges
+      # every new submission. See SubmissionService.createSubmission.
+      ACTIVE_WORKER: ${ACTIVE_WORKER:-go}
+      # Fetches a problem's generated harness before judging (see
+      # HarnessApplier) - same service-credential pattern worker-service/
+      # worker-service-go use to call problem-service.
+      AUTH_SERVICE_URL: http://auth-service:8086
+      PROBLEM_SERVICE_URL: http://problem-service:8082
+      SUBMISSION_SERVICE_CLIENT_ID: submission-service
+      SUBMISSION_SERVICE_CLIENT_SECRET: ${SUBMISSION_SERVICE_CLIENT_SECRET:-dev-only-secret-change-me}
     depends_on:
       postgres:
         condition: service_healthy
@@ -387,7 +402,11 @@ services:
         condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
+      minio:
+        condition: service_healthy
       auth-service:
+        condition: service_started
+      problem-service:
         condition: service_started
     restart: on-failure:5
 
@@ -432,6 +451,11 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./infra/kafka/certs/ca.crt:/certs/ca.crt:ro
+      # Shared with the sibling execution containers this service launches
+      # via docker.sock, same reasoning as worker-service-go's worker-scratch
+      # volume - a separate volume since the two workers use different
+      # internal layouts (per-submission subdirs here vs MkdirTemp there).
+      - worker-scratch-java:/scratch
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9093
       KAFKA_WORKER_PASSWORD: ${KAFKA_WORKER_PASSWORD:-worker-dev-secret}
@@ -439,6 +463,12 @@ services:
       AUTH_SERVICE_URL: http://auth-service:8086
       WORKER_CLIENT_ID: worker-service
       WORKER_CLIENT_SECRET: ${WORKER_SERVICE_CLIENT_SECRET:-dev-only-secret-change-me}
+      # DockerExecutionService's default (a Windows named pipe) only exists
+      # on a Windows host running the JVM directly - inside this container
+      # the actual Docker socket is the /var/run/docker.sock bind-mount above.
+      DOCKER_HOST: unix:///var/run/docker.sock
+      WORKER_SCRATCH_DIR: /scratch
+      WORKER_SCRATCH_VOLUME: worker-scratch-java
     depends_on:
       kafka-init:
         condition: service_completed_successfully
@@ -454,6 +484,9 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./infra/kafka/certs/ca.crt:/certs/ca.crt:ro
+      # Shared with the sibling execution containers this service launches
+      # via docker.sock - see the top-level worker-scratch volume comment.
+      - worker-scratch:/scratch
     environment:
       KAFKA_BROKERS: kafka:9093
       KAFKA_TLS_CA_CERT_PATH: /certs/ca.crt
@@ -468,6 +501,8 @@ services:
       S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
       S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
       SANDBOX_RUNTIME: runc  # gVisor (runsc) isn't installed on the host by default; see README
+      SCRATCH_CONTAINER_DIR: /scratch
+      SCRATCH_VOLUME_NAME: worker-scratch
     depends_on:
       kafka-init:
         condition: service_completed_successfully
@@ -513,3 +548,17 @@ volumes:
   # host level, not in this file.
   postgres-data:
   minio-data:
+  # Shared between worker-service-go and the sibling execution containers it
+  # launches via the mounted docker.sock (Docker-outside-of-Docker) - both
+  # sides reference this volume BY NAME, so worker-service-go's own bind-mount
+  # path doesn't need to match any host filesystem path. `name:` pins the
+  # actual Docker volume name so it doesn't get project-prefixed, since the
+  # sibling containers' --mount flag (built in sandbox.go) needs to know it
+  # exactly, and it doubles as SCRATCH_VOLUME_NAME's default.
+  worker-scratch:
+    name: worker-scratch
+  # Same idea, for worker-service (Java) - see its DockerExecutionService
+  # comment. A separate volume from worker-scratch since the two workers use
+  # different internal directory layouts.
+  worker-scratch-java:
+    name: worker-scratch-java

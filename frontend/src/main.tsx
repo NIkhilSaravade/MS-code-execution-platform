@@ -27,6 +27,11 @@ import App from './App.tsx'
 // Import our own top-level component. In React, "components" are just
 // functions that return JSX (the HTML-like syntax you'll see everywhere).
 
+import { AuthProvider } from './context/AuthContext.tsx'
+// AuthProvider makes login state (useAuth()) available to every component
+// in the tree below it — it has to wrap <App/>, not live inside it, so
+// that even top-level routing decisions could see it if needed later.
+
 // document.getElementById('root') grabs the <div id="root"></div> from
 // index.html. The `!` after it is TypeScript syntax meaning "trust me,
 // this is not null" (normally getElementById can return null).
@@ -39,7 +44,9 @@ createRoot(document.getElementById('root')!).render(
       {/* Everything inside BrowserRouter can now use routing features
           like <Link>, <Routes>, useNavigate(), useParams(), etc.
           Think of it as "turning on" the URL-awareness for the app. */}
-      <App />
+      <AuthProvider>
+        <App />
+      </AuthProvider>
     </BrowserRouter>
   </StrictMode>,
 )

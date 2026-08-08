@@ -17,7 +17,7 @@
         "munmap", "brk", "rt_sigaction", "rt_sigprocmask", "rt_sigreturn",
         "ioctl", "pread64", "pwrite64", "readv", "writev", "access",
         "pipe", "select", "sched_yield", "mremap", "msync", "madvise",
-        "dup", "dup2", "nanosleep", "getpid", "sendfile", "getdents",
+        "dup", "dup2", "nanosleep", "getpid", "sendfile", "getdents", "getdents64",
         "getcwd", "chdir", "rename", "mkdir", "rmdir", "creat", "link",
         "unlink", "readlink", "chmod", "fchmod", "chown", "fchown",
         "umask", "gettimeofday", "getrlimit", "getrusage", "times",
@@ -30,27 +30,29 @@
         "sched_getaffinity", "set_thread_area", "get_thread_area",
         "set_tid_address", "restart_syscall", "exit_group", "epoll_wait",
         "epoll_ctl", "tgkill", "utimes", "waitid", "openat", "mkdirat",
-        "fstatat64", "unlinkat", "renameat", "linkat", "readlinkat",
+        "fstatat64", "statx", "unlinkat", "renameat", "linkat", "readlinkat",
         "fchmodat", "faccessat", "pselect6", "ppoll", "set_robust_list",
         "get_robust_list", "splice", "tee", "sync_file_range", "vmsplice",
         "utimensat", "epoll_pwait", "accept4", "eventfd2", "epoll_create1",
-        "dup3", "pipe2", "inotify_init1", "preadv", "pwritev", "recvmmsg",
+        "dup3", "fcntl", "fcntl64", "pipe2", "inotify_init1", "preadv", "pwritev", "recvmmsg",
         "prlimit64", "clock_gettime", "clock_getres", "clock_nanosleep",
         "exit", "wait4", "newfstatat", "getrandom", "memfd_create",
-        "execve", "clone", "fork", "vfork",
-        "open", "stat", "lstat", "poll"
+        "execve", "clone", "clone3", "rseq", "fork", "vfork",
+        "open", "stat", "lstat", "poll",
+        "sysinfo", "flock", "ftruncate", "fchdir", "membarrier",
+        "socket", "setsockopt"
       ],
       "action": "SCMP_ACT_ALLOW"
     },
     {
       "names": [
-        "socket", "connect", "getsockname", "getpeername",
+        "connect", "getsockname", "getpeername",
         "socketpair", "sendto", "recvfrom", "shutdown",
-        "bind", "listen", "accept", "getsockopt", "setsockopt",
+        "bind", "listen", "accept", "getsockopt",
         "recvmsg", "sendmsg", "sendmmsg"
       ],
       "action": "SCMP_ACT_ERRNO",
-      "comment": "All network syscalls are explicitly denied. --network none handles this at the namespace level too; this is defense in depth."
+      "comment": "All actual network I/O syscalls stay explicitly denied here (defense in depth on top of --network none). socket/setsockopt were moved to the allow list above: the JDK calls both unconditionally during startup for internal initialization (unrelated to user code), and since every OTHER syscall that would let a created socket do anything real (connect/bind/send/recv/...) is still denied here, allowing socket()/setsockopt() alone grants no actual network capability."
     },
     {
       "names": [

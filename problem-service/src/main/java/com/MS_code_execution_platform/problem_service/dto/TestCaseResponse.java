@@ -9,4 +9,5 @@ public class TestCaseResponse {
 
     private String input;
     private String expectedOutput;
+    private boolean hidden;
 }

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { Link, Navigate, useParams } from 'react-router-dom';
 import Editor from '@monaco-editor/react';
 // @monaco-editor/react wraps the Monaco Editor (the actual code-editing
@@ -7,10 +7,13 @@ import Editor from '@monaco-editor/react';
 // ourselves, just from a third-party package.
 import Logo from '../components/landing/Logo';
 import { DIFFICULTY_COLOR, LANGUAGES, getProblemBySlug, type Language } from '../data/problems';
+import { useAuth } from '../context/AuthContext';
+import { createSubmission, pollSubmissionResult, type TestCaseResult } from '../api/submissions';
 // This is the busiest page in the app: it reads the URL, looks up a
 // problem, manages several pieces of state (selected language, the code
-// being typed, which test case is shown, a fake "run" status), and fakes
-// a backend response with setTimeout. Read the useState calls first to
+// being typed, which test case is shown, run status), and — for problems
+// with a real backendProblemId — actually submits code to submission-service
+// and polls for a real judged verdict. Read the useState calls first to
 // understand what this component is "remembering" before diving into the JSX.
 
 // Monaco's `language` prop expects specific strings; ours happen to match
@@ -23,16 +26,25 @@ const MONACO_LANGUAGE: Record<Language, string> = {
   cpp: 'cpp',
 };
 
-// A string literal union describing the three states our fake "Run" flow
-// can be in. Using a type instead of loose strings/booleans means
-// TypeScript will flag typos like 'runing' immediately.
+// A string literal union describing the three states our "Run" flow can be
+// in. Using a type instead of loose strings/booleans means TypeScript will
+// flag typos like 'runing' immediately.
 type RunStatus = 'idle' | 'running' | 'done';
 
-// The shape of a (mocked) run result, once one exists.
+// The shape of a real result, once the submission reaches a terminal status.
+// `status` is whatever string the active worker reported (see THE WORKER
+// SWITCH in submission-service) - not narrowed to a fixed union, since the
+// two workers use different vocabularies (Java: PASSED/FAILED, Go:
+// PASSED/FAILED/RE/CE/TLE/MLE/SYSTEM_ERROR).
 interface RunResult {
+  status: string;
   passed: boolean;
-  runtimeMs: number;
-  caseIndex: number; // which example/test case this result corresponds to
+  output: string | null;
+  reason: string | null;
+  // Per-test-case breakdown, when the worker reported one (older submissions
+  // judged before this existed, or a submission that failed before reaching
+  // any test case - e.g. CE - won't have one).
+  testCaseResults: TestCaseResult[] | null;
 }
 
 export default function SolvePage() {
@@ -66,18 +78,12 @@ export default function SolvePage() {
   const [consoleTab, setConsoleTab] = useState<'testcase' | 'result'>('testcase');
   const [runStatus, setRunStatus] = useState<RunStatus>('idle');
   const [result, setResult] = useState<RunResult | null>(null);
+  const [runError, setRunError] = useState<string | null>(null);
   // `RunResult | null` — this state starts as null (no result yet) and
-  // becomes a real RunResult object once a fake "run" finishes.
+  // becomes a real RunResult object once submission-service reports a
+  // terminal verdict (see api/submissions.ts's pollSubmissionResult).
 
-  // useMemo here is being used for a different purpose than in
-  // PracticePage: not to avoid recomputation, but to get a RANDOM number
-  // that stays STABLE across re-renders (typing in the editor re-renders
-  // this component many times per second — without useMemo, a plain
-  // `Math.random()` call in the component body would produce a new value
-  // on every keystroke). It only re-randomizes when `problem?.slug`
-  // changes, i.e. when the user navigates to a different problem.
-  // `problem?.slug` uses optional chaining in case `problem` is undefined.
-  const seedRef = useMemo(() => Math.random(), [problem?.slug]);
+  const { accessToken, userId } = useAuth();
 
   // EARLY RETURN based on data, before the "main" render. If the slug in
   // the URL doesn't match any mock problem, `problem` is undefined, and
@@ -102,28 +108,44 @@ export default function SolvePage() {
     setCode(problem!.starterCode[next]);
   }
 
-  // Simulates calling a backend judge. In the real app this would be an
-  // apiFetch() call to submission-service; for now it fakes a network
-  // delay with setTimeout and invents a plausible-looking result.
-  function runCode(isSubmit: boolean) {
+  // Calls the real backend judge: POST /submissions, then poll
+  // GET /submissions/{id} until it reaches a terminal status. Both "Run"
+  // and "Submit" call this the same way - submission-service's API doesn't
+  // currently distinguish "check against the visible example only" from
+  // "judge against everything", so both send the same real request and
+  // judge against every test case (hidden ones included).
+  //
+  // Only works for problems with a real backendProblemId (see
+  // data/problems.ts) - the button is disabled otherwise (see the JSX below).
+  async function runCode() {
+    if (!problem!.backendProblemId || !accessToken || !userId) return;
+
     setConsoleTab('result'); // auto-switch to the Result tab so the user sees feedback
     setRunStatus('running');
     setResult(null);
-    // window.setTimeout(fn, ms) schedules `fn` to run once, after a delay
-    // — the "network request" here is nothing but a 700ms wait.
-    window.setTimeout(() => {
-      // Fake pass/fail: "Run" always shows success (it's just checking
-      // your own code against the visible example), "Submit" uses our
-      // stable per-problem random seed so the same problem always shows
-      // the same demo verdict during a visit.
-      const passed = isSubmit ? seedRef > 0.3 : true;
+    setRunError(null);
+
+    try {
+      const { submissionId } = await createSubmission(
+        accessToken,
+        userId,
+        problem!.backendProblemId,
+        code,
+        language,
+      );
+      const final = await pollSubmissionResult(accessToken, submissionId);
       setResult({
-        passed,
-        runtimeMs: Math.round(40 + seedRef * 120),
-        caseIndex: activeExample,
+        status: final.status,
+        passed: final.status === 'PASSED',
+        output: final.output,
+        reason: final.reason,
+        testCaseResults: final.testCaseResults,
       });
+    } catch (err) {
+      setRunError(err instanceof Error ? err.message : 'Failed to judge submission.');
+    } finally {
       setRunStatus('done');
-    }, 700);
+    }
   }
 
   return (
@@ -192,8 +214,12 @@ export default function SolvePage() {
         </select>
 
         <button
-          onClick={() => runCode(false)}
-          disabled={runStatus === 'running'} // real HTML disabled attribute — browser blocks clicks while true
+          onClick={() => runCode()}
+          // real HTML disabled attribute — browser blocks clicks while true.
+          // Also disabled for problems with no backendProblemId (see
+          // data/problems.ts) - there's no real test data to judge against.
+          disabled={runStatus === 'running' || !problem.backendProblemId}
+          title={!problem.backendProblemId ? 'This problem is browsing-only — not wired to the real judge yet.' : undefined}
           className="op-run-btn"
           style={{
             fontFamily: 'inherit',
@@ -204,15 +230,16 @@ export default function SolvePage() {
             border: '1px solid rgba(255,255,255,.14)',
             padding: '9px 18px',
             borderRadius: 10,
-            cursor: runStatus === 'running' ? 'default' : 'pointer',
-            opacity: runStatus === 'running' ? 0.6 : 1,
+            cursor: runStatus === 'running' || !problem.backendProblemId ? 'default' : 'pointer',
+            opacity: runStatus === 'running' || !problem.backendProblemId ? 0.6 : 1,
           }}
         >
           Run
         </button>
         <button
-          onClick={() => runCode(true)}
-          disabled={runStatus === 'running'}
+          onClick={() => runCode()}
+          disabled={runStatus === 'running' || !problem.backendProblemId}
+          title={!problem.backendProblemId ? 'This problem is browsing-only — not wired to the real judge yet.' : undefined}
           className="op-run-btn"
           style={{
             fontFamily: 'inherit',
@@ -223,8 +250,8 @@ export default function SolvePage() {
             border: 'none',
             padding: '9px 20px',
             borderRadius: 10,
-            cursor: runStatus === 'running' ? 'default' : 'pointer',
-            opacity: runStatus === 'running' ? 0.6 : 1,
+            cursor: runStatus === 'running' || !problem.backendProblemId ? 'default' : 'pointer',
+            opacity: runStatus === 'running' || !problem.backendProblemId ? 0.6 : 1,
             boxShadow: '0 4px 20px rgba(124,58,237,.4)',
           }}
         >
@@ -498,13 +525,17 @@ export default function SolvePage() {
 
               {consoleTab === 'result' && (
                 <div style={{ fontSize: 13.5 }}>
-                  {/* Three mutually-exclusive states rendered based on
-                      `runStatus`, exactly like the LandingPage examples but
-                      with three branches instead of two. Only one of these
-                      three `{condition && (...)}` blocks ever actually
-                      shows anything at once, since runStatus can only equal
-                      one value at a time. */}
-                  {runStatus === 'idle' && (
+                  {/* Mutually-exclusive states rendered based on runStatus
+                      (idle/running/done) plus a separate runError branch for
+                      network/API failures (a submission that never even made
+                      it to a terminal status - distinct from a submission
+                      that WAS judged and simply failed). */}
+                  {!problem.backendProblemId && (
+                    <span style={{ color: '#6b7392' }}>
+                      This problem is browsing-only — it isn&apos;t wired to the real judge yet.
+                    </span>
+                  )}
+                  {problem.backendProblemId && runStatus === 'idle' && (
                     <span style={{ color: '#6b7392' }}>Run your code to see results here.</span>
                   )}
                   {runStatus === 'running' && (
@@ -514,8 +545,11 @@ export default function SolvePage() {
                         color: '#9aa2b8',
                       }}
                     >
-                      Running against test cases…
+                      Judging against test cases…
                     </span>
+                  )}
+                  {runStatus === 'done' && runError && (
+                    <span style={{ color: '#f87171' }}>{runError}</span>
                   )}
                   {/* `runStatus === 'done' && result && (...)` — TWO
                       conditions chained with &&. Even though runStatus and
@@ -538,48 +572,104 @@ export default function SolvePage() {
                           marginBottom: 14,
                         }}
                       >
-                        {result.passed ? 'Accepted' : 'Wrong Answer'}
+                        {/* result.status is the raw verdict string from
+                            whichever worker judged it (see THE WORKER SWITCH) -
+                            shown as-is rather than remapped to a fixed set of
+                            labels, since the two workers use different
+                            vocabularies (PASSED/FAILED vs PASSED/RE/CE/etc). */}
+                        {result.status}
+                        {result.testCaseResults && (
+                          <span style={{ fontSize: 13, fontWeight: 600, color: '#6b7392' }}>
+                            {result.testCaseResults.filter((tc) => tc.passed).length}/
+                            {result.testCaseResults.length} test cases passed
+                          </span>
+                        )}
                       </div>
-                      <div style={{ display: 'flex', gap: 24, marginBottom: 16 }}>
-                        <div>
-                          <div style={{ fontSize: 11, color: '#6b7392', marginBottom: 2 }}>Runtime</div>
-                          <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 13 }}>
-                            {result.runtimeMs} ms
-                          </div>
+
+                      {result.reason && (
+                        <div
+                          style={{
+                            fontFamily: "'JetBrains Mono',monospace",
+                            fontSize: 12.5,
+                            lineHeight: 1.8,
+                            color: '#b3bacb',
+                            marginBottom: 16,
+                          }}
+                        >
+                          <div style={{ color: '#6b7392', marginBottom: 4 }}>Reason</div>
+                          <div>{result.reason}</div>
                         </div>
-                        <div>
-                          <div style={{ fontSize: 11, color: '#6b7392', marginBottom: 2 }}>Memory</div>
-                          <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 13 }}>
-                            {(41 + seedRef * 8).toFixed(1)} MB
-                          </div>
+                      )}
+
+                      {/* Per-test-case breakdown, when the worker reported
+                          one. Falls back to the single flat `output` value
+                          for older/incomplete results (e.g. a CE verdict,
+                          which never reaches any test case). */}
+                      {result.testCaseResults ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                          {result.testCaseResults.map((tc) => (
+                            <div
+                              key={tc.ordinal}
+                              style={{
+                                border: '1px solid rgba(255,255,255,.08)',
+                                borderRadius: 10,
+                                padding: '12px 14px',
+                              }}
+                            >
+                              <div
+                                style={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 8,
+                                  marginBottom: tc.hidden ? 0 : 10,
+                                  fontSize: 12.5,
+                                  fontWeight: 700,
+                                }}
+                              >
+                                <span>Case {tc.ordinal + 1}</span>
+                                {tc.hidden && (
+                                  <span style={{ color: '#6b7392', fontWeight: 500 }}>(hidden)</span>
+                                )}
+                                <div style={{ flex: 1 }} />
+                                <span style={{ color: tc.passed ? '#34d399' : '#f87171' }}>
+                                  {tc.passed ? 'Passed' : 'Failed'}
+                                </span>
+                              </div>
+                              {/* Hidden test cases only ever reveal pass/fail -
+                                  see api/submissions.ts's TestCaseResult comment. */}
+                              {!tc.hidden && (
+                                <div
+                                  style={{
+                                    fontFamily: "'JetBrains Mono',monospace",
+                                    fontSize: 12.5,
+                                    lineHeight: 1.7,
+                                    color: '#b3bacb',
+                                  }}
+                                >
+                                  <div style={{ color: '#6b7392', marginBottom: 2 }}>Input</div>
+                                  <div style={{ marginBottom: 8 }}>{tc.input}</div>
+                                  <div style={{ color: '#6b7392', marginBottom: 2 }}>Expected</div>
+                                  <div style={{ marginBottom: 8 }}>{tc.expected}</div>
+                                  <div style={{ color: '#6b7392', marginBottom: 2 }}>Actual</div>
+                                  <div>{tc.actual}</div>
+                                </div>
+                              )}
+                            </div>
+                          ))}
                         </div>
-                      </div>
-                      <div
-                        style={{
-                          fontFamily: "'JetBrains Mono',monospace",
-                          fontSize: 12.5,
-                          lineHeight: 1.8,
-                          color: '#b3bacb',
-                        }}
-                      >
-                        <div style={{ color: '#6b7392', marginBottom: 4 }}>Input</div>
-                        <div style={{ marginBottom: 10 }}>{problem.examples[result.caseIndex].input}</div>
-                        <div style={{ color: '#6b7392', marginBottom: 4 }}>Expected</div>
-                        <div style={{ marginBottom: 10 }}>{problem.examples[result.caseIndex].output}</div>
-                        <div style={{ color: '#6b7392', marginBottom: 4 }}>Output</div>
-                        <div>
-                          {/* This whole "Output" line is FAKED — there's no
-                              real code execution happening. On success we
-                              just echo back the expected output; on
-                              "failure" we show a placeholder string. This
-                              is exactly the seam where real backend
-                              integration (calling submission-service via
-                              src/api/client.ts) will plug in later. */}
-                          {result.passed
-                            ? problem.examples[result.caseIndex].output
-                            : '(execution engine not connected yet — mock result)'}
+                      ) : (
+                        <div
+                          style={{
+                            fontFamily: "'JetBrains Mono',monospace",
+                            fontSize: 12.5,
+                            lineHeight: 1.8,
+                            color: '#b3bacb',
+                          }}
+                        >
+                          <div style={{ color: '#6b7392', marginBottom: 4 }}>Output</div>
+                          <div>{result.output ?? '(no output)'}</div>
                         </div>
-                      </div>
+                      )}
                     </div>
                   )}
                 </div>

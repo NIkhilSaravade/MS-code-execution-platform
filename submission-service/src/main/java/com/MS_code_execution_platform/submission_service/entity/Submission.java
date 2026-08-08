@@ -34,5 +34,12 @@ public class Submission {
     // Populated on state transitions reported by worker-service (e.g. a system error detail)
     private String reason;
 
+    // JSON array of per-test-case results (see dto.TestCaseResult), reported
+    // by either worker. @JsonRawValue on the getter (see below) so this
+    // appears as real nested JSON in API responses, not an escaped string.
+    @Column(columnDefinition = "TEXT")
+    @com.fasterxml.jackson.annotation.JsonRawValue
+    private String testCaseResults;
+
     private LocalDateTime submittedAt;
 }

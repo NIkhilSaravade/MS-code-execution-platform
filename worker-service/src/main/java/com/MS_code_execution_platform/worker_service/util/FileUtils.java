@@ -7,9 +7,9 @@ import java.nio.file.*;
 
 public class FileUtils {
 
-    public static Path createTempDirectory(Long submissionId) throws IOException {
+    public static Path createTempDirectory(String scratchDir, Long submissionId) throws IOException {
 
-        Path baseDir = Paths.get("docker-code");
+        Path baseDir = Paths.get(scratchDir);
 
         if (!Files.exists(baseDir)) {
             Files.createDirectories(baseDir);

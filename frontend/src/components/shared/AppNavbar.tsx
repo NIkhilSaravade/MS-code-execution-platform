@@ -7,6 +7,11 @@ import Logo from '../landing/Logo';
 // Reaching into a sibling folder (landing/) to reuse the Logo component —
 // components don't have to live in the same folder to be shared.
 
+import { useAuth } from '../../context/AuthContext';
+// useAuth() reads the shared login state set up in main.tsx's
+// <AuthProvider>. This is what lets the navbar switch between
+// "Sign in / Start free" and "user@email.com / Log out" everywhere.
+
 // A plain array of nav-link data, defined OUTSIDE the component. Since it
 // never changes, there's no reason to recreate it every render — putting
 // it at module scope means it's created once, when the file first loads.
@@ -21,6 +26,21 @@ export default function AppNavbar() {
   // Calling the hook. `location` is now an object; we mainly care about
   // location.pathname, the URL path like "/practice" or "/practice/two-sum".
   const location = useLocation();
+  const { isAuthenticated, userEmail, logout } = useAuth();
+
+  function handleLogout() {
+    // A hard navigation, not React Router's navigate(). Clearing auth and
+    // routing away as two separate React state updates left a window
+    // where the still-mounted ProtectedRoute (guarding /practice) could
+    // see isAuthenticated flip to false while the URL was still
+    // "/practice" and fire its own redirect-to-/login first — landing the
+    // user on the login form instead of "/". Reassigning
+    // window.location.href sidesteps that race completely: it clears the
+    // token, then throws away the whole SPA and reloads fresh at "/",
+    // where AuthProvider boots up already logged out.
+    logout();
+    window.location.href = '/';
+  }
 
   return (
     <header
@@ -83,26 +103,67 @@ export default function AppNavbar() {
 
       <div style={{ flex: 1 }} />
 
-      <span style={{ fontSize: 14, color: '#cdd3e0', cursor: 'pointer', fontWeight: 600 }}>Sign in</span>
-      <a
-        href="#"
-        className="op-btn-primary"
-        style={{
-          textDecoration: 'none',
-          fontSize: 14,
-          fontWeight: 700,
-          color: '#0a0c16',
-          background: '#fff',
-          padding: '9px 16px',
-          borderRadius: 10,
-          cursor: 'pointer',
-        }}
-      >
-        Start free
-      </a>
-      {/* "Sign in" / "Start free" are plain <span>/<a> for now because
-          there's no auth page to link to yet — see the CLAUDE.md notes
-          about wiring the frontend to auth-service later. */}
+      {/* Two different right-hand-side states depending on login: signed
+          out shows "Sign in" + "Start free" links into the auth pages;
+          signed in shows the user's email + a "Log out" button instead. */}
+      {isAuthenticated ? (
+        <>
+          <span style={{ fontSize: 14, color: '#cdd3e0', fontWeight: 600 }}>{userEmail}</span>
+          <button
+            onClick={handleLogout}
+            className="op-btn-secondary"
+            style={{
+              fontSize: 14,
+              fontWeight: 600,
+              color: '#eef0f6',
+              background: 'transparent',
+              border: '1px solid rgba(255,255,255,.14)',
+              padding: '9px 16px',
+              borderRadius: 10,
+              cursor: 'pointer',
+              fontFamily: 'inherit',
+            }}
+          >
+            Log out
+          </button>
+        </>
+      ) : (
+        <>
+          <Link
+            to="/login"
+            className="op-btn-secondary"
+            style={{
+              textDecoration: 'none',
+              fontSize: 14,
+              fontWeight: 700,
+              color: '#eef0f6',
+              background: 'rgba(255,255,255,.05)',
+              border: '1px solid rgba(255,255,255,.16)',
+              padding: '9px 16px',
+              borderRadius: 10,
+              cursor: 'pointer',
+            }}
+          >
+            Sign in
+          </Link>
+          <Link
+            to="/signup"
+            className="op-btn-primary"
+            style={{
+              textDecoration: 'none',
+              fontSize: 14,
+              fontWeight: 700,
+              color: '#0a0c16',
+              background: '#fff',
+              padding: '9px 16px',
+              borderRadius: 10,
+              cursor: 'pointer',
+            }}
+          >
+            Sign up
+          </Link>
+        </>
+      )}
     </header>
   );
 }

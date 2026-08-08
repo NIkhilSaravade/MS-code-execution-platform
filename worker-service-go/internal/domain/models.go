@@ -81,15 +81,24 @@ type SubmissionJob struct {
 // --------------------------------------------------------------------------
 
 type TestCaseResult struct {
-	TestCaseID     string
-	Ordinal        int
-	Passed         bool
-	Verdict        Verdict
-	WallTimeMS     int64
-	CPUTimeMS      int64
-	MaxMemoryKB    int64
-	StdoutTruncated bool
-	StderrTruncated bool
+	TestCaseID      string  `json:"test_case_id"`
+	Ordinal         int     `json:"ordinal"`
+	Passed          bool    `json:"passed"`
+	Verdict         Verdict `json:"verdict"`
+	WallTimeMS      int64   `json:"wall_time_ms"`
+	CPUTimeMS       int64   `json:"cpu_time_ms"`
+	MaxMemoryKB     int64   `json:"max_memory_kb"`
+	StdoutTruncated bool    `json:"stdout_truncated"`
+	StderrTruncated bool    `json:"stderr_truncated"`
+
+	// Hidden mirrors the test case's !IsSample - true for hidden cases.
+	// Input/Expected/Actual are only ever populated for non-hidden cases
+	// (see executor.go's executeAllTestCases): a hidden test case's content
+	// is never sent anywhere past this worker, only whether it passed.
+	Hidden   bool   `json:"hidden"`
+	Input    string `json:"input,omitempty"`
+	Expected string `json:"expected,omitempty"`
+	Actual   string `json:"actual,omitempty"`
 }
 
 // --------------------------------------------------------------------------
@@ -117,4 +126,11 @@ type ExecutionResult struct {
 
 	// Populated on system-level failure (not user-code failure).
 	SystemError string
+
+	// LastStdout is the most recent test case's raw output. Not part of the
+	// executions.completed.v1 event (kept lightweight, see uploadArtifacts) -
+	// used only for the optimistic-feedback HTTP call to submission-service
+	// (SubmissionClient.MarkTerminal) so the frontend has something to show
+	// immediately instead of waiting on artifact upload/S3 fetch.
+	LastStdout []byte
 }
