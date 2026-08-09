@@ -51,4 +51,29 @@ public class SubmissionController {
         }
         return submissionRepository.findByUserId(userId);
     }
+
+    // Same ownership check as getUserSubmissions, narrowed to one problem -
+    // backs the Solve page's "your past submissions for this problem" list.
+    @GetMapping("/user/{userId}/problem/{problemId}")
+    public List<Submission> getUserSubmissionsForProblem(
+            @PathVariable UUID userId,
+            @PathVariable Long problemId,
+            @AuthenticationPrincipal Jwt jwt) {
+        UUID callerId = UUID.fromString(jwt.getSubject());
+        if (!callerId.equals(userId)) {
+            throw new AccessDeniedException("Cannot view another user's submissions");
+        }
+        return submissionRepository.findByUserIdAndProblemIdAndIncludeHiddenTrueOrderBySubmittedAtDesc(userId, problemId);
+    }
+
+    // Backs the Practice list's "solved" badge - the set of problemIds this
+    // user has at least one PASSED submission for.
+    @GetMapping("/user/{userId}/solved")
+    public List<Long> getSolvedProblemIds(@PathVariable UUID userId, @AuthenticationPrincipal Jwt jwt) {
+        UUID callerId = UUID.fromString(jwt.getSubject());
+        if (!callerId.equals(userId)) {
+            throw new AccessDeniedException("Cannot view another user's submissions");
+        }
+        return submissionRepository.findSolvedProblemIds(userId);
+    }
 }

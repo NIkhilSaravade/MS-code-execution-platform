@@ -26,6 +26,8 @@ public class SecurityConfig {
                         // Order matters: specific rules must come before the general
                         // /problems/** rule below, or the broader match would win first.
                         .requestMatchers(HttpMethod.POST, "/problems").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.PUT, "/problems/**").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.DELETE, "/problems/**").hasRole("ADMIN")
                         // worker-service (the legacy Java worker) reads test cases via
                         // GET /problems/{id}/testcases with a service-credential token
                         // (ROLE_SERVICE), not a user's - worker-service-go instead uses

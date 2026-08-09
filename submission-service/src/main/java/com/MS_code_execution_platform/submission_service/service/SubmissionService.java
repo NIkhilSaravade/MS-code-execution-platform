@@ -37,12 +37,17 @@ public class SubmissionService {
 
     public SubmissionResponse createSubmission(SubmissionRequest request) {
 
+        // Default to true (full Submit semantics) unless the frontend
+        // explicitly asked for a Run (visible-only) evaluation.
+        boolean includeHidden = !Boolean.FALSE.equals(request.getIncludeHidden());
+
         Submission submission = Submission.builder()
                 .userId(request.getUserId())
                 .problemId(request.getProblemId())
                 .code(request.getCode())
                 .language(request.getLanguage())
                 .status("PENDING")
+                .includeHidden(includeHidden)
                 .submittedAt(LocalDateTime.now())
                 .build();
 
@@ -55,10 +60,6 @@ public class SubmissionService {
         // otherwise, same as before harnesses existed).
         String codeToRun = harnessApplier.apply(
                 submission.getProblemId(), submission.getLanguage(), submission.getCode());
-
-        // Default to true (full Submit semantics) unless the frontend
-        // explicitly asked for a Run (visible-only) evaluation.
-        boolean includeHidden = !Boolean.FALSE.equals(request.getIncludeHidden());
 
         if ("go".equalsIgnoreCase(activeWorker)) {
             submissionProducer.sendSubmissionCreatedEvent(submission, codeToRun, includeHidden);

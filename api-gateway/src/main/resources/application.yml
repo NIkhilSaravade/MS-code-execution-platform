@@ -43,6 +43,11 @@ spring:
               predicates:
                 - Path=/api/results/**
 
+            - id: solution-service
+              uri: lb://SOLUTION-SERVICE
+              predicates:
+                - Path=/solutions/**
+
 
 
 

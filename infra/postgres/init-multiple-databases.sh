@@ -102,5 +102,9 @@ create_service_db "execution_result_service" \
   "execution_result_service_owner" "${EXECUTION_RESULT_SERVICE_DB_OWNER_PASSWORD:-execution-result-service-owner-dev-secret}" \
   "execution_result_service_app" "${EXECUTION_RESULT_SERVICE_DB_APP_PASSWORD:-execution-result-service-app-dev-secret}"
 
+create_service_db "solution_service" \
+  "solution_service_owner" "${SOLUTION_SERVICE_DB_OWNER_PASSWORD:-solution-service-owner-dev-secret}" \
+  "solution_service_app" "${SOLUTION_SERVICE_DB_APP_PASSWORD:-solution-service-app-dev-secret}"
+
 create_owner_only_db "ai_analysis_db" \
   "ai_analysis_owner" "${AI_ANALYSIS_DB_OWNER_PASSWORD:-ai-analysis-owner-dev-secret}"

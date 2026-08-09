@@ -6,19 +6,22 @@
 // descendant can read with useAuth(), no prop-drilling required.
 
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { loginUser, registerUser, type AuthTokens } from '../api/auth';
+import { loginUser, registerUser } from '../api/auth';
+import { clearTokens, getAccessToken, refreshAccessToken, setTokens, subscribe } from '../api/tokenStore';
 
-// localStorage keys. Using constants instead of repeating the string
-// literals avoids typos causing the read and write sides to silently
-// disagree.
-const ACCESS_TOKEN_KEY = 'op_access_token';
-const REFRESH_TOKEN_KEY = 'op_refresh_token';
+// How long before the access token's `exp` to proactively refresh it.
+// auth-service issues 15-minute access tokens (TokenService.issueAccessToken)
+// - refreshing a minute early leaves headroom for clock drift and requests
+// already in flight, without refreshing so eagerly it's wasteful.
+const REFRESH_BUFFER_MS = 60_000;
 
 // JWTs are three base64url segments separated by dots: header.payload.signature.
 // We only need the payload (to read the `sub` claim, which auth-service sets
 // to the user's email) — no verification happens client-side, the backend
 // is the only thing that needs to trust this token.
-function decodeJwtPayload(token: string): { sub?: string; email?: string; exp?: number } | null {
+function decodeJwtPayload(
+  token: string,
+): { sub?: string; email?: string; exp?: number; roles?: string[] } | null {
   try {
     const payloadSegment = token.split('.')[1];
     // JWTs use base64URL (- and _ instead of + and /), so swap those back
@@ -39,6 +42,13 @@ interface AuthContextValue {
   userId: string | null;
   accessToken: string | null;
   isAuthenticated: boolean;
+  // auth-service's TokenService puts the account's role(s) in a `roles`
+  // claim (e.g. ["ADMIN"]) - every other resource server in this platform
+  // already trusts that claim for authorization; this just also reads it
+  // client-side to decide what to show (e.g. the "+ Add Problem" button).
+  // The backend re-checks ADMIN independently on every write - this is UI
+  // convenience only, never itself a security boundary.
+  isAdmin: boolean;
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string) => Promise<void>;
   logout: () => void;
@@ -50,18 +60,20 @@ interface AuthContextValue {
 // placeholders — useAuth() below guards against the missing-provider case.
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-function storeTokens(tokens: AuthTokens) {
-  localStorage.setItem(ACCESS_TOKEN_KEY, tokens.accessToken);
-  localStorage.setItem(REFRESH_TOKEN_KEY, tokens.refreshToken);
-}
-
 export function AuthProvider({ children }: { children: ReactNode }) {
   // Initialize state straight from localStorage so a page refresh doesn't
   // log the user out — the lazy initializer function (`() => ...`) only
   // runs once, on the very first render, not on every re-render.
-  const [accessToken, setAccessToken] = useState<string | null>(() =>
-    localStorage.getItem(ACCESS_TOKEN_KEY),
-  );
+  const [accessToken, setAccessToken] = useState<string | null>(() => getAccessToken());
+
+  // api/tokenStore.ts is the actual source of truth (localStorage + the
+  // refresh logic api/client.ts shares). It changes from two different
+  // places - this provider's own login/register/logout calls below, AND
+  // api/client.ts silently refreshing a token behind a 401 mid-request -
+  // so rather than duplicate "update React state" at every call site, this
+  // provider just re-syncs whenever the store notifies, no matter who
+  // triggered the change.
+  useEffect(() => subscribe(() => setAccessToken(getAccessToken())), []);
 
   // Derive the email from the token rather than storing it separately —
   // one source of truth (the token) instead of two values that could drift
@@ -78,24 +90,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return decodeJwtPayload(accessToken)?.sub ?? null;
   }, [accessToken]);
 
-  // If the stored access token is already expired (e.g. the tab was left
-  // open for hours), treat it as logged-out immediately instead of showing
-  // a stale "logged in" state that fails on the first real API call.
+  const isAdmin = useMemo(() => {
+    if (!accessToken) return false;
+    return decodeJwtPayload(accessToken)?.roles?.includes('ADMIN') ?? false;
+  }, [accessToken]);
+
+  // Silent refresh: instead of waiting for the access token to expire and
+  // treating that as a logout, proactively swap it for a new one shortly
+  // before `exp`. If the tab was asleep and the token is already past that
+  // point (or past `exp` entirely), refresh immediately rather than logging
+  // out — the refresh token is good for 14 days, far longer than the
+  // 15-minute access token, so there's usually still a valid session to
+  // recover. refreshAccessToken() itself clears the session if the refresh
+  // token is also gone/expired/revoked, which the subscribe() effect above
+  // then turns into accessToken becoming null here.
   useEffect(() => {
     if (!accessToken) return;
     const payload = decodeJwtPayload(accessToken);
-    const expiredMs = payload?.exp ? payload.exp * 1000 : 0;
-    if (expiredMs && expiredMs < Date.now()) {
-      localStorage.removeItem(ACCESS_TOKEN_KEY);
-      localStorage.removeItem(REFRESH_TOKEN_KEY);
-      setAccessToken(null);
+    if (!payload?.exp) return;
+
+    const msUntilExpiry = payload.exp * 1000 - Date.now();
+    if (msUntilExpiry <= REFRESH_BUFFER_MS) {
+      refreshAccessToken().catch(() => {});
+      return;
     }
+
+    const timer = setTimeout(() => {
+      refreshAccessToken().catch(() => {});
+    }, msUntilExpiry - REFRESH_BUFFER_MS);
+    return () => clearTimeout(timer);
   }, [accessToken]);
 
   async function login(email: string, password: string) {
     const tokens = await loginUser(email, password);
-    storeTokens(tokens);
-    setAccessToken(tokens.accessToken);
+    setTokens(tokens);
   }
 
   async function register(email: string, password: string) {
@@ -103,14 +131,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // registering also logs the user in — no separate "please log in now"
     // step needed.
     const tokens = await registerUser(email, password);
-    storeTokens(tokens);
-    setAccessToken(tokens.accessToken);
+    setTokens(tokens);
   }
 
   function logout() {
-    localStorage.removeItem(ACCESS_TOKEN_KEY);
-    localStorage.removeItem(REFRESH_TOKEN_KEY);
-    setAccessToken(null);
+    clearTokens();
   }
 
   const value: AuthContextValue = {
@@ -118,6 +143,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     userId,
     accessToken,
     isAuthenticated: accessToken !== null,
+    isAdmin,
     login,
     register,
     logout,

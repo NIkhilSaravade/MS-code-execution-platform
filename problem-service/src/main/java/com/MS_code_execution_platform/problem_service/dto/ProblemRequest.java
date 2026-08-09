@@ -10,6 +10,9 @@ public class ProblemRequest {
     private String name;
     private String description;
     private String constraints;
+    private String difficulty;
+    private List<String> tags;
+    private List<Example> examples;
     private Integer timeLimitMs;
     private Integer memoryLimitMb;
     private List<TestCaseDTO> testCases;

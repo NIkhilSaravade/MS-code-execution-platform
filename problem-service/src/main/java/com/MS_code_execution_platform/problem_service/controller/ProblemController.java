@@ -23,6 +23,20 @@ public class ProblemController {
         return problemService.createProblem(request);
     }
 
+    // Full-replace update (see ProblemService.updateProblem's Javadoc) -
+    // returns ProblemResponse rather than the raw entity createProblem
+    // returns, so this one never risks echoing hidden test cases' expected
+    // output back in the response body.
+    @PutMapping("/{problemId}")
+    public ProblemResponse updateProblem(@PathVariable Long problemId, @RequestBody ProblemRequest request) {
+        return problemService.updateProblem(problemId, request);
+    }
+
+    @DeleteMapping("/{problemId}")
+    public void deleteProblem(@PathVariable Long problemId) {
+        problemService.deleteProblem(problemId);
+    }
+
     // Backfills an existing problem's harnessByLanguage using every
     // currently-registered HarnessGenerator - the way an already-seeded
     // problem picks up a language added after it was created (see

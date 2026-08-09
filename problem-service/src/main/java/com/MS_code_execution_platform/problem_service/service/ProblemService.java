@@ -32,6 +32,7 @@ public class ProblemService {
     private static final int DEFAULT_TIME_LIMIT_MS = 2000;
     private static final int DEFAULT_MEMORY_LIMIT_MB = 256;
     private static final int DEFAULT_WEIGHT = 1;
+    private static final String DEFAULT_DIFFICULTY = "Medium";
 
     private final ProblemRepository problemRepository;
     private final TestCaseRepository testCaseRepository;
@@ -63,6 +64,10 @@ public class ProblemService {
                 .name(request.getName())
                 .description(request.getDescription())
                 .constraints(request.getConstraints())
+                .difficulty(request.getDifficulty() != null && !request.getDifficulty().isBlank()
+                        ? request.getDifficulty() : DEFAULT_DIFFICULTY)
+                .tags(request.getTags() != null ? request.getTags() : List.of())
+                .examples(request.getExamples() != null ? request.getExamples() : List.of())
                 .timeLimitMs(request.getTimeLimitMs() != null ? request.getTimeLimitMs() : DEFAULT_TIME_LIMIT_MS)
                 .memoryLimitMb(request.getMemoryLimitMb() != null ? request.getMemoryLimitMb() : DEFAULT_MEMORY_LIMIT_MB);
 
@@ -79,7 +84,65 @@ public class ProblemService {
         // Save first so we have an id to key the S3 objects by.
         problem = problemRepository.save(problem);
 
-        List<TestCaseDTO> requested = request.getTestCases();
+        problem.setTestCases(buildTestCases(problem, request.getTestCases()));
+
+        return problemRepository.save(problem);
+    }
+
+    // Full-replace update, matching solution-service's upsertSolution
+    // semantics (see its Javadoc) - every field is overwritten from
+    // `request`, nothing is merged/patched. Redundant with the route-level
+    // rule in SecurityConfig by design, same as createProblem.
+    @PreAuthorize("hasRole('ADMIN')")
+    public ProblemResponse updateProblem(Long problemId, ProblemRequest request) {
+        Problem problem = getProblemOrThrow(problemId);
+
+        problem.setName(request.getName());
+        problem.setDescription(request.getDescription());
+        problem.setConstraints(request.getConstraints());
+        problem.setDifficulty(request.getDifficulty() != null && !request.getDifficulty().isBlank()
+                ? request.getDifficulty() : DEFAULT_DIFFICULTY);
+        problem.setTags(request.getTags() != null ? request.getTags() : List.of());
+        problem.setExamples(request.getExamples() != null ? request.getExamples() : List.of());
+        problem.setTimeLimitMs(request.getTimeLimitMs() != null ? request.getTimeLimitMs() : DEFAULT_TIME_LIMIT_MS);
+        problem.setMemoryLimitMb(request.getMemoryLimitMb() != null ? request.getMemoryLimitMb() : DEFAULT_MEMORY_LIMIT_MB);
+
+        FunctionSignature signature = request.getSignature();
+        if (signature != null) {
+            problem.setFunctionName(signature.getFunctionName());
+            problem.setParamsJson(writeJson(signature.getParams()));
+            problem.setReturnType(signature.getReturnType());
+            // Regenerated immediately, same as creation - no separate
+            // "regenerate harness" step needed after an edit.
+            problem.setHarnessByLanguage(generateHarnessByLanguage(signature));
+        } else {
+            // Signature removed - problem falls back to a raw stdin/stdout
+            // judge, exactly like a problem that never had one.
+            problem.setFunctionName(null);
+            problem.setParamsJson(null);
+            problem.setReturnType(null);
+            problem.setHarnessByLanguage(null);
+        }
+
+        // Full replace of test cases too - orphanRemoval on Problem.testCases
+        // deletes the old rows once this list is cleared and reassigned.
+        // Old S3 objects for removed/renumbered ordinals are simply orphaned
+        // (same accepted tradeoff as other MinIO cleanup deferred this session).
+        problem.getTestCases().clear();
+        problem = problemRepository.saveAndFlush(problem); // flush the deletes before re-adding, same reasoning as SolutionService.upsertSolution
+        problem.getTestCases().addAll(buildTestCases(problem, request.getTestCases()));
+
+        return toResponse(problemRepository.save(problem));
+    }
+
+    @PreAuthorize("hasRole('ADMIN')")
+    public void deleteProblem(Long problemId) {
+        // cascade = ALL + orphanRemoval on Problem.testCases means Hibernate
+        // deletes the test case rows first, automatically.
+        problemRepository.delete(getProblemOrThrow(problemId));
+    }
+
+    private List<TestCase> buildTestCases(Problem problem, List<TestCaseDTO> requested) {
         List<TestCase> testCases = new ArrayList<>();
 
         for (int ordinal = 0; ordinal < requested.size(); ordinal++) {
@@ -101,9 +164,7 @@ public class ProblemService {
                     .build());
         }
 
-        problem.setTestCases(testCases);
-
-        return problemRepository.save(problem);
+        return testCases;
     }
 
     public Page<ProblemResponse> getAllProblems(int page, int size) {
@@ -176,6 +237,13 @@ public class ProblemService {
                 .name(problem.getName())
                 .description(problem.getDescription())
                 .constraints(problem.getConstraints())
+                .difficulty(problem.getDifficulty())
+                // Null for rows that predate the tags/examples columns
+                // (e.g. Two Sum, seeded before V4) - default to empty so
+                // frontend consumers can always treat these as plain
+                // arrays, never null.
+                .tags(problem.getTags() != null ? problem.getTags() : List.of())
+                .examples(problem.getExamples() != null ? problem.getExamples() : List.of())
                 .functionName(problem.getFunctionName())
                 .params(readParams(problem.getParamsJson()))
                 .returnType(problem.getReturnType())

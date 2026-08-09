@@ -1,6 +1,9 @@
 package com.MS_code_execution_platform.problem_service.entity;
 
 
+import com.MS_code_execution_platform.problem_service.converter.ExampleListConverter;
+import com.MS_code_execution_platform.problem_service.converter.StringListConverter;
+import com.MS_code_execution_platform.problem_service.dto.Example;
 import com.MS_code_execution_platform.problem_service.harness.HarnessMapConverter;
 import com.fasterxml.jackson.annotation.JsonManagedReference;
 import jakarta.persistence.*;
@@ -28,6 +31,21 @@ public class Problem {
 
     @Column(columnDefinition = "TEXT")
     private String constraints;
+
+    // "Easy"/"Medium"/"Hard" - plain string (not an enum) matching the
+    // frontend's own literal-union type exactly, same as how Submission.status
+    // elsewhere in this platform is a plain string rather than an enum.
+    private String difficulty;
+
+    @Convert(converter = StringListConverter.class)
+    @Column(columnDefinition = "TEXT")
+    private List<String> tags;
+
+    // Worked examples for the Description tab - purely display content,
+    // distinct from the actual judged test cases below (see TestCase).
+    @Convert(converter = ExampleListConverter.class)
+    @Column(columnDefinition = "TEXT")
+    private List<Example> examples;
 
     private Integer timeLimitMs;
     private Integer memoryLimitMb;

@@ -31,8 +31,12 @@ export function loginUser(email: string, password: string): Promise<AuthTokens> 
 }
 
 // POST /auth/refresh — exchanges a still-valid refresh token for a new
-// access/refresh pair. Not wired into the UI yet, but AuthContext will use
-// this later to keep a session alive past the 15-minute access token TTL.
+// access/refresh pair. The actual silent-refresh wiring (AuthContext's
+// proactive timer, api/client.ts's reactive 401 retry) calls this endpoint
+// directly from api/tokenStore.ts instead of through this function, so that
+// refreshing doesn't route through apiFetch's own 401-triggers-a-refresh
+// logic and risk recursing. This export is kept for any caller that wants
+// a one-off refresh outside that flow.
 export function refreshTokens(refreshToken: string): Promise<AuthTokens> {
   return apiFetch<AuthTokens>('/auth/refresh', {
     method: 'POST',

@@ -29,6 +29,12 @@ public class Submission {
 
     private String status; // PENDING, SUCCESS, FAILED
 
+    // true = a real Submit (judged against every test case, hidden
+    // included); false = a Run (visible cases only). See
+    // SubmissionRequest.includeHidden - this is where that flag ends up
+    // persisted, so past-submissions/solved queries can filter to Submits.
+    private Boolean includeHidden;
+
     private String output;
 
     // Populated on state transitions reported by worker-service (e.g. a system error detail)

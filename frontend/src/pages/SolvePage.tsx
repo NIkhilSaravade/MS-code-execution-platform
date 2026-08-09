@@ -1,20 +1,32 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, Navigate, useParams } from 'react-router-dom';
 import Editor from '@monaco-editor/react';
 // @monaco-editor/react wraps the Monaco Editor (the actual code-editing
 // engine behind VS Code) as a React component. We just drop <Editor .../>
 // into our JSX and pass it props — same idea as any component we wrote
 // ourselves, just from a third-party package.
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm'; // adds table support - the plain CommonMark react-markdown ships with doesn't parse markdown tables
 import Logo from '../components/landing/Logo';
-import { DIFFICULTY_COLOR, LANGUAGES, getProblemBySlug, type Language } from '../data/problems';
+import { DIFFICULTY_COLOR, LANGUAGES, type Difficulty, type Language } from '../data/problems';
 import { useAuth } from '../context/AuthContext';
-import { createSubmission, pollSubmissionResult, type TestCaseResult } from '../api/submissions';
-// This is the busiest page in the app: it reads the URL, looks up a
-// problem, manages several pieces of state (selected language, the code
-// being typed, which test case is shown, run status), and — for problems
-// with a real backendProblemId — actually submits code to submission-service
-// and polls for a real judged verdict. Read the useState calls first to
-// understand what this component is "remembering" before diving into the JSX.
+import { API_BASE_URL } from '../api/client';
+import { getProblem, type FunctionSignature, type ProblemSummary } from '../api/problems';
+import { generateStarterCode } from '../utils/starterCode';
+import {
+  createSubmission,
+  getSubmissionsForProblem,
+  pollSubmissionResult,
+  type Submission,
+  type TestCaseResult,
+} from '../api/submissions';
+import { getSolutionForProblem, getNote, saveNote, type Solution as SolutionData } from '../api/solutions';
+// This is the busiest page in the app: it reads the URL, fetches the real
+// problem from problem-service, manages several pieces of state (selected
+// language, the code being typed, which test case is shown, run status),
+// and submits code to submission-service, polling for a real judged
+// verdict. Read the useState calls first to understand what this component
+// is "remembering" before diving into the JSX.
 
 // Monaco's `language` prop expects specific strings; ours happen to match
 // our own Language ids exactly, but we keep this mapping explicit so it's
@@ -52,51 +64,207 @@ interface RunResult {
   testCaseResults: TestCaseResult[] | null;
 }
 
+// Pulls a problem's function signature out of its (nullable, all-or-nothing)
+// functionName/params/returnType fields - null when the problem has none
+// (raw stdin/stdout judge instead of the LeetCode-style harness system).
+function getSignature(problem: ProblemSummary): FunctionSignature | null {
+  if (!problem.functionName || !problem.params || !problem.returnType) {
+    return null;
+  }
+  return {
+    functionName: problem.functionName,
+    params: problem.params,
+    returnType: problem.returnType as FunctionSignature['returnType'],
+  };
+}
+
 export default function SolvePage() {
   // useParams() reads the dynamic parts of the CURRENT URL, based on the
-  // `:slug` placeholder we declared in App.tsx's <Route path="/practice/:slug">.
-  // Visiting /practice/two-sum makes `slug` equal to "two-sum" here.
-  // The `<{ slug: string }>` type argument tells TypeScript what shape to
-  // expect back (react-router can't know your route params at compile time).
-  const { slug } = useParams<{ slug: string }>();
-
-  // Look the problem up from our mock data. `slug ? ... : undefined` is a
-  // ternary guard: useParams technically allows slug to be undefined (if
-  // this component were ever rendered outside a matching route), so we
-  // only call getProblemBySlug when we actually have a string.
-  const problem = slug ? getProblemBySlug(slug) : undefined;
+  // `:id` placeholder we declared in App.tsx's <Route path="/practice/:id">.
+  // Visiting /practice/14 makes `id` equal to "14" here (always a string -
+  // URL segments have no concept of "number").
+  const { id: idParam } = useParams<{ id: string }>();
+  const problemId = idParam ? Number(idParam) : undefined;
 
   // ---- All the component's STATE, declared up front. Each useState call
   // is independent — React doesn't require you to bundle related state
   // into one object; several small useStates is completely normal. ----
 
-  const [language, setLanguage] = useState<Language>('javascript');
+  // The real problem, fetched from problem-service - null means either
+  // "still loading" or "doesn't exist"; `problemLoaded` disambiguates the
+  // two (see the early-return guards below) so a slow fetch doesn't get
+  // mistaken for a 404 and bounce the user back to /practice.
+  const [problem, setProblem] = useState<ProblemSummary | null>(null);
+  const [problemLoaded, setProblemLoaded] = useState(false);
 
-  // The initial value here reads `problem.starterCode[language]` — but
-  // only ONCE, on the component's first render. useState's argument is
-  // only used for the FIRST render; after that, only setCode(...) calls
-  // change this value (see handleLanguageChange below, which updates both
-  // language and code together when the user switches languages).
-  const [code, setCode] = useState(problem ? problem.starterCode[language] : '');
+  const [language, setLanguage] = useState<Language>('javascript');
+  const [code, setCode] = useState('');
 
   const [activeExample, setActiveExample] = useState(0); // which "Case N" tab is selected
   const [consoleTab, setConsoleTab] = useState<'testcase' | 'result'>('testcase');
   const [runStatus, setRunStatus] = useState<RunStatus>('idle');
   const [result, setResult] = useState<RunResult | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
+  // Which top-level panel is showing on the left, alongside Description and
+  // Solutions - mirrors LeetCode's own layout, where Submissions lives next
+  // to the problem statement rather than buried in the bottom console.
+  const [leftTab, setLeftTab] = useState<'description' | 'solutions' | 'submissions'>('description');
+  // This user's past Submits (not Runs - see getSubmissionsForProblem) for
+  // this problem - fetched once on mount, re-fetched whenever a new Submit
+  // reaches a terminal status so the list stays current without a manual
+  // refresh.
+  const [pastSubmissions, setPastSubmissions] = useState<Submission[]>([]);
+  // Which past submission's code + test case breakdown is expanded open in
+  // the Submissions tab - null means "showing the list, nothing expanded".
+  const [selectedSubmissionId, setSelectedSubmissionId] = useState<number | null>(null);
+  // This problem's written solution (12 parts + visualizer), fetched from
+  // solution-service - null means either "still loading" or "none written
+  // yet"; `solutionLoaded` disambiguates the two so the Solutions tab
+  // doesn't flash "not written yet" before the fetch finishes.
+  const [solution, setSolution] = useState<SolutionData | null>(null);
+  const [solutionLoaded, setSolutionLoaded] = useState(false);
+  // The user's own notes for this problem (Solutions tab, after the parts
+  // list) - `noteContent` is the live textarea value, `noteSavedContent` is
+  // what's actually persisted, so we can tell whether there are unsaved
+  // changes without a separate boolean to keep in sync.
+  const [noteContent, setNoteContent] = useState('');
+  const [noteSavedContent, setNoteSavedContent] = useState('');
+  const [noteLoaded, setNoteLoaded] = useState(false);
+  const [noteSaving, setNoteSaving] = useState(false);
   // `RunResult | null` — this state starts as null (no result yet) and
   // becomes a real RunResult object once submission-service reports a
   // terminal verdict (see api/submissions.ts's pollSubmissionResult).
 
   const { accessToken, userId } = useAuth();
 
-  // EARLY RETURN based on data, before the "main" render. If the slug in
-  // the URL doesn't match any mock problem, `problem` is undefined, and
-  // instead of rendering a broken page we render <Navigate>, a
-  // react-router component that immediately redirects the browser
-  // elsewhere. `replace` means it replaces the current history entry
-  // rather than adding a new one (so the back button doesn't bounce back
-  // to the broken URL).
+  // AuthContext silently rotates accessToken every ~14 minutes (proactive
+  // refresh) and also reactively on any 401 mid-request - a token value by
+  // itself is not a meaningful "something the user did" signal. Every fetch
+  // effect below needs the CURRENT token to make its request, but must NOT
+  // re-run (and re-fetch - clobbering an in-progress note edit, resetting
+  // the submissions list, etc.) just because the token rotated. Reading
+  // through a ref decouples "what token to send" from "when to re-fetch".
+  const accessTokenRef = useRef(accessToken);
+  useEffect(() => {
+    accessTokenRef.current = accessToken;
+  }, [accessToken]);
+
+  useEffect(() => {
+    const token = accessTokenRef.current;
+    if (!problemId || !token) {
+      setProblem(null);
+      setProblemLoaded(true);
+      return;
+    }
+    setProblemLoaded(false);
+    getProblem(token, problemId)
+      .then((p) => {
+        setProblem(p);
+        setProblemLoaded(true);
+      })
+      .catch(() => {
+        setProblem(null);
+        setProblemLoaded(true);
+      });
+  }, [problemId]);
+
+  // Sets the starter code once the problem itself loads (or changes) - NOT
+  // on every language switch, since handleLanguageChange below already
+  // handles that case itself (and this running too would stomp it right
+  // back to the DEFAULT language's stub every time).
+  useEffect(() => {
+    if (!problem) return;
+    setCode(generateStarterCode(getSignature(problem), language));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [problem]);
+
+  // Fetches this user's past submissions for this problem. Declared as a
+  // plain function (not useCallback) since it's only ever called from the
+  // effect below or after a fresh submission - both fine to redefine every
+  // render. Reads the token from accessTokenRef (see above) rather than the
+  // accessToken closure variable, so this can be called from a
+  // token-independent effect below without going stale.
+  async function refreshPastSubmissions() {
+    const token = accessTokenRef.current;
+    if (!problemId || !token || !userId) return;
+    try {
+      const submissions = await getSubmissionsForProblem(token, userId, problemId);
+      // Most recent first.
+      setPastSubmissions(
+        [...submissions].sort((a, b) => b.submittedAt.localeCompare(a.submittedAt)),
+      );
+    } catch {
+      // Best-effort - a failed fetch just leaves the tab empty.
+    }
+  }
+
+  useEffect(() => {
+    refreshPastSubmissions();
+    // Deliberately NOT depending on accessToken - a background token
+    // rotation shouldn't re-fetch this list (harmless here since it's
+    // read-only, but pointless network traffic all the same). userId is
+    // stable across a rotation (same session, same subject claim), so it's
+    // safe to keep as a real dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [problemId, userId]);
+
+  useEffect(() => {
+    const token = accessTokenRef.current;
+    if (!problemId || !token) {
+      setSolution(null);
+      setSolutionLoaded(true);
+      return;
+    }
+    setSolutionLoaded(false);
+    getSolutionForProblem(token, problemId).then((s) => {
+      setSolution(s);
+      setSolutionLoaded(true);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [problemId]);
+
+  useEffect(() => {
+    const token = accessTokenRef.current;
+    if (!problemId || !token) {
+      setNoteContent('');
+      setNoteSavedContent('');
+      setNoteLoaded(true);
+      return;
+    }
+    setNoteLoaded(false);
+    getNote(token, problemId).then((n) => {
+      setNoteContent(n.content);
+      setNoteSavedContent(n.content);
+      setNoteLoaded(true);
+    });
+    // Deliberately NOT depending on accessToken (see accessTokenRef above) -
+    // this must only re-fetch when the user switches problems, never when
+    // the token merely rotates, or an in-progress edit gets silently wiped.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [problemId]);
+
+  // EARLY RETURNS based on data, before the "main" render. While the fetch
+  // is still in flight we show a plain loading state rather than either
+  // rendering with a null problem or prematurely redirecting away. Only
+  // once the fetch has actually settled AND come back empty do we treat it
+  // as "not found" and bounce to /practice.
+  if (!problemLoaded) {
+    return (
+      <div
+        style={{
+          height: '100vh',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          background: '#0a0c16',
+          color: '#6b7392',
+          fontFamily: "'Manrope',system-ui,sans-serif",
+        }}
+      >
+        Loading…
+      </div>
+    );
+  }
   if (!problem) {
     return <Navigate to="/practice" replace />;
   }
@@ -110,29 +278,59 @@ export default function SolvePage() {
     // `problem` can't be null/undefined here (we already returned early
     // above if it was), but TypeScript can't always follow that logic
     // inside a nested function, so `!` tells the compiler to trust us.
-    setCode(problem!.starterCode[next]);
+    setCode(generateStarterCode(getSignature(problem!), next));
+  }
+
+  async function handleSaveNote() {
+    if (!problemId || !accessToken) return;
+    setNoteSaving(true);
+    try {
+      const saved = await saveNote(accessToken, problemId, noteContent);
+      setNoteSavedContent(saved.content);
+    } finally {
+      setNoteSaving(false);
+    }
+  }
+
+  // Loads a past submission's code straight into the real editor (same one
+  // used for writing new code) instead of showing a separate read-only
+  // copy, and shows its already-judged verdict in the console's Result tab
+  // - so clicking a submission looks and feels exactly like just having run
+  // it yourself.
+  function loadSubmission(sub: Submission) {
+    setSelectedSubmissionId(sub.id);
+    setLanguage(sub.language as Language);
+    setCode(sub.code);
+    setResult({
+      status: sub.status,
+      passed: sub.status === 'PASSED',
+      output: sub.output,
+      reason: sub.reason,
+      testCaseResults: sub.testCaseResults,
+    });
+    setRunStatus('done');
+    setRunError(null);
+    setConsoleTab('result');
   }
 
   // Calls the real backend judge: POST /submissions, then poll
   // GET /submissions/{id} until it reaches a terminal status. "Run" only
   // judges the visible/sample test cases; "Submit" judges everything,
   // hidden cases included - matching LeetCode's "Run Code" vs "Submit".
-  //
-  // Only works for problems with a real backendProblemId (see
-  // data/problems.ts) - the button is disabled otherwise (see the JSX below).
   async function runCode(includeHidden: boolean) {
-    if (!problem!.backendProblemId || !accessToken || !userId) return;
+    if (!problemId || !accessToken || !userId) return;
 
     setConsoleTab('result'); // auto-switch to the Result tab so the user sees feedback
     setRunStatus('running');
     setResult(null);
     setRunError(null);
+    setSelectedSubmissionId(null); // this run is fresh code, not a re-loaded past submission
 
     try {
       const { submissionId } = await createSubmission(
         accessToken,
         userId,
-        problem!.backendProblemId,
+        problemId,
         code,
         language,
         includeHidden,
@@ -145,12 +343,76 @@ export default function SolvePage() {
         reason: final.reason,
         testCaseResults: final.testCaseResults,
       });
+      refreshPastSubmissions(); // pick up the submission that just finished
     } catch (err) {
       setRunError(err instanceof Error ? err.message : 'Failed to judge submission.');
     } finally {
       setRunStatus('done');
     }
   }
+
+  // Shared per-test-case breakdown markup - used both by the Result tab
+  // (this run's outcome) and the Submissions tab's expanded detail view
+  // (a past submission's outcome). Kept as one function so the two stay
+  // visually identical instead of drifting apart.
+  function renderTestCaseResults(results: TestCaseResult[]) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {results.map((tc) => (
+          <div
+            key={tc.ordinal}
+            style={{
+              border: '1px solid rgba(255,255,255,.08)',
+              borderRadius: 10,
+              padding: '12px 14px',
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                marginBottom: tc.hidden ? 0 : 10,
+                fontSize: 12.5,
+                fontWeight: 700,
+              }}
+            >
+              <span>Case {tc.ordinal + 1}</span>
+              {tc.hidden && <span style={{ color: '#6b7392', fontWeight: 500 }}>(hidden)</span>}
+              <div style={{ flex: 1 }} />
+              <span style={{ color: tc.passed ? '#34d399' : '#f87171' }}>
+                {tc.passed ? 'Passed' : 'Failed'}
+              </span>
+            </div>
+            {/* Hidden test cases only ever reveal pass/fail - see
+                api/submissions.ts's TestCaseResult comment. */}
+            {!tc.hidden && (
+              <div
+                style={{
+                  fontFamily: "'JetBrains Mono',monospace",
+                  fontSize: 12.5,
+                  lineHeight: 1.7,
+                  color: '#b3bacb',
+                }}
+              >
+                <div style={{ color: '#6b7392', marginBottom: 2 }}>Input</div>
+                <div style={{ marginBottom: 8 }}>{tc.input}</div>
+                <div style={{ color: '#6b7392', marginBottom: 2 }}>Expected</div>
+                <div style={{ marginBottom: 8 }}>{tc.expected}</div>
+                <div style={{ color: '#6b7392', marginBottom: 2 }}>Actual</div>
+                <div>{tc.actual}</div>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  // Constraints come back as a single free-text block (problem-service's
+  // `constraints` is one TEXT field, not a list) - split into lines here so
+  // it still renders as a bulleted list, same as before.
+  const constraintLines = problem.constraints.split('\n').map((c) => c.trim()).filter(Boolean);
 
   return (
     <div
@@ -184,7 +446,7 @@ export default function SolvePage() {
         >
           ← Practice
         </Link>
-        <span style={{ fontSize: 14, fontWeight: 700, color: '#eef0f6' }}>{problem.title}</span>
+        <span style={{ fontSize: 14, fontWeight: 700, color: '#eef0f6' }}>{problem.name}</span>
         <div style={{ flex: 1 }} />
 
         {/* Another CONTROLLED form element, this time a <select>. Same
@@ -220,10 +482,7 @@ export default function SolvePage() {
         <button
           onClick={() => runCode(false)}
           // real HTML disabled attribute — browser blocks clicks while true.
-          // Also disabled for problems with no backendProblemId (see
-          // data/problems.ts) - there's no real test data to judge against.
-          disabled={runStatus === 'running' || !problem.backendProblemId}
-          title={!problem.backendProblemId ? 'This problem is browsing-only — not wired to the real judge yet.' : undefined}
+          disabled={runStatus === 'running'}
           className="op-run-btn"
           style={{
             fontFamily: 'inherit',
@@ -234,16 +493,15 @@ export default function SolvePage() {
             border: '1px solid rgba(255,255,255,.14)',
             padding: '9px 18px',
             borderRadius: 10,
-            cursor: runStatus === 'running' || !problem.backendProblemId ? 'default' : 'pointer',
-            opacity: runStatus === 'running' || !problem.backendProblemId ? 0.6 : 1,
+            cursor: runStatus === 'running' ? 'default' : 'pointer',
+            opacity: runStatus === 'running' ? 0.6 : 1,
           }}
         >
           Run
         </button>
         <button
           onClick={() => runCode(true)}
-          disabled={runStatus === 'running' || !problem.backendProblemId}
-          title={!problem.backendProblemId ? 'This problem is browsing-only — not wired to the real judge yet.' : undefined}
+          disabled={runStatus === 'running'}
           className="op-run-btn"
           style={{
             fontFamily: 'inherit',
@@ -254,8 +512,8 @@ export default function SolvePage() {
             border: 'none',
             padding: '9px 20px',
             borderRadius: 10,
-            cursor: runStatus === 'running' || !problem.backendProblemId ? 'default' : 'pointer',
-            opacity: runStatus === 'running' || !problem.backendProblemId ? 0.6 : 1,
+            cursor: runStatus === 'running' ? 'default' : 'pointer',
+            opacity: runStatus === 'running' ? 0.6 : 1,
             boxShadow: '0 4px 20px rgba(124,58,237,.4)',
           }}
         >
@@ -263,23 +521,193 @@ export default function SolvePage() {
         </button>
       </header>
 
-      {/* body: two side-by-side panels — description on the left, editor+console on the right */}
-      <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
-        {/* `minHeight: 0` here (and below) is a common flexbox fix: without
-            it, flex children default to a min-height based on their
-            content, which can prevent inner `overflow: auto` scrolling
-            from working. */}
-
-        {/* description panel */}
+      {/* body: shared Description/Solutions/Submissions tab bar up top, then
+          one of two layouts below it - the normal description+editor split
+          for Description/Submissions, or a full-width two-column split
+          (parts left, visualizer right) for Solutions, since squeezing the
+          visualizer into the narrow 42% description column would cramp it. */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
         <div
           style={{
-            width: '42%',
-            minWidth: 340,
-            borderRight: '1px solid rgba(255,255,255,.08)',
-            overflowY: 'auto', // scrolls independently from the editor side
-            padding: '24px 28px 60px',
+            display: 'flex',
+            gap: 20,
+            padding: '14px 20px',
+            borderBottom: '1px solid rgba(255,255,255,.08)',
+            flexShrink: 0,
           }}
         >
+          {(
+            [
+              { id: 'description', label: 'Description' },
+              { id: 'solutions', label: 'Solutions' },
+              { id: 'submissions', label: `Submissions${pastSubmissions.length > 0 ? ` (${pastSubmissions.length})` : ''}` },
+            ] as const
+          ).map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setLeftTab(t.id)}
+              className="op-tab"
+              style={{
+                fontFamily: 'inherit',
+                fontSize: 13,
+                fontWeight: 700,
+                background: 'none',
+                border: 'none',
+                cursor: 'pointer',
+                padding: 0,
+                color: leftTab === t.id ? '#eef0f6' : '#6b7392',
+              }}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {leftTab === 'solutions' ? (
+          <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
+            {/* left half: the solution write-up, rendered as one continuous
+                document (no per-section collapsing), plus a Notes section
+                below it. */}
+            <div
+              style={{
+                width: '50%',
+                minWidth: 320,
+                borderRight: '1px solid rgba(255,255,255,.08)',
+                overflowY: 'auto',
+                padding: '24px 28px 60px',
+              }}
+            >
+              {!solutionLoaded ? (
+                <span style={{ color: '#6b7392', fontSize: 14 }}>Loading…</span>
+              ) : !solution ? (
+                <span style={{ color: '#6b7392', fontSize: 14 }}>
+                  Solutions aren&apos;t written yet for this problem.
+                </span>
+              ) : (
+                // All parts concatenated into one continuous document - old
+                // data with multiple titled parts (e.g. content written
+                // before this became a single free-form write-up) still
+                // reads fine, just flowing straight through with no
+                // collapsing and no per-part chrome.
+                <div className="op-solution-md">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {solution.parts.map((part) => part.markdown).join('\n\n')}
+                  </ReactMarkdown>
+                </div>
+              )}
+
+              {/* Notes - the user's own free-text scratchpad for this
+                  problem, independent of whether a written solution exists.
+                  Explicit Save button (not auto-save) so we're not firing a
+                  network request on every keystroke. */}
+              <div
+                style={{
+                  marginTop: 20,
+                  border: '1px solid rgba(255,255,255,.08)',
+                  borderRadius: 10,
+                  padding: '14px 16px',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                  <span style={{ fontSize: 13.5, fontWeight: 700, color: '#eef0f6' }}>Notes</span>
+                  <div style={{ flex: 1 }} />
+                  {noteContent !== noteSavedContent && (
+                    <span style={{ fontSize: 11.5, color: '#6b7392' }}>Unsaved changes</span>
+                  )}
+                  <button
+                    onClick={handleSaveNote}
+                    disabled={noteSaving || noteContent === noteSavedContent}
+                    style={{
+                      fontFamily: 'inherit',
+                      fontSize: 12,
+                      fontWeight: 700,
+                      padding: '6px 14px',
+                      borderRadius: 8,
+                      border: '1px solid rgba(167,139,250,.4)',
+                      background: 'rgba(124,58,237,.14)',
+                      color: '#c4b5fd',
+                      cursor: noteSaving || noteContent === noteSavedContent ? 'default' : 'pointer',
+                      opacity: noteSaving || noteContent === noteSavedContent ? 0.5 : 1,
+                    }}
+                  >
+                    {noteSaving ? 'Saving…' : 'Save'}
+                  </button>
+                </div>
+                <textarea
+                  value={noteContent}
+                  onChange={(e) => setNoteContent(e.target.value)}
+                  disabled={!noteLoaded}
+                  placeholder="Jot down anything you want to remember about this problem…"
+                  style={{
+                    width: '100%',
+                    minHeight: 140,
+                    resize: 'vertical',
+                    background: 'rgba(255,255,255,.04)',
+                    border: '1px solid rgba(255,255,255,.08)',
+                    borderRadius: 8,
+                    padding: '10px 12px',
+                    color: '#cdd3e0',
+                    fontFamily: 'inherit',
+                    fontSize: 13.5,
+                    lineHeight: 1.6,
+                    outline: 'none',
+                  }}
+                />
+              </div>
+            </div>
+
+            {/* right half: the step-through visualizer */}
+            <div style={{ width: '50%', display: 'flex', flexDirection: 'column' }}>
+              {solution?.visualizerUrl ? (
+                // Sandboxed iframe pointed at solution-service's public
+                // visualizer endpoint (see api/solutions.ts) - the
+                // visualizer is a fully self-contained page with its own
+                // inline CSS/JS, so it's served as-is rather than
+                // reimplemented in React. allow-scripts is needed for its
+                // own JS to run; no allow-same-origin, so it can't reach
+                // into this page's DOM/localStorage even though it's
+                // same-origin by URL.
+                <iframe
+                  src={`${API_BASE_URL}${solution.visualizerUrl}`}
+                  title={`${problem.name} visualizer`}
+                  sandbox="allow-scripts"
+                  style={{ width: '100%', height: '100%', border: 'none' }}
+                />
+              ) : (
+                <div
+                  style={{
+                    flex: 1,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: '#6b7392',
+                    fontSize: 14,
+                  }}
+                >
+                  No visualizer for this problem yet.
+                </div>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
+            {/* `minHeight: 0` here (and below) is a common flexbox fix:
+                without it, flex children default to a min-height based on
+                their content, which can prevent inner `overflow: auto`
+                scrolling from working. */}
+
+            {/* left panel: Description / Submissions content */}
+            <div
+              style={{
+                width: '42%',
+                minWidth: 340,
+                borderRight: '1px solid rgba(255,255,255,.08)',
+                overflowY: 'auto',
+                padding: '24px 28px 60px',
+              }}
+            >
+              {leftTab === 'description' && (
+                <>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
             <h1
               style={{
@@ -289,7 +717,7 @@ export default function SolvePage() {
                 margin: 0,
               }}
             >
-              {problem.id}. {problem.title}
+              {problem.id}. {problem.name}
             </h1>
           </div>
           <div style={{ display: 'flex', gap: 8, marginBottom: 22, flexWrap: 'wrap' }}>
@@ -297,12 +725,12 @@ export default function SolvePage() {
               style={{
                 fontSize: 12,
                 fontWeight: 700,
-                color: DIFFICULTY_COLOR[problem.difficulty],
+                color: DIFFICULTY_COLOR[problem.difficulty as Difficulty] ?? '#9aa2b8',
                 // Template literal appending a hex alpha suffix ("1a" ≈ 10%
                 // opacity) to the difficulty color, e.g. "#34d3991a" — a
                 // quick way to derive a translucent background from a
                 // solid color string without a separate color library.
-                background: `${DIFFICULTY_COLOR[problem.difficulty]}1a`,
+                background: `${DIFFICULTY_COLOR[problem.difficulty as Difficulty] ?? '#9aa2b8'}1a`,
                 padding: '5px 11px',
                 borderRadius: 999,
               }}
@@ -380,13 +808,69 @@ export default function SolvePage() {
 
           <div style={{ fontSize: 13, fontWeight: 700, color: '#eef0f6', marginBottom: 8 }}>Constraints</div>
           <ul style={{ margin: 0, paddingLeft: 20, color: '#9aa2b8', fontSize: 13, lineHeight: 1.9 }}>
-            {problem.constraints.map((c, i) => (
+            {constraintLines.map((c, i) => (
               <li key={i} style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 12.5 }}>
                 {c}
               </li>
             ))}
           </ul>
-        </div>
+                </>
+              )}
+
+              {leftTab === 'submissions' && (
+            <div style={{ fontSize: 13.5 }}>
+              {pastSubmissions.length === 0 ? (
+                <span style={{ color: '#6b7392' }}>
+                  No submissions yet - click Submit above to judge your solution against every test case.
+                </span>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {pastSubmissions.map((s) => (
+                    <button
+                      key={s.id}
+                      onClick={() => loadSubmission(s)}
+                      // Highlight whichever submission's code is currently
+                      // loaded into the editor (see loadSubmission below).
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 12,
+                        border: '1px solid',
+                        borderColor:
+                          selectedSubmissionId === s.id ? 'rgba(167,139,250,.5)' : 'rgba(255,255,255,.08)',
+                        background: selectedSubmissionId === s.id ? 'rgba(124,58,237,.1)' : 'none',
+                        borderRadius: 10,
+                        padding: '10px 14px',
+                        fontSize: 12.5,
+                        fontFamily: 'inherit',
+                        cursor: 'pointer',
+                        width: '100%',
+                        textAlign: 'left',
+                      }}
+                    >
+                      <span
+                        style={{
+                          fontWeight: 700,
+                          color: s.status === 'PASSED' ? '#34d399' : '#f87171',
+                          minWidth: 100,
+                        }}
+                      >
+                        {s.status}
+                      </span>
+                      <span style={{ color: '#9aa2b8', fontFamily: "'JetBrains Mono',monospace" }}>
+                        {s.language}
+                      </span>
+                      <div style={{ flex: 1 }} />
+                      <span style={{ color: '#6b7392' }}>
+                        {new Date(s.submittedAt).toLocaleString()}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+              )}
+            </div>
 
         {/* editor + console */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
@@ -478,10 +962,14 @@ export default function SolvePage() {
             </div>
 
             <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px' }}>
-              {/* Only one of these two blocks renders at a time, based on
+              {/* One of these blocks renders at a time, based on
                   `consoleTab` state — this IS the tab content switching. */}
               {consoleTab === 'testcase' && (
                 <div>
+                  {problem.examples.length === 0 ? (
+                    <span style={{ color: '#6b7392' }}>No examples for this problem.</span>
+                  ) : (
+                    <>
                   <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
                     {/* `problem.examples.map((_, i) => ...)` — the `_` is a
                         naming convention meaning "I need the index, but I'm
@@ -524,6 +1012,8 @@ export default function SolvePage() {
                     <div style={{ color: '#6b7392', marginBottom: 4 }}>Expected Output</div>
                     <div>{problem.examples[activeExample].output}</div>
                   </div>
+                    </>
+                  )}
                 </div>
               )}
 
@@ -534,12 +1024,7 @@ export default function SolvePage() {
                       network/API failures (a submission that never even made
                       it to a terminal status - distinct from a submission
                       that WAS judged and simply failed). */}
-                  {!problem.backendProblemId && (
-                    <span style={{ color: '#6b7392' }}>
-                      This problem is browsing-only — it isn&apos;t wired to the real judge yet.
-                    </span>
-                  )}
-                  {problem.backendProblemId && runStatus === 'idle' && (
+                  {runStatus === 'idle' && (
                     <span style={{ color: '#6b7392' }}>Run your code to see results here.</span>
                   )}
                   {runStatus === 'running' && (
@@ -610,57 +1095,7 @@ export default function SolvePage() {
                           for older/incomplete results (e.g. a CE verdict,
                           which never reaches any test case). */}
                       {result.testCaseResults ? (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                          {result.testCaseResults.map((tc) => (
-                            <div
-                              key={tc.ordinal}
-                              style={{
-                                border: '1px solid rgba(255,255,255,.08)',
-                                borderRadius: 10,
-                                padding: '12px 14px',
-                              }}
-                            >
-                              <div
-                                style={{
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: 8,
-                                  marginBottom: tc.hidden ? 0 : 10,
-                                  fontSize: 12.5,
-                                  fontWeight: 700,
-                                }}
-                              >
-                                <span>Case {tc.ordinal + 1}</span>
-                                {tc.hidden && (
-                                  <span style={{ color: '#6b7392', fontWeight: 500 }}>(hidden)</span>
-                                )}
-                                <div style={{ flex: 1 }} />
-                                <span style={{ color: tc.passed ? '#34d399' : '#f87171' }}>
-                                  {tc.passed ? 'Passed' : 'Failed'}
-                                </span>
-                              </div>
-                              {/* Hidden test cases only ever reveal pass/fail -
-                                  see api/submissions.ts's TestCaseResult comment. */}
-                              {!tc.hidden && (
-                                <div
-                                  style={{
-                                    fontFamily: "'JetBrains Mono',monospace",
-                                    fontSize: 12.5,
-                                    lineHeight: 1.7,
-                                    color: '#b3bacb',
-                                  }}
-                                >
-                                  <div style={{ color: '#6b7392', marginBottom: 2 }}>Input</div>
-                                  <div style={{ marginBottom: 8 }}>{tc.input}</div>
-                                  <div style={{ color: '#6b7392', marginBottom: 2 }}>Expected</div>
-                                  <div style={{ marginBottom: 8 }}>{tc.expected}</div>
-                                  <div style={{ color: '#6b7392', marginBottom: 2 }}>Actual</div>
-                                  <div>{tc.actual}</div>
-                                </div>
-                              )}
-                            </div>
-                          ))}
-                        </div>
+                        renderTestCaseResults(result.testCaseResults)
                       ) : (
                         <div
                           style={{
@@ -681,6 +1116,8 @@ export default function SolvePage() {
             </div>
           </div>
         </div>
+          </div>
+        )}
       </div>
     </div>
   );

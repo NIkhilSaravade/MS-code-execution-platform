@@ -14,6 +14,9 @@ public class ProblemResponse {
     private String name;
     private String description;
     private String constraints;
+    private String difficulty;
+    private List<String> tags;
+    private List<Example> examples;
 
     // Null when the problem has no function signature (see FunctionSignature/
     // harness package) - submission-service falls back to raw-code judging

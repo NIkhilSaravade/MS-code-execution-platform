@@ -40,6 +40,10 @@ export interface Submission {
   code: string;
   language: string;
   status: string;
+  // true = a real Submit (judged against hidden cases too), false = a Run
+  // (visible cases only). getSubmissionsForProblem only ever returns
+  // includeHidden=true rows - see submission-service's SubmissionRepository.
+  includeHidden: boolean;
   output: string | null;
   reason: string | null;
   testCaseResults: TestCaseResult[] | null;
@@ -71,6 +75,26 @@ export function createSubmission(
 
 export function getSubmission(accessToken: string, submissionId: number): Promise<Submission> {
   return apiFetch<Submission>(`/submissions/${submissionId}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+}
+
+// All of this user's past submissions for one problem - backs the Solve
+// page's "Submissions" tab.
+export function getSubmissionsForProblem(
+  accessToken: string,
+  userId: string,
+  problemId: number,
+): Promise<Submission[]> {
+  return apiFetch<Submission[]>(`/submissions/user/${userId}/problem/${problemId}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+}
+
+// The set of problemIds this user has at least one PASSED submission for -
+// backs the Practice list's "Solved" badge.
+export function getSolvedProblemIds(accessToken: string, userId: string): Promise<number[]> {
+  return apiFetch<number[]>(`/submissions/user/${userId}/solved`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
 }

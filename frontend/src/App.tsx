@@ -10,10 +10,12 @@ import { Route, Routes } from 'react-router-dom';
 import LandingPage from './pages/LandingPage';
 import PracticePage from './pages/PracticePage';
 import SolvePage from './pages/SolvePage';
+import AddProblemPage from './pages/AddProblemPage';
 import LoginPage from './pages/LoginPage';
 import SignupPage from './pages/SignupPage';
 import ProtectedRoute from './components/shared/ProtectedRoute';
 import PublicOnlyRoute from './components/shared/PublicOnlyRoute';
+import AdminRoute from './components/shared/AdminRoute';
 // These are our "page" components, each living in src/pages/.
 // A "page" is not a special React concept — it's just a regular component
 // that we've chosen to treat as a full screen.
@@ -51,12 +53,42 @@ function App() {
         }
       />
 
-      {/* The `:slug` part is a URL PARAMETER — a placeholder. It matches
-          anything, e.g. /practice/two-sum or /practice/lru-cache.
-          Inside SolvePage, useParams() reads out whatever was in that slot.
-          Also protected — same login requirement as /practice. */}
+      {/* ADMIN-only - listed before the dynamic :id route below so the
+          static "new" segment reads unambiguously, even though React
+          Router v6+ would rank it correctly either way. Nested inside
+          ProtectedRoute so a logged-out visitor hits /login first;
+          AdminRoute then bounces a logged-in non-admin back to /practice. */}
       <Route
-        path="/practice/:slug"
+        path="/practice/new"
+        element={
+          <ProtectedRoute>
+            <AdminRoute>
+              <AddProblemPage />
+            </AdminRoute>
+          </ProtectedRoute>
+        }
+      />
+
+      {/* ADMIN-only, edit-in-place for an existing problem - listed before
+          the plain "/practice/:id" route below for the same "static segment
+          reads unambiguously" reason as "/practice/new" above. */}
+      <Route
+        path="/practice/:id/edit"
+        element={
+          <ProtectedRoute>
+            <AdminRoute>
+              <AddProblemPage />
+            </AdminRoute>
+          </ProtectedRoute>
+        }
+      />
+
+      {/* The `:id` part is a URL PARAMETER — a placeholder, matching a real
+          problem-service problem id, e.g. /practice/14. Inside SolvePage,
+          useParams() reads out whatever was in that slot. Also protected —
+          same login requirement as /practice. */}
+      <Route
+        path="/practice/:id"
         element={
           <ProtectedRoute>
             <SolvePage />
