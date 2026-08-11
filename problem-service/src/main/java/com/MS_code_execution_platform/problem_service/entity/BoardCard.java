@@ -30,5 +30,12 @@ public class BoardCard {
 
     private String color;
 
+    // Manual override for the card's box size / title font size, as a
+    // 1-10 level rather than raw pixels (see the corner drag-handle resize
+    // and the font +/- control on ProblemBoard2D's card boxes) - null means
+    // "use the frontend's own default level".
+    private Integer sizeLevel;
+    private Integer fontLevel;
+
     private Instant createdAt;
 }

@@ -11,6 +11,11 @@ export interface BoardCard {
   id: number;
   title: string;
   color?: string | null;
+  // Manual override for the card's box size / title font size, as a 1-10
+  // level (see ProblemBoard2D's SIZE_LEVELS/FONT_LEVELS) rather than raw
+  // pixels - null/undefined means "use the default level".
+  sizeLevel?: number | null;
+  fontLevel?: number | null;
 }
 
 export function listBoardCards(accessToken: string): Promise<BoardCard[]> {
@@ -37,6 +42,24 @@ export function updateBoardCard(
     method: 'PUT',
     headers: { Authorization: `Bearer ${accessToken}` },
     body: JSON.stringify({ title, color }),
+  });
+}
+
+// Deliberately separate from updateBoardCard (title/color) - see
+// problem-service's BoardCardSizeRequest for why sharing one request shape
+// would risk a plain rename call wiping out a saved level. Always takes both
+// levels together (not a partial update) - callers that only mean to change
+// one pass the other's current value through unchanged.
+export function resizeBoardCard(
+  accessToken: string,
+  id: number,
+  sizeLevel: number,
+  fontLevel: number,
+): Promise<BoardCard> {
+  return apiFetch<BoardCard>(`/board/cards/${id}/size`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${accessToken}` },
+    body: JSON.stringify({ sizeLevel, fontLevel }),
   });
 }
 

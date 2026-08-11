@@ -7,7 +7,7 @@ import { useAuth } from '../context/AuthContext';
 import { getSolvedProblemIds } from '../api/submissions';
 import { listProblems, deleteProblem, type ProblemSummary } from '../api/problems';
 import { deleteSolution } from '../api/solutions';
-import { listBoardCards, createBoardCard, updateBoardCard, deleteBoardCard, type BoardCard } from '../api/boardCards';
+import { listBoardCards, createBoardCard, updateBoardCard, resizeBoardCard, deleteBoardCard, type BoardCard } from '../api/boardCards';
 import {
   listBoardConnections,
   createBoardConnection,
@@ -182,8 +182,12 @@ export default function PracticePage() {
     });
   }
 
-  async function handleCreateBoardCard(title: string, x: number, y: number) {
-    if (!accessToken) return;
+  // Returns the new card's id (or undefined on failure) so the board can
+  // immediately drop it into rename mode - no upfront "name your card"
+  // popup, the card is created straight away with a placeholder title and
+  // the user renames it inline afterward, same as any other rename.
+  async function handleCreateBoardCard(title: string, x: number, y: number): Promise<number | undefined> {
+    if (!accessToken) return undefined;
     setBoardError(null);
     try {
       const created = await createBoardCard(accessToken, title);
@@ -193,9 +197,11 @@ export default function PracticePage() {
         ...prev.filter((p) => !(p.nodeType === 'CARD' && p.nodeId === created.id)),
         savedPosition,
       ]);
+      return created.id;
     } catch (err) {
       console.error('Failed to create board card', err);
       setBoardError(err instanceof Error ? `Couldn't create pattern: ${err.message}` : "Couldn't create pattern.");
+      return undefined;
     }
   }
 
@@ -208,6 +214,18 @@ export default function PracticePage() {
     } catch (err) {
       console.error('Failed to rename board card', err);
       setBoardError(err instanceof Error ? `Couldn't rename pattern: ${err.message}` : "Couldn't rename pattern.");
+    }
+  }
+
+  async function handleResizeBoardCard(id: number, sizeLevel: number, fontLevel: number) {
+    if (!accessToken) return;
+    setBoardError(null);
+    try {
+      const updated = await resizeBoardCard(accessToken, id, sizeLevel, fontLevel);
+      setBoardCards((prev) => prev.map((c) => (c.id === id ? updated : c)));
+    } catch (err) {
+      console.error('Failed to resize board card', err);
+      setBoardError(err instanceof Error ? `Couldn't resize pattern: ${err.message}` : "Couldn't resize pattern.");
     }
   }
 
@@ -236,7 +254,12 @@ export default function PracticePage() {
     setBoardError(null);
     try {
       const created = await createBoardConnection(accessToken, a, b);
-      setBoardConnections((prev) => [...prev, created]);
+      // Idempotent on the backend - re-connecting an already-connected pair
+      // (e.g. clicking the same two nodes again in either order) returns
+      // the SAME existing connection rather than erroring. Replace any
+      // existing entry with that id instead of blindly appending, or the
+      // list ends up with duplicate-id rows for the one underlying edge.
+      setBoardConnections((prev) => [...prev.filter((c) => c.id !== created.id), created]);
     } catch (err) {
       console.error('Failed to create board connection', err);
       setBoardError(err instanceof Error ? `Couldn't connect: ${err.message}` : "Couldn't connect.");
@@ -376,35 +399,49 @@ export default function PracticePage() {
             maxWidth: isBoardView ? 'none' : 1080,
             margin: isBoardView ? 0 : '0 auto',
             width: '100%',
-            padding: isBoardView ? '20px 24px 24px' : '48px 32px 100px',
+            // Board view: shrunk to a thin margin (not 0 - the canvas'
+            // resize/toolbar overlays still want a little breathing room)
+            // so the canvas claims as much of the window as possible in
+            // every direction, instead of the List view's generous reading
+            // margins.
+            padding: isBoardView ? '8px 8px 8px' : '48px 32px 100px',
             boxSizing: 'border-box',
             overflowY: isBoardView ? 'hidden' : 'auto',
           }}
         >
-        <div
-          style={{
-            fontFamily: "'JetBrains Mono',monospace",
-            fontSize: 11.5,
-            letterSpacing: '.16em',
-            color: '#8b7fe0',
-            marginBottom: 12,
-            flexShrink: 0,
-          }}
-        >
-          PRACTICE
-        </div>
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16, marginBottom: 10, flexShrink: 0 }}>
-          <h1
+        {/* The "PRACTICE" eyebrow + big heading only make sense as a page
+            title for the List view's reading layout - on the Board view
+            they were just eating vertical space over the canvas for no
+            benefit (the canvas has its own toolbar/context), so they're
+            skipped entirely there. */}
+        {!isBoardView && (
+          <div
             style={{
-              fontFamily: "'Space Grotesk',sans-serif",
-              fontWeight: 700,
-              fontSize: 'clamp(28px,3.6vw,42px)',
-              letterSpacing: '-.02em',
-              margin: 0,
+              fontFamily: "'JetBrains Mono',monospace",
+              fontSize: 11.5,
+              letterSpacing: '.16em',
+              color: '#8b7fe0',
+              marginBottom: 12,
+              flexShrink: 0,
             }}
           >
-            Sharpen your edge.
-          </h1>
+            PRACTICE
+          </div>
+        )}
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16, marginBottom: isBoardView ? 8 : 10, flexShrink: 0 }}>
+          {!isBoardView && (
+            <h1
+              style={{
+                fontFamily: "'Space Grotesk',sans-serif",
+                fontWeight: 700,
+                fontSize: 'clamp(28px,3.6vw,42px)',
+                letterSpacing: '-.02em',
+                margin: 0,
+              }}
+            >
+              Sharpen your edge.
+            </h1>
+          )}
           <div style={{ flex: 1 }} />
           {/* Admin-only - see AuthContext.isAdmin's comment: this is a UI
               convenience, POST /problems independently re-checks ADMIN
@@ -527,6 +564,7 @@ export default function PracticePage() {
             }}
           >
             <ProblemBoard2D
+              isAdmin={isAdmin}
               problems={problems}
               cards={boardCards}
               connections={boardConnections}
@@ -535,6 +573,7 @@ export default function PracticePage() {
               onOpenProblem={(id) => window.open(`/practice/${id}`, '_blank', 'noopener,noreferrer')}
               onCreateCard={handleCreateBoardCard}
               onRenameCard={handleRenameBoardCard}
+              onResizeCard={handleResizeBoardCard}
               onDeleteCard={handleDeleteBoardCard}
               onCreateConnection={handleCreateBoardConnection}
               onDeleteConnection={handleDeleteBoardConnection}

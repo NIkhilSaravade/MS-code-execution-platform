@@ -4,16 +4,9 @@ import com.MS_code_execution_platform.problem_service.entity.BoardCard;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
-import java.util.List;
-import java.util.Optional;
-import java.util.UUID;
-
+// One shared board - findAll()/findById()/existsById() (all inherited from
+// JpaRepository) are all this needs now; the per-user query methods this
+// used to have were removed along with the per-user board design.
 @Repository
 public interface BoardCardRepository extends JpaRepository<BoardCard, Long> {
-
-    List<BoardCard> findByUserId(UUID userId);
-
-    Optional<BoardCard> findByIdAndUserId(Long id, UUID userId);
-
-    boolean existsByIdAndUserId(Long id, UUID userId);
 }

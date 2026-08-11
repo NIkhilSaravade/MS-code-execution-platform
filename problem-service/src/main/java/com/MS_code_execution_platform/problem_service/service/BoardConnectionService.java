@@ -5,8 +5,8 @@ import com.MS_code_execution_platform.problem_service.dto.BoardConnectionRespons
 import com.MS_code_execution_platform.problem_service.entity.BoardConnection;
 import com.MS_code_execution_platform.problem_service.entity.BoardNodeType;
 import com.MS_code_execution_platform.problem_service.repository.BoardConnectionRepository;
+import jakarta.persistence.EntityNotFoundException;
 import lombok.RequiredArgsConstructor;
-import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -20,16 +20,18 @@ public class BoardConnectionService {
     private final BoardConnectionRepository connectionRepository;
     private final BoardNodeValidator nodeValidator;
 
-    public List<BoardConnectionResponse> listConnections(UUID userId) {
-        return connectionRepository.findByUserId(userId).stream()
+    // One shared board - see BoardCardController's comment.
+    public List<BoardConnectionResponse> listConnections() {
+        return connectionRepository.findAll().stream()
                 .map(BoardConnectionService::toResponse)
                 .toList();
     }
 
     // Canonicalized by (type, id) so the same pair can never be stored twice
     // in opposite directions. Idempotent: re-requesting an existing pair
-    // just returns it rather than erroring.
-    public BoardConnectionResponse createConnection(UUID userId, BoardConnectionRequest request) {
+    // just returns it rather than erroring. creatorUserId is recorded as an
+    // audit trail only (who added this edge), not used to scope anything.
+    public BoardConnectionResponse createConnection(UUID creatorUserId, BoardConnectionRequest request) {
         if (request.getNodeAType() == null || request.getNodeAId() == null
                 || request.getNodeBType() == null || request.getNodeBId() == null) {
             throw new IllegalArgumentException("nodeAType, nodeAId, nodeBType and nodeBId are required");
@@ -38,8 +40,8 @@ public class BoardConnectionService {
             throw new IllegalArgumentException("Cannot connect a node to itself");
         }
 
-        nodeValidator.requireExists(userId, request.getNodeAType(), request.getNodeAId());
-        nodeValidator.requireExists(userId, request.getNodeBType(), request.getNodeBId());
+        nodeValidator.requireExists(request.getNodeAType(), request.getNodeAId());
+        nodeValidator.requireExists(request.getNodeBType(), request.getNodeBId());
 
         boolean aFirst = isCanonicalOrder(
                 request.getNodeAType(), request.getNodeAId(), request.getNodeBType(), request.getNodeBId());
@@ -49,11 +51,11 @@ public class BoardConnectionService {
         Long bId = aFirst ? request.getNodeBId() : request.getNodeAId();
 
         return connectionRepository
-                .findByUserIdAndNodeATypeAndNodeAIdAndNodeBTypeAndNodeBId(userId, aType, aId, bType, bId)
+                .findByNodeATypeAndNodeAIdAndNodeBTypeAndNodeBId(aType, aId, bType, bId)
                 .map(BoardConnectionService::toResponse)
                 .orElseGet(() -> {
                     BoardConnection saved = connectionRepository.save(BoardConnection.builder()
-                            .userId(userId)
+                            .userId(creatorUserId)
                             .nodeAType(aType)
                             .nodeAId(aId)
                             .nodeBType(bType)
@@ -65,9 +67,9 @@ public class BoardConnectionService {
                 });
     }
 
-    public void deleteConnection(UUID userId, Long id) {
-        BoardConnection connection = connectionRepository.findByIdAndUserId(id, userId)
-                .orElseThrow(() -> new AccessDeniedException("Connection not found"));
+    public void deleteConnection(Long id) {
+        BoardConnection connection = connectionRepository.findById(id)
+                .orElseThrow(() -> new EntityNotFoundException("Connection not found: " + id));
         connectionRepository.delete(connection);
     }
 

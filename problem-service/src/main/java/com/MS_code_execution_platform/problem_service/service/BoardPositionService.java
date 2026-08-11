@@ -20,29 +20,31 @@ public class BoardPositionService {
     private final BoardNodePositionRepository positionRepository;
     private final BoardNodeValidator nodeValidator;
 
-    public List<BoardPositionResponse> listPositions(UUID userId) {
-        return positionRepository.findByUserId(userId).stream()
+    // One shared board - see BoardCardController's comment.
+    public List<BoardPositionResponse> listPositions() {
+        return positionRepository.findAll().stream()
                 .map(BoardPositionService::toResponse)
                 .toList();
     }
 
-    // Upsert, keyed by (user, nodeType, nodeId) - the board re-saves a
-    // node's position every time it's dropped, so re-dragging the same node
+    // Upsert, keyed by (nodeType, nodeId) - the board re-saves a node's
+    // position every time it's dropped, so re-dragging the same node
     // overwrites its previous spot rather than erroring or piling up rows.
-    public BoardPositionResponse savePosition(UUID userId, BoardPositionRequest request) {
+    // lastEditedByUserId is recorded as an audit trail only.
+    public BoardPositionResponse savePosition(UUID lastEditedByUserId, BoardPositionRequest request) {
         if (request.getNodeType() == null || request.getNodeId() == null
                 || request.getX() == null || request.getY() == null) {
             throw new IllegalArgumentException("nodeType, nodeId, x and y are required");
         }
-        nodeValidator.requireExists(userId, request.getNodeType(), request.getNodeId());
+        nodeValidator.requireExists(request.getNodeType(), request.getNodeId());
 
         BoardNodePosition position = positionRepository
-                .findByUserIdAndNodeTypeAndNodeId(userId, request.getNodeType(), request.getNodeId())
+                .findByNodeTypeAndNodeId(request.getNodeType(), request.getNodeId())
                 .orElseGet(() -> BoardNodePosition.builder()
-                        .userId(userId)
                         .nodeType(request.getNodeType())
                         .nodeId(request.getNodeId())
                         .build());
+        position.setUserId(lastEditedByUserId);
         position.setX(request.getX());
         position.setY(request.getY());
         position.setUpdatedAt(Instant.now());
@@ -50,8 +52,8 @@ public class BoardPositionService {
     }
 
     @Transactional
-    public void deletePosition(UUID userId, BoardNodeType nodeType, Long nodeId) {
-        positionRepository.deleteByUserIdAndNodeTypeAndNodeId(userId, nodeType, nodeId);
+    public void deletePosition(BoardNodeType nodeType, Long nodeId) {
+        positionRepository.deleteByNodeTypeAndNodeId(nodeType, nodeId);
     }
 
     private static BoardPositionResponse toResponse(BoardNodePosition position) {

@@ -9,4 +9,6 @@ public class BoardCardResponse {
     private Long id;
     private String title;
     private String color;
+    private Integer sizeLevel;
+    private Integer fontLevel;
 }
