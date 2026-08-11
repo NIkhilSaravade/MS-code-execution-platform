@@ -1,6 +1,6 @@
 package com.MS_code_execution_platform.submission_service.config;
 
-import com.MS_code_execution_platform.submission_service.dto.ExecutionResultEvent;
+import com.MS_code_execution_platform.submission_service.dto.SubmissionUpdateEvent;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.springframework.beans.factory.annotation.Value;
@@ -38,40 +38,46 @@ public class KafkaConsumerConfig {
     @Value("${spring.kafka.ssl.trust-store-type}")
     private String trustStoreType;
 
-    @Bean
-    public ConsumerFactory<String, ExecutionResultEvent> consumerFactory() {
-
-        JsonDeserializer<ExecutionResultEvent> deserializer =
-                new JsonDeserializer<>(ExecutionResultEvent.class);
-
-        deserializer.addTrustedPackages("*");
-        deserializer.setUseTypeHeaders(false);
-
+    private Map<String, Object> baseConsumerProps(String groupId) {
         Map<String, Object> props = new HashMap<>();
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
-        props.put(ConsumerConfig.GROUP_ID_CONFIG, "submission-group");
+        props.put(ConsumerConfig.GROUP_ID_CONFIG, groupId);
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
         props.put("security.protocol", securityProtocol);
         props.put("sasl.mechanism", saslMechanism);
         props.put("sasl.jaas.config", saslJaasConfig);
         props.put("ssl.truststore.location", trustStoreLocation);
         props.put("ssl.truststore.type", trustStoreType);
+        return props;
+    }
+
+    // submission-update-topic: the single write-back path for a submission's
+    // status, published by execution-result-service once it has persisted a
+    // judged result - see kafka.SubmissionUpdateConsumer.
+    @Bean
+    public ConsumerFactory<String, SubmissionUpdateEvent> submissionUpdateConsumerFactory() {
+
+        JsonDeserializer<SubmissionUpdateEvent> deserializer =
+                new JsonDeserializer<>(SubmissionUpdateEvent.class);
+
+        deserializer.addTrustedPackages("*");
+        deserializer.setUseTypeHeaders(false);
 
         return new DefaultKafkaConsumerFactory<>(
-                props,
+                baseConsumerProps("submission-group"),
                 new StringDeserializer(),
                 deserializer
         );
     }
 
     @Bean
-    public ConcurrentKafkaListenerContainerFactory<String, ExecutionResultEvent>
-    kafkaListenerContainerFactory() {
+    public ConcurrentKafkaListenerContainerFactory<String, SubmissionUpdateEvent>
+    submissionUpdateKafkaListenerContainerFactory() {
 
-        ConcurrentKafkaListenerContainerFactory<String, ExecutionResultEvent> factory =
+        ConcurrentKafkaListenerContainerFactory<String, SubmissionUpdateEvent> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
 
-        factory.setConsumerFactory(consumerFactory());
+        factory.setConsumerFactory(submissionUpdateConsumerFactory());
 
         return factory;
     }

@@ -17,15 +17,15 @@ type Config struct {
 	WorkerID       string
 
 	// Kafka
-	KafkaBrokers            []string
-	KafkaConsumerGroupID    string
-	KafkaSubmissionTopic    string
-	KafkaExecutionDoneTopic string
-	KafkaExecutionFailTopic string
-	KafkaDLQTopic           string
-	KafkaMaxRetryAttempts   int
-	KafkaDialTimeout        time.Duration
-	KafkaSessionTimeout     time.Duration
+	KafkaBrokers               []string
+	KafkaConsumerGroupID       string
+	KafkaSubmissionTopic       string
+	KafkaExecutionResultTopic  string
+	KafkaExecutionFailTopic    string
+	KafkaDLQTopic              string
+	KafkaMaxRetryAttempts      int
+	KafkaDialTimeout           time.Duration
+	KafkaSessionTimeout        time.Duration
 
 	// Kafka SASL_SSL - principal "worker": read-only on the submission topic,
 	// write-only on the execution-result topics (see infra/kafka/acls.sh).
@@ -34,24 +34,12 @@ type Config struct {
 	KafkaSASLPassword  string
 
 	// Eureka (discovery-service). EurekaAppName is what THIS worker registers
-	// itself as; EurekaServerURL is used both for that registration and to
-	// resolve problem-service/submission-service/auth-service's instances
-	// (see internal/eureka) instead of the fixed URLs below.
+	// itself as; EurekaServerURL is used for that registration - the worker
+	// no longer calls problem-service/submission-service itself (see the
+	// embedded-job-payload / single-result-topic redesign), so there's
+	// nothing else here to resolve through Eureka.
 	EurekaServerURL string
 	EurekaAppName   string
-
-	// Fallback upstream service URLs, used only if Eureka has no registered
-	// instance for a service yet (e.g. briefly during startup, before its
-	// first registration has propagated) - see clients.resolveBaseURL.
-	SubmissionServiceBaseURL string
-	ProblemServiceBaseURL    string
-
-	// Service identity for calls to problem-service/submission-service.
-	// The worker authenticates as itself via OAuth2 client-credentials
-	// (see internal/auth), not with a user's token - it has none to forward.
-	AuthServiceBaseURL string
-	WorkerClientID     string
-	WorkerClientSecret string
 
 	// S3 / MinIO
 	S3Endpoint        string
@@ -108,7 +96,7 @@ func Load() (*Config, error) {
 	cfg.KafkaBrokers = strings.Split(brokerStr, ",")
 	cfg.KafkaConsumerGroupID = getEnvOrDefault("KAFKA_CONSUMER_GROUP_ID", "worker-service-cg")
 	cfg.KafkaSubmissionTopic = getEnvOrDefault("KAFKA_TOPIC_SUBMISSIONS_CREATED", "submissions.created.v1")
-	cfg.KafkaExecutionDoneTopic = getEnvOrDefault("KAFKA_TOPIC_EXECUTIONS_COMPLETED", "executions.completed.v1")
+	cfg.KafkaExecutionResultTopic = getEnvOrDefault("KAFKA_TOPIC_EXECUTION_RESULT", "execution-result-topic")
 	cfg.KafkaExecutionFailTopic = getEnvOrDefault("KAFKA_TOPIC_EXECUTIONS_FAILED", "executions.failed.v1")
 	cfg.KafkaDLQTopic = getEnvOrDefault("KAFKA_TOPIC_DLQ", "dlq.submissions.created.v1")
 	cfg.KafkaMaxRetryAttempts = getEnvInt("KAFKA_MAX_RETRY_ATTEMPTS", 3, &errs)
@@ -122,15 +110,6 @@ func Load() (*Config, error) {
 	// Eureka
 	cfg.EurekaServerURL = getEnvOrDefault("EUREKA_SERVER_URL", "http://localhost:8761/eureka")
 	cfg.EurekaAppName = getEnvOrDefault("EUREKA_APP_NAME", "WORKER-SERVICE-GO")
-
-	// Upstream services (fallback only - see Config.SubmissionServiceBaseURL's comment)
-	cfg.SubmissionServiceBaseURL = getEnvOrDefault("SUBMISSION_SERVICE_URL", "http://localhost:8083")
-	cfg.ProblemServiceBaseURL = getEnvOrDefault("PROBLEM_SERVICE_URL", "http://localhost:8082")
-
-	// Service identity (client-credentials grant against auth-service)
-	cfg.AuthServiceBaseURL = getEnvOrDefault("AUTH_SERVICE_URL", "http://localhost:8086")
-	cfg.WorkerClientID = getEnvOrDefault("WORKER_CLIENT_ID", "worker-service")
-	cfg.WorkerClientSecret = getEnvOrDefault("WORKER_CLIENT_SECRET", "dev-only-secret-change-me")
 
 	// S3 / MinIO
 	cfg.S3Endpoint = getEnvOrDefault("S3_ENDPOINT", "http://localhost:9000")

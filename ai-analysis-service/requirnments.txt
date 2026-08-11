@@ -1,5 +1,6 @@
 fastapi
 uvicorn[standard]
+aiokafka
 pydantic
 httpx
 sqlalchemy

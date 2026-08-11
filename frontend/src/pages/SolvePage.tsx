@@ -15,8 +15,11 @@ import { getProblem, type FunctionSignature, type ProblemSummary } from '../api/
 import { generateStarterCode } from '../utils/starterCode';
 import {
   createSubmission,
+  getExecutionResult,
   getSubmissionsForProblem,
+  pollAiAnalysis,
   pollSubmissionResult,
+  type AiAnalysisResponse,
   type Submission,
   type TestCaseResult,
 } from '../api/submissions';
@@ -48,6 +51,27 @@ const MONACO_LANGUAGE: Record<Language, string> = {
 // flag typos like 'runing' immediately.
 type RunStatus = 'idle' | 'running' | 'done';
 
+// Remembers the user's last deliberately-chosen language (via the dropdown,
+// see handleLanguageChange) across problems/reloads, until they change it
+// again - shared across every problem rather than per-problem, so picking
+// Python once means every problem opens in Python from then on.
+const LANGUAGE_STORAGE_KEY = 'op-preferred-language';
+const VALID_LANGUAGE_IDS = new Set(LANGUAGES.map((l) => l.id));
+
+function getStoredLanguage(): Language {
+  try {
+    const stored = localStorage.getItem(LANGUAGE_STORAGE_KEY);
+    if (stored && VALID_LANGUAGE_IDS.has(stored as Language)) {
+      return stored as Language;
+    }
+  } catch {
+    // localStorage unavailable (private browsing, disabled storage, etc.) -
+    // fall through to the default rather than crashing the page over a
+    // convenience feature.
+  }
+  return 'javascript';
+}
+
 // The shape of a real result, once the submission reaches a terminal status.
 // `status` is whatever string the active worker reported (see THE WORKER
 // SWITCH in submission-service) - not narrowed to a fixed union, since the
@@ -62,6 +86,12 @@ interface RunResult {
   // judged before this existed, or a submission that failed before reaching
   // any test case - e.g. CE - won't have one).
   testCaseResults: TestCaseResult[] | null;
+  // Only ever populated when worker-service-go (not the legacy Java worker)
+  // judged the submission - see execution-result-service's ExecutionResult.
+  wallTimeMs: number | null;
+  maxMemoryKb: number | null;
+  estimatedTimeComplexity: string | null;
+  estimatedSpaceComplexity: string | null;
 }
 
 // Pulls a problem's function signature out of its (nullable, all-or-nothing)
@@ -97,14 +127,19 @@ export default function SolvePage() {
   const [problem, setProblem] = useState<ProblemSummary | null>(null);
   const [problemLoaded, setProblemLoaded] = useState(false);
 
-  const [language, setLanguage] = useState<Language>('javascript');
+  const [language, setLanguage] = useState<Language>(getStoredLanguage);
   const [code, setCode] = useState('');
 
   const [activeExample, setActiveExample] = useState(0); // which "Case N" tab is selected
-  const [consoleTab, setConsoleTab] = useState<'testcase' | 'result'>('testcase');
+  const [consoleTab, setConsoleTab] = useState<'testcase' | 'result' | 'complexity' | 'ai-analysis'>('testcase');
   const [runStatus, setRunStatus] = useState<RunStatus>('idle');
   const [result, setResult] = useState<RunResult | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
+  // The AI-analysis-service verdict - deliberately a SEPARATE state from
+  // `result`, fetched independently and slower (see runCode below): a slow
+  // or unreachable ai-analysis-service must never delay or block showing
+  // the deterministic judged result above.
+  const [aiAnalysis, setAiAnalysis] = useState<AiAnalysisResponse | null>(null);
   // Which top-level panel is showing on the left, alongside Description and
   // Solutions - mirrors LeetCode's own layout, where Submissions lives next
   // to the problem statement rather than buried in the bottom console.
@@ -274,6 +309,12 @@ export default function SolvePage() {
   // just a regular function called from the <select>'s onChange below.
   function handleLanguageChange(next: Language) {
     setLanguage(next);
+    try {
+      localStorage.setItem(LANGUAGE_STORAGE_KEY, next);
+    } catch {
+      // Best-effort persistence (see getStoredLanguage) - a storage failure
+      // shouldn't block switching languages for the current session.
+    }
     // `problem!` — the `!` is TypeScript's "non-null assertion": we know
     // `problem` can't be null/undefined here (we already returned early
     // above if it was), but TypeScript can't always follow that logic
@@ -297,20 +338,36 @@ export default function SolvePage() {
   // copy, and shows its already-judged verdict in the console's Result tab
   // - so clicking a submission looks and feels exactly like just having run
   // it yourself.
-  function loadSubmission(sub: Submission) {
+  async function loadSubmission(sub: Submission) {
     setSelectedSubmissionId(sub.id);
     setLanguage(sub.language as Language);
     setCode(sub.code);
-    setResult({
-      status: sub.status,
-      passed: sub.status === 'PASSED',
-      output: sub.output,
-      reason: sub.reason,
-      testCaseResults: sub.testCaseResults,
-    });
-    setRunStatus('done');
-    setRunError(null);
     setConsoleTab('result');
+    setRunStatus('running'); // detail fetch is async now - see getExecutionResult
+    setResult(null);
+    setAiAnalysis(null);
+    setRunError(null);
+
+    if (!accessToken) return;
+    try {
+      const detail = await getExecutionResult(accessToken, sub.id);
+      setResult({
+        status: detail.status,
+        passed: detail.status === 'PASSED',
+        output: detail.output,
+        reason: detail.reason,
+        testCaseResults: detail.testCaseResults,
+        wallTimeMs: detail.wallTimeMs,
+        maxMemoryKb: detail.maxMemoryKb,
+        estimatedTimeComplexity: detail.estimatedTimeComplexity,
+        estimatedSpaceComplexity: detail.estimatedSpaceComplexity,
+      });
+      pollAiAnalysis(accessToken, sub.id).then(setAiAnalysis);
+    } catch (err) {
+      setRunError(err instanceof Error ? err.message : 'Failed to load submission result.');
+    } finally {
+      setRunStatus('done');
+    }
   }
 
   // Calls the real backend judge: POST /submissions, then poll
@@ -323,6 +380,7 @@ export default function SolvePage() {
     setConsoleTab('result'); // auto-switch to the Result tab so the user sees feedback
     setRunStatus('running');
     setResult(null);
+    setAiAnalysis(null);
     setRunError(null);
     setSelectedSubmissionId(null); // this run is fresh code, not a re-loaded past submission
 
@@ -335,15 +393,24 @@ export default function SolvePage() {
         language,
         includeHidden,
       );
-      const final = await pollSubmissionResult(accessToken, submissionId);
+      await pollSubmissionResult(accessToken, submissionId); // waits for terminal status only
+      const detail = await getExecutionResult(accessToken, submissionId);
       setResult({
-        status: final.status,
-        passed: final.status === 'PASSED',
-        output: final.output,
-        reason: final.reason,
-        testCaseResults: final.testCaseResults,
+        status: detail.status,
+        passed: detail.status === 'PASSED',
+        output: detail.output,
+        reason: detail.reason,
+        testCaseResults: detail.testCaseResults,
+        wallTimeMs: detail.wallTimeMs,
+        maxMemoryKb: detail.maxMemoryKb,
+        estimatedTimeComplexity: detail.estimatedTimeComplexity,
+        estimatedSpaceComplexity: detail.estimatedSpaceComplexity,
       });
       refreshPastSubmissions(); // pick up the submission that just finished
+
+      // Independent, non-blocking poll for the AI verdict - see aiAnalysis
+      // state's comment for why this must never delay the result above.
+      pollAiAnalysis(accessToken, submissionId).then(setAiAnalysis);
     } catch (err) {
       setRunError(err instanceof Error ? err.message : 'Failed to judge submission.');
     } finally {
@@ -959,6 +1026,38 @@ export default function SolvePage() {
               >
                 Result
               </button>
+              <button
+                onClick={() => setConsoleTab('complexity')}
+                className="op-tab"
+                style={{
+                  fontFamily: 'inherit',
+                  fontSize: 13,
+                  fontWeight: 700,
+                  background: 'none',
+                  border: 'none',
+                  cursor: 'pointer',
+                  padding: 0,
+                  color: consoleTab === 'complexity' ? '#eef0f6' : '#6b7392',
+                }}
+              >
+                Complexity
+              </button>
+              <button
+                onClick={() => setConsoleTab('ai-analysis')}
+                className="op-tab"
+                style={{
+                  fontFamily: 'inherit',
+                  fontSize: 13,
+                  fontWeight: 700,
+                  background: 'none',
+                  border: 'none',
+                  cursor: 'pointer',
+                  padding: 0,
+                  color: consoleTab === 'ai-analysis' ? '#eef0f6' : '#6b7392',
+                }}
+              >
+                AI Analysis
+              </button>
             </div>
 
             <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px' }}>
@@ -1109,6 +1208,111 @@ export default function SolvePage() {
                           <div>{result.output ?? '(no output)'}</div>
                         </div>
                       )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {consoleTab === 'complexity' && (
+                <div style={{ fontSize: 13.5 }}>
+                  {/* worker-service-go's OWN empirical estimate (log-log
+                      regression of wall-time/memory vs. input size across
+                      this submission's test cases) - deterministic, no LLM,
+                      always available once judged. Distinct from the
+                      separate AI Analysis tab's LLM-derived guess. */}
+                  {!result ? (
+                    <span style={{ color: '#6b7392' }}>
+                      Run or Submit your code to see runtime/complexity here.
+                    </span>
+                  ) : (
+                    <div
+                      style={{
+                        fontFamily: "'JetBrains Mono',monospace",
+                        fontSize: 12.5,
+                        lineHeight: 1.8,
+                        color: '#b3bacb',
+                      }}
+                    >
+                      <div style={{ color: '#6b7392' }}>Runtime</div>
+                      <div style={{ marginBottom: 12 }}>
+                        {result.wallTimeMs != null ? `${result.wallTimeMs} ms` : '—'}
+                      </div>
+                      <div style={{ color: '#6b7392' }}>Memory</div>
+                      <div style={{ marginBottom: 12 }}>
+                        {result.maxMemoryKb != null && result.maxMemoryKb > 0
+                          ? `${(result.maxMemoryKb / 1024).toFixed(1)} MB`
+                          : '—'}
+                      </div>
+                      <div style={{ color: '#6b7392' }}>Time complexity (estimated)</div>
+                      <div style={{ marginBottom: 12 }}>{result.estimatedTimeComplexity ?? '—'}</div>
+                      <div style={{ color: '#6b7392' }}>Space complexity (estimated)</div>
+                      <div>{result.estimatedSpaceComplexity ?? '—'}</div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {consoleTab === 'ai-analysis' && (
+                <div style={{ fontSize: 13.5 }}>
+                  {/* AI-analysis-service's LLM-derived verdict - independent
+                      of, and slower than, the deterministic Result tab (see
+                      aiAnalysis state's comment). Gated on `result` (a judged
+                      submission exists) rather than runStatus, since polling
+                      for this only starts once the deterministic result is in. */}
+                  {!result ? (
+                    <span style={{ color: '#6b7392' }}>
+                      Run or Submit your code to see the AI's analysis here.
+                    </span>
+                  ) : !aiAnalysis || aiAnalysis.status === 'PENDING' ? (
+                    <span
+                      style={{
+                        fontFamily: "'JetBrains Mono',monospace",
+                        color: '#9aa2b8',
+                      }}
+                    >
+                      Still analyzing… (this never blocks the Result tab)
+                    </span>
+                  ) : aiAnalysis.analysis.analysisType === 'PASSED' ? (
+                    <div
+                      style={{
+                        fontFamily: "'JetBrains Mono',monospace",
+                        fontSize: 12.5,
+                        lineHeight: 1.8,
+                        color: '#b3bacb',
+                      }}
+                    >
+                      <div style={{ color: '#6b7392' }}>Time complexity</div>
+                      <div style={{ marginBottom: 12 }}>{aiAnalysis.analysis.timeComplexity}</div>
+                      <div style={{ color: '#6b7392' }}>Space complexity</div>
+                      <div style={{ marginBottom: 12 }}>{aiAnalysis.analysis.spaceComplexity}</div>
+                      <div style={{ color: '#6b7392' }}>Optimization suggestions</div>
+                      <div style={{ marginBottom: 12 }}>{aiAnalysis.analysis.optimizationSuggestions}</div>
+                      <div style={{ color: '#6b7392' }}>Code smells</div>
+                      <div style={{ marginBottom: 12 }}>{aiAnalysis.analysis.codeSmells}</div>
+                      <div style={{ color: '#6b7392' }}>Alternative approach</div>
+                      <div>{aiAnalysis.analysis.alternativeApproach}</div>
+                    </div>
+                  ) : (
+                    <div
+                      style={{
+                        fontFamily: "'JetBrains Mono',monospace",
+                        fontSize: 12.5,
+                        lineHeight: 1.8,
+                        color: '#b3bacb',
+                      }}
+                    >
+                      <div style={{ color: '#6b7392' }}>Likely cause</div>
+                      <div style={{ marginBottom: 12 }}>{aiAnalysis.analysis.failureReason}</div>
+                      <div style={{ color: '#6b7392' }}>Debugging suggestion</div>
+                      <div style={{ marginBottom: 12 }}>{aiAnalysis.analysis.debuggingSuggestion}</div>
+                      <div style={{ color: '#6b7392' }}>Edge cases to check</div>
+                      <div style={{ marginBottom: 12 }}>
+                        {aiAnalysis.analysis.edgeCases?.length
+                          ? aiAnalysis.analysis.edgeCases.join(', ')
+                          : '—'}
+                      </div>
+                      <div style={{ color: '#6b7392' }}>Hints</div>
+                      <div>{aiAnalysis.analysis.hints}</div>
                     </div>
                   )}
                 </div>

@@ -1,11 +1,26 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import AppNavbar from '../components/shared/AppNavbar';
+import ProblemBoard2D from '../components/practice/ProblemBoard2D';
 import { DIFFICULTY_COLOR, type Difficulty } from '../data/problems';
 import { useAuth } from '../context/AuthContext';
 import { getSolvedProblemIds } from '../api/submissions';
 import { listProblems, deleteProblem, type ProblemSummary } from '../api/problems';
 import { deleteSolution } from '../api/solutions';
+import { listBoardCards, createBoardCard, updateBoardCard, deleteBoardCard, type BoardCard } from '../api/boardCards';
+import {
+  listBoardConnections,
+  createBoardConnection,
+  deleteBoardConnection,
+  type BoardConnection,
+  type BoardNodeRef,
+} from '../api/boardConnections';
+import {
+  listBoardPositions,
+  saveBoardPosition,
+  deleteBoardPosition,
+  type BoardNodePosition,
+} from '../api/boardPositions';
 // `import { ..., type Difficulty }` — the `type` keyword marks Difficulty
 // as a TYPE-ONLY import. It exists purely for TypeScript's compiler and is
 // erased completely from the actual JavaScript that ships to the browser
@@ -44,6 +59,16 @@ export default function PracticePage() {
   const [solvedIds, setSolvedIds] = useState<Set<number>>(new Set());
   const [problems, setProblems] = useState<ProblemSummary[]>([]);
 
+  // Board is the default view (see ProblemBoard2D's header comment) - List
+  // stays available for search/admin CRUD, which the freeform board doesn't
+  // replicate.
+  const [view, setView] = useState<'board' | 'list'>('board');
+
+  const [boardCards, setBoardCards] = useState<BoardCard[]>([]);
+  const [boardConnections, setBoardConnections] = useState<BoardConnection[]>([]);
+  const [boardPositions, setBoardPositions] = useState<BoardNodePosition[]>([]);
+  const [boardError, setBoardError] = useState<string | null>(null);
+
   // Delete uses an inline two-step confirm (click Delete once -> it becomes
   // "Confirm?" for a few seconds -> click again to actually delete) rather
   // than a native window.confirm(), matching this app's convention of never
@@ -71,6 +96,24 @@ export default function PracticePage() {
       .then(setProblems)
       .catch(() => {
         // Best-effort - a failed fetch just leaves the list empty.
+      });
+    listBoardCards(token)
+      .then(setBoardCards)
+      .catch((err) => {
+        console.error('Failed to load board cards', err);
+        setBoardError(err instanceof Error ? `Couldn't load board: ${err.message}` : "Couldn't load board.");
+      });
+    listBoardConnections(token)
+      .then(setBoardConnections)
+      .catch((err) => {
+        console.error('Failed to load board connections', err);
+        setBoardError(err instanceof Error ? `Couldn't load board: ${err.message}` : "Couldn't load board.");
+      });
+    listBoardPositions(token)
+      .then(setBoardPositions)
+      .catch(() => {
+        // Best-effort - a failed fetch just means every board node starts
+        // out unplaced (back in the sidebar) until re-added.
       });
   }, []);
 
@@ -139,18 +182,205 @@ export default function PracticePage() {
     });
   }
 
+  async function handleCreateBoardCard(title: string, x: number, y: number) {
+    if (!accessToken) return;
+    setBoardError(null);
+    try {
+      const created = await createBoardCard(accessToken, title);
+      setBoardCards((prev) => [...prev, created]);
+      const savedPosition = await saveBoardPosition(accessToken, { nodeType: 'CARD', nodeId: created.id, x, y });
+      setBoardPositions((prev) => [
+        ...prev.filter((p) => !(p.nodeType === 'CARD' && p.nodeId === created.id)),
+        savedPosition,
+      ]);
+    } catch (err) {
+      console.error('Failed to create board card', err);
+      setBoardError(err instanceof Error ? `Couldn't create pattern: ${err.message}` : "Couldn't create pattern.");
+    }
+  }
+
+  async function handleRenameBoardCard(id: number, title: string) {
+    if (!accessToken) return;
+    setBoardError(null);
+    try {
+      const updated = await updateBoardCard(accessToken, id, title);
+      setBoardCards((prev) => prev.map((c) => (c.id === id ? updated : c)));
+    } catch (err) {
+      console.error('Failed to rename board card', err);
+      setBoardError(err instanceof Error ? `Couldn't rename pattern: ${err.message}` : "Couldn't rename pattern.");
+    }
+  }
+
+  async function handleDeleteBoardCard(id: number) {
+    if (!accessToken) return;
+    setBoardError(null);
+    try {
+      await deleteBoardCard(accessToken, id);
+      setBoardCards((prev) => prev.filter((c) => c.id !== id));
+      // The backend cascade-deletes every connection/position referencing
+      // this card - mirror that locally rather than refetching.
+      setBoardConnections((prev) =>
+        prev.filter(
+          (c) => !((c.nodeAType === 'CARD' && c.nodeAId === id) || (c.nodeBType === 'CARD' && c.nodeBId === id)),
+        ),
+      );
+      setBoardPositions((prev) => prev.filter((p) => !(p.nodeType === 'CARD' && p.nodeId === id)));
+    } catch (err) {
+      console.error('Failed to delete board card', err);
+      setBoardError(err instanceof Error ? `Couldn't delete pattern: ${err.message}` : "Couldn't delete pattern.");
+    }
+  }
+
+  async function handleCreateBoardConnection(a: BoardNodeRef, b: BoardNodeRef) {
+    if (!accessToken) return;
+    setBoardError(null);
+    try {
+      const created = await createBoardConnection(accessToken, a, b);
+      setBoardConnections((prev) => [...prev, created]);
+    } catch (err) {
+      console.error('Failed to create board connection', err);
+      setBoardError(err instanceof Error ? `Couldn't connect: ${err.message}` : "Couldn't connect.");
+    }
+  }
+
+  async function handleDeleteBoardConnection(id: number) {
+    if (!accessToken) return;
+    setBoardError(null);
+    try {
+      await deleteBoardConnection(accessToken, id);
+      setBoardConnections((prev) => prev.filter((c) => c.id !== id));
+    } catch (err) {
+      console.error('Failed to delete board connection', err);
+      setBoardError(err instanceof Error ? `Couldn't disconnect: ${err.message}` : "Couldn't disconnect.");
+    }
+  }
+
+  async function handleSaveBoardPosition(position: BoardNodePosition) {
+    if (!accessToken) return;
+    try {
+      const saved = await saveBoardPosition(accessToken, position);
+      setBoardPositions((prev) => [
+        ...prev.filter((p) => !(p.nodeType === saved.nodeType && p.nodeId === saved.nodeId)),
+        saved,
+      ]);
+    } catch (err) {
+      // Best-effort and silent, same rationale as handleSavePosition above -
+      // the node already stayed put on screen the moment it was dropped.
+      console.error('Failed to save board node position', err);
+    }
+  }
+
+  async function handleRemoveFromBoard(nodeType: 'PROBLEM' | 'CARD', nodeId: number) {
+    if (!accessToken) return;
+    try {
+      await deleteBoardPosition(accessToken, nodeType, nodeId);
+      setBoardPositions((prev) => prev.filter((p) => !(p.nodeType === nodeType && p.nodeId === nodeId)));
+    } catch (err) {
+      console.error('Failed to remove board node', err);
+      setBoardError(err instanceof Error ? `Couldn't remove from board: ${err.message}` : "Couldn't remove from board.");
+    }
+  }
+
+  const isBoardView = view === 'board';
+
   return (
     <div
       style={{
-        minHeight: '100vh',
+        // A fixed viewport-height flex column (AppNavbar, then everything
+        // else) rather than a naturally-tall scrolling page - this is what
+        // lets the board view's container below claim "the rest of the
+        // screen" via flex:1 instead of a guessed vh/px height that left
+        // most of the window as empty margin around a small canvas.
+        height: '100vh',
+        display: 'flex',
+        flexDirection: 'column',
         background: '#080a14',
         color: '#eef0f6',
         fontFamily: "'Manrope',system-ui,sans-serif",
+        overflow: 'hidden',
       }}
     >
       <AppNavbar />
 
-      <main style={{ maxWidth: 1080, margin: '0 auto', padding: '48px 32px 100px' }}>
+      <div style={{ flex: 1, minHeight: 0, display: 'flex', alignItems: 'stretch' }}>
+        {/* A dedicated view-switcher rail, separate from the search/filter
+            row above the content - the board/list toggle used to live
+            inline with the difficulty pills, which made it easy to miss. */}
+        <aside
+          style={{
+            width: 92,
+            flexShrink: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'stretch',
+            gap: 8,
+            padding: '32px 12px',
+            borderRight: '1px solid rgba(255,255,255,.08)',
+          }}
+        >
+          <div
+            style={{
+              fontFamily: "'JetBrains Mono',monospace",
+              fontSize: 10,
+              letterSpacing: '.14em',
+              color: '#6b7392',
+              textTransform: 'uppercase',
+              textAlign: 'center',
+              marginBottom: 4,
+            }}
+          >
+            View
+          </div>
+          {(
+            [
+              { id: 'board', label: 'Board', icon: '⬡' },
+              { id: 'list', label: 'List', icon: '☰' },
+            ] as const
+          ).map((v) => (
+            <button
+              key={v.id}
+              onClick={() => setView(v.id)}
+              style={{
+                fontFamily: 'inherit',
+                fontSize: 12,
+                fontWeight: 700,
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: 4,
+                padding: '14px 6px',
+                borderRadius: 12,
+                border: '1px solid',
+                cursor: 'pointer',
+                borderColor: view === v.id ? 'rgba(167,139,250,.5)' : 'rgba(255,255,255,.1)',
+                background: view === v.id ? 'rgba(124,58,237,.18)' : 'transparent',
+                color: view === v.id ? '#c4b5fd' : '#9aa2b8',
+              }}
+            >
+              <span style={{ fontSize: 19 }}>{v.icon}</span>
+              {v.label}
+            </button>
+          ))}
+        </aside>
+
+        <main
+          style={{
+            flex: 1,
+            minWidth: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            // Board view fills the full remaining width/height (flex:1 on
+            // its container below); List view keeps the original centered,
+            // max-width reading column and scrolls internally if the table
+            // is taller than the viewport.
+            maxWidth: isBoardView ? 'none' : 1080,
+            margin: isBoardView ? 0 : '0 auto',
+            width: '100%',
+            padding: isBoardView ? '20px 24px 24px' : '48px 32px 100px',
+            boxSizing: 'border-box',
+            overflowY: isBoardView ? 'hidden' : 'auto',
+          }}
+        >
         <div
           style={{
             fontFamily: "'JetBrains Mono',monospace",
@@ -158,11 +388,12 @@ export default function PracticePage() {
             letterSpacing: '.16em',
             color: '#8b7fe0',
             marginBottom: 12,
+            flexShrink: 0,
           }}
         >
           PRACTICE
         </div>
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16, marginBottom: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16, marginBottom: 10, flexShrink: 0 }}>
           <h1
             style={{
               fontFamily: "'Space Grotesk',sans-serif",
@@ -197,67 +428,123 @@ export default function PracticePage() {
             </Link>
           )}
         </div>
-        <p style={{ fontSize: 16, color: '#9aa2b8', margin: '0 0 36px', maxWidth: 600, lineHeight: 1.6 }}>
-          {problems.length} questions sourced from real interview loops. Pick one and jump straight into the
-          editor.
-        </p>
 
-        <div style={{ display: 'flex', gap: 12, marginBottom: 22, flexWrap: 'wrap' }}>
-          {/* A "CONTROLLED INPUT" — the input's displayed text is driven
-              entirely by React state (`value={search}`), not by the
-              browser's own internal input state. `onChange` fires on every
-              keystroke; `e.target.value` is the new text; we push it into
-              state with setSearch, which re-renders with the new value.
-              This round-trip (state -> value -> onChange -> state) is the
-              standard React pattern for form inputs. */}
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search problems..."
-            style={{
-              flex: '1 1 240px',
-              padding: '11px 16px',
-              borderRadius: 11,
-              border: '1px solid rgba(255,255,255,.12)',
-              background: 'rgba(255,255,255,.04)',
-              color: '#eef0f6',
-              fontSize: 14,
-              fontFamily: 'inherit',
-              outline: 'none',
-            }}
-          />
-          <div style={{ display: 'flex', gap: 8 }}>
-            {DIFFICULTIES.map((d) => (
-              <button
-                key={d}
-                // `onClick={() => setDifficulty(d)}` — note the arrow
-                // function wrapper. We can't write `onClick={setDifficulty(d)}`
-                // because that would CALL setDifficulty immediately during
-                // render instead of waiting for a click; wrapping it in
-                // `() => ...` defers the call until the click actually happens.
-                onClick={() => setDifficulty(d)}
+        {/* Search/difficulty filters only make sense against the List
+            view's table - the board has its own sidebar search for
+            unplaced problems, so these stayed hidden there rather than
+            taking up space over the canvas. */}
+        {!isBoardView && (
+          <>
+            <p style={{ fontSize: 16, color: '#9aa2b8', margin: '0 0 36px', maxWidth: 600, lineHeight: 1.6 }}>
+              {problems.length} questions sourced from real interview loops. Pick one and jump straight into the
+              editor.
+            </p>
+
+            <div style={{ display: 'flex', gap: 12, marginBottom: 22, flexWrap: 'wrap' }}>
+              {/* A "CONTROLLED INPUT" — the input's displayed text is driven
+                  entirely by React state (`value={search}`), not by the
+                  browser's own internal input state. `onChange` fires on every
+                  keystroke; `e.target.value` is the new text; we push it into
+                  state with setSearch, which re-renders with the new value.
+                  This round-trip (state -> value -> onChange -> state) is the
+                  standard React pattern for form inputs. */}
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search problems..."
                 style={{
+                  flex: '1 1 240px',
+                  padding: '11px 16px',
+                  borderRadius: 11,
+                  border: '1px solid rgba(255,255,255,.12)',
+                  background: 'rgba(255,255,255,.04)',
+                  color: '#eef0f6',
+                  fontSize: 14,
                   fontFamily: 'inherit',
-                  fontSize: 13.5,
-                  fontWeight: 600,
-                  padding: '10px 16px',
-                  borderRadius: 10,
-                  border: '1px solid',
-                  cursor: 'pointer',
-                  // Styling based on whether THIS button is the active
-                  // filter — comparing the loop variable `d` to the
-                  // current `difficulty` state value.
-                  borderColor: difficulty === d ? 'rgba(167,139,250,.5)' : 'rgba(255,255,255,.12)',
-                  background: difficulty === d ? 'rgba(124,58,237,.18)' : 'rgba(255,255,255,.03)',
-                  color: difficulty === d ? '#c4b5fd' : '#9aa2b8',
+                  outline: 'none',
                 }}
-              >
-                {d}
-              </button>
-            ))}
-          </div>
-        </div>
+              />
+              <div style={{ display: 'flex', gap: 8 }}>
+                {DIFFICULTIES.map((d) => (
+                  <button
+                    key={d}
+                    // `onClick={() => setDifficulty(d)}` — note the arrow
+                    // function wrapper. We can't write `onClick={setDifficulty(d)}`
+                    // because that would CALL setDifficulty immediately during
+                    // render instead of waiting for a click; wrapping it in
+                    // `() => ...` defers the call until the click actually happens.
+                    onClick={() => setDifficulty(d)}
+                    style={{
+                      fontFamily: 'inherit',
+                      fontSize: 13.5,
+                      fontWeight: 600,
+                      padding: '10px 16px',
+                      borderRadius: 10,
+                      border: '1px solid',
+                      cursor: 'pointer',
+                      // Styling based on whether THIS button is the active
+                      // filter — comparing the loop variable `d` to the
+                      // current `difficulty` state value.
+                      borderColor: difficulty === d ? 'rgba(167,139,250,.5)' : 'rgba(255,255,255,.12)',
+                      background: difficulty === d ? 'rgba(124,58,237,.18)' : 'rgba(255,255,255,.03)',
+                      color: difficulty === d ? '#c4b5fd' : '#9aa2b8',
+                    }}
+                  >
+                    {d}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </>
+        )}
 
+        {view === 'board' && boardError && (
+          <div
+            style={{
+              padding: '10px 16px',
+              marginBottom: 12,
+              borderRadius: 10,
+              fontSize: 13,
+              color: '#fca5a5',
+              background: 'rgba(248,113,113,.1)',
+              border: '1px solid rgba(248,113,113,.25)',
+              flexShrink: 0,
+            }}
+          >
+            {boardError}
+          </div>
+        )}
+
+        {view === 'board' && (
+          <div
+            style={{
+              flex: 1,
+              minHeight: 0,
+              width: '100%',
+              borderRadius: 16,
+              border: '1px solid rgba(255,255,255,.08)',
+              overflow: 'hidden',
+            }}
+          >
+            <ProblemBoard2D
+              problems={problems}
+              cards={boardCards}
+              connections={boardConnections}
+              positions={boardPositions}
+              solvedIds={solvedIds}
+              onOpenProblem={(id) => window.open(`/practice/${id}`, '_blank', 'noopener,noreferrer')}
+              onCreateCard={handleCreateBoardCard}
+              onRenameCard={handleRenameBoardCard}
+              onDeleteCard={handleDeleteBoardCard}
+              onCreateConnection={handleCreateBoardConnection}
+              onDeleteConnection={handleDeleteBoardConnection}
+              onSavePosition={handleSaveBoardPosition}
+              onRemoveFromBoard={handleRemoveFromBoard}
+            />
+          </div>
+        )}
+
+        {view === 'list' && (
         <div
           style={{
             borderRadius: 16,
@@ -348,7 +635,7 @@ export default function PracticePage() {
                 return (
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center', justifySelf: 'start' }}>
                     <button
-                      onClick={() => navigate(`/practice/${p.id}`)}
+                      onClick={() => window.open(`/practice/${p.id}`, '_blank', 'noopener,noreferrer')}
                       className="op-solve-btn"
                       style={{
                         fontFamily: 'inherit',
@@ -457,7 +744,9 @@ export default function PracticePage() {
             </div>
           )}
         </div>
-      </main>
+        )}
+        </main>
+      </div>
     </div>
   );
 }

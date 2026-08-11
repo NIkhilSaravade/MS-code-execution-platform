@@ -1,11 +1,15 @@
 // Package executor orchestrates the full lifecycle of one submission:
-//   1. Mark state RUNNING in submission-service
-//   2. Fetch test case metadata from problem-service
-//   3. Download code and test case content from S3
-//   4. Compile (if needed) and run each test case inside the sandbox
-//   5. Aggregate the final verdict
-//   6. Upload stdout/stderr artifacts to S3
-//   7. Publish executions.completed.v1 or executions.failed.v1 to Kafka
+//   1. Compile (if needed) and run each test case inside the sandbox
+//   2. Aggregate the final verdict + an empirical complexity estimate
+//   3. Upload stdout/stderr artifacts to S3
+//   4. Publish the result to execution-result-topic (or a system-error
+//      failure to executions.failed.v1)
+//
+// The executor no longer calls problem-service or submission-service itself:
+// submission-service embeds everything the job needs (test cases, limits)
+// into the SubmissionCreatedEvent, and execution-result-service is the only
+// service this worker reports results to - see the "worker overhead at
+// scale" redesign this implements.
 //
 // The executor is the only component that talks to all other components.
 // It has no state of its own — it is pure orchestration logic.
@@ -24,7 +28,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 
-	"github.com/nikhilsaravade95/code-execution-platform/worker-service/internal/clients"
+	"github.com/nikhilsaravade95/code-execution-platform/worker-service/internal/complexity"
 	"github.com/nikhilsaravade95/code-execution-platform/worker-service/internal/config"
 	"github.com/nikhilsaravade95/code-execution-platform/worker-service/internal/domain"
 	"github.com/nikhilsaravade95/code-execution-platform/worker-service/internal/kafka"
@@ -35,30 +39,24 @@ import (
 // Executor is the kafka.Handler implementation. One instance is shared across
 // all goroutines — all dependencies must be safe for concurrent use.
 type Executor struct {
-	cfg            *config.Config
-	sandbox        *sandbox.Sandbox
-	submissionClient *clients.SubmissionClient
-	problemClient  *clients.ProblemClient
-	s3             *storage.S3Client
-	producer       *kafka.Producer
+	cfg     *config.Config
+	sandbox *sandbox.Sandbox
+	s3      *storage.S3Client
+	producer *kafka.Producer
 }
 
 // New wires up an Executor with all its dependencies.
 func New(
 	cfg *config.Config,
 	sb *sandbox.Sandbox,
-	submissionClient *clients.SubmissionClient,
-	problemClient *clients.ProblemClient,
 	s3 *storage.S3Client,
 	producer *kafka.Producer,
 ) *Executor {
 	return &Executor{
-		cfg:              cfg,
-		sandbox:          sb,
-		submissionClient: submissionClient,
-		problemClient:    problemClient,
-		s3:               s3,
-		producer:         producer,
+		cfg:      cfg,
+		sandbox:  sb,
+		s3:       s3,
+		producer: producer,
 	}
 }
 
@@ -66,7 +64,7 @@ func New(
 // Returning an error causes the consumer to route the message to the DLQ.
 // System errors (infrastructure failures) are returned as errors.
 // User-code verdicts (TLE, MLE, RE, CE, FAILED) are not errors — they are
-// valid outcomes that are published as executions.completed.v1.
+// valid outcomes that are published to execution-result-topic.
 func (e *Executor) Handle(ctx context.Context, job *domain.SubmissionJob) error {
 	ctx, span := otel.Tracer("worker-service/executor.Executor").Start(ctx, "executor.Handle")
 	defer span.End()
@@ -91,34 +89,32 @@ func (e *Executor) Handle(ctx context.Context, job *domain.SubmissionJob) error 
 		return e.publishSystemError(ctx, job, err.Error())
 	}
 
-	// ── Step 1: Mark RUNNING ─────────────────────────────────────────────────
-	// Non-fatal: failure here means the user doesn't see "Running…" in the UI,
-	// but the execution continues. The final verdict reconciles state anyway.
-	if err := e.submissionClient.MarkRunning(ctx, job.SubmissionID); err != nil {
-		logger.Warn().Err(err).Msg("could not mark submission RUNNING — continuing")
-	}
-
-	// ── Step 2: Fetch problem limits ─────────────────────────────────────────
-	timeLimitMS, memoryLimitMB, err := e.problemClient.GetProblemLimits(ctx, job.ProblemID)
-	if err != nil {
-		logger.Error().Err(err).Msg("failed to fetch problem limits — using sandbox defaults")
-		// Fall back to configured defaults rather than failing the submission.
+	// ── Step 1: Resolve limits + test cases from the embedded job payload ────
+	// No problem-service call - submission-service already fetched and
+	// embedded these (see SubmissionCreatedEvent.TestCases/TimeLimitMS).
+	timeLimitMS := job.TimeLimitMS
+	memoryLimitMB := job.MemoryLimitMB
+	if timeLimitMS <= 0 {
 		timeLimitMS = int(e.cfg.SandboxWallTimeout.Milliseconds())
+	}
+	if memoryLimitMB <= 0 {
 		memoryLimitMB = e.cfg.SandboxMemoryMB
 	}
 	wallTimeout := time.Duration(timeLimitMS) * time.Millisecond
-	if wallTimeout <= 0 {
-		wallTimeout = e.cfg.SandboxWallTimeout
-	}
 
-	// ── Step 3: Fetch test cases ─────────────────────────────────────────────
-	testCases, err := e.problemClient.GetTestCases(ctx, job.ProblemVersionID)
-	if err != nil {
-		return e.publishSystemError(ctx, job,
-			fmt.Sprintf("fetch test cases for version %s: %v", job.ProblemVersionID, err))
+	testCases := make([]*domain.TestCase, 0, len(job.TestCases))
+	for _, tc := range job.TestCases {
+		testCases = append(testCases, &domain.TestCase{
+			ID:            tc.ID,
+			Ordinal:       tc.Ordinal,
+			IsSample:      tc.IsSample,
+			InputS3Key:    tc.InputS3Key,
+			ExpectedS3Key: tc.ExpectedS3Key,
+			Weight:        tc.Weight,
+		})
 	}
 	if len(testCases) == 0 {
-		return e.publishSystemError(ctx, job, "problem version has no test cases")
+		return e.publishSystemError(ctx, job, "submission event carried no test cases")
 	}
 
 	// Run (IncludeHidden=false) only judges the visible/sample cases -
@@ -135,50 +131,48 @@ func (e *Executor) Handle(ctx context.Context, job *domain.SubmissionJob) error 
 			return e.publishSystemError(ctx, job, "problem version has no visible test cases")
 		}
 	}
-	logger.Info().Int("test_cases", len(testCases)).Msg("fetched test cases")
+	logger.Info().Int("test_cases", len(testCases)).Msg("resolved test cases from embedded job payload")
 
-	// ── Step 4: Download source code ─────────────────────────────────────────
+	// ── Step 2: Download source code ─────────────────────────────────────────
 	sourceCode, err := e.s3.GetSubmissionCode(ctx, job.CodeS3Key)
 	if err != nil {
 		return e.publishSystemError(ctx, job, fmt.Sprintf("download code from S3: %v", err))
 	}
 
-	// ── Step 5: Download test case content (input + expected) from S3 ────────
+	// ── Step 3: Download test case content (input + expected) from S3 ────────
 	if err := e.hydrateTestCases(ctx, testCases); err != nil {
 		return e.publishSystemError(ctx, job, fmt.Sprintf("hydrate test case content: %v", err))
 	}
 
-	// ── Step 6: Execute ───────────────────────────────────────────────────────
+	// ── Step 4: Execute ───────────────────────────────────────────────────────
 	result, err := e.executeAllTestCases(ctx, job, sourceCode, testCases, wallTimeout, memoryLimitMB)
 	if err != nil {
 		// Infrastructure failure during execution — mark as SYSTEM_ERROR.
 		return e.publishSystemError(ctx, job, fmt.Sprintf("execution infrastructure error: %v", err))
 	}
 
-	// ── Step 7: Upload artifacts ─────────────────────────────────────────────
+	// ── Step 5: Static complexity estimate ─────────────────────────────────────
+	// Deterministic structural analysis of the user's own code (loop nesting,
+	// recursion, sort calls) - no LLM, no external dependency, and (unlike an
+	// empirical/timing-based estimate) doesn't need test-case size variation
+	// to produce an answer. See internal/complexity.
+	result.EstimatedTimeComplexity, result.EstimatedSpaceComplexity =
+		complexity.EstimateStatic(job.RawCode, string(job.Language))
+
+	// ── Step 6: Upload artifacts ─────────────────────────────────────────────
 	// Best-effort — artifact upload failure doesn't change the verdict.
 	e.uploadArtifacts(ctx, result)
 
-	// ── Step 7.5: Report the terminal verdict to submission-service ──────────
-	// Best-effort, same as MarkRunning - the Kafka event below is still
-	// published regardless. But since nothing currently consumes
-	// executions.completed.v1 back into submission-service, this HTTP call is
-	// the only thing that actually closes out the submission's row for a
-	// Go-routed request; a failure here leaves it stuck at RUNNING.
-	if err := e.submissionClient.MarkTerminal(ctx, job.SubmissionID, result.Verdict, "", string(result.LastStdout), result.TestCaseResults); err != nil {
-		logger.Warn().Err(err).Msg("could not report terminal verdict to submission-service")
-	}
-
-	// ── Step 8: Publish executions.completed.v1 ───────────────────────────────
-	if err := e.publishCompleted(ctx, job, result); err != nil {
+	// ── Step 7: Publish the result ─────────────────────────────────────────────
+	if err := e.publishResult(ctx, result, ""); err != nil {
 		// This is the most critical failure path. We've executed the code and
 		// know the verdict but can't publish it. Return the error so the Kafka
 		// consumer can route to DLQ, but note the submission is now stuck in
-		// RUNNING state until submission-service times it out.
+		// PENDING state until submission-service times it out.
 		logger.Error().Err(err).
 			Str("verdict", string(result.Verdict)).
 			Msg("CRITICAL: execution complete but failed to publish result event")
-		return fmt.Errorf("publish completed event: %w", err)
+		return fmt.Errorf("publish result event: %w", err)
 	}
 
 	logger.Info().
@@ -186,10 +180,13 @@ func (e *Executor) Handle(ctx context.Context, job *domain.SubmissionJob) error 
 		Int("passed", result.TestCasesPassed).
 		Int("total", result.TestCasesTotal).
 		Int64("wall_time_ms", result.WallTimeMS).
+		Str("estimated_time_complexity", result.EstimatedTimeComplexity).
+		Str("estimated_space_complexity", result.EstimatedSpaceComplexity).
 		Msg("submission execution complete")
 
 	return nil
 }
+
 
 // --------------------------------------------------------------------------
 // execution pipeline
@@ -261,6 +258,7 @@ func (e *Executor) executeAllTestCases(
 			StdoutTruncated: runResult.StdoutTruncated,
 			StderrTruncated: runResult.StderrTruncated,
 			Hidden:          !tc.IsSample,
+			InputSizeBytes:  len(tc.Input),
 		}
 		// Never expose a hidden test case's actual content past this worker -
 		// only whether it passed (see domain.TestCaseResult's comment).
@@ -368,55 +366,65 @@ func (e *Executor) uploadArtifacts(ctx context.Context, result *domain.Execution
 // event publishing
 // --------------------------------------------------------------------------
 
-func (e *Executor) publishCompleted(ctx context.Context, job *domain.SubmissionJob, result *domain.ExecutionResult) error {
-	event := domain.ExecutionCompletedEvent{
-		EventID:          uuid.New().String(),
-		EventVersion:     1,
-		OccurredAt:       result.CompletedAt,
-		SubmissionID:     result.SubmissionID,
-		UserID:           result.UserID,
-		ProblemID:        result.ProblemID,
-		ProblemVersionID: result.ProblemVersionID,
-		Verdict:          string(result.Verdict),
-		TestCasesPassed:  result.TestCasesPassed,
-		TestCasesTotal:   result.TestCasesTotal,
-		WallTimeMS:       result.WallTimeMS,
-		CPUTimeMS:        result.CPUTimeMS,
-		MaxMemoryKB:      result.MaxMemoryKB,
-		StdoutS3Key:      result.StdoutS3Key,
-		StderrS3Key:      result.StderrS3Key,
-		WorkerID:         result.WorkerID,
-		SandboxRuntime:   result.SandboxRuntime,
+// publishResult publishes the judged (or system-error) result to
+// execution-result-topic - the single ingestion point execution-result-service
+// consumes, regardless of which worker produced it.
+func (e *Executor) publishResult(ctx context.Context, result *domain.ExecutionResult, reason string) error {
+	event := domain.ExecutionResultEvent{
+		SubmissionID:              result.SubmissionID,
+		UserID:                    result.UserID,
+		ProblemID:                 result.ProblemID,
+		Status:                    string(result.Verdict),
+		Output:                    string(result.LastStdout),
+		Reason:                    reason,
+		TestCaseResults:           result.TestCaseResults,
+		WallTimeMS:                result.WallTimeMS,
+		MaxMemoryKB:               result.MaxMemoryKB,
+		EstimatedTimeComplexity:   result.EstimatedTimeComplexity,
+		EstimatedSpaceComplexity:  result.EstimatedSpaceComplexity,
+		WorkerID:                  result.WorkerID,
+		CompletedAt:               result.CompletedAt.Format(time.RFC3339),
 	}
 
 	payload, err := json.Marshal(event)
 	if err != nil {
-		return fmt.Errorf("marshal completed event: %w", err)
+		return fmt.Errorf("marshal result event: %w", err)
 	}
 
 	headers := []kafkago.Header{
-		{Key: domain.HeaderEventID, Value: []byte(event.EventID)},
-		{Key: domain.HeaderSubmissionID, Value: []byte(job.SubmissionID)},
+		{Key: domain.HeaderEventID, Value: []byte(uuid.New().String())},
+		{Key: domain.HeaderSubmissionID, Value: []byte(result.SubmissionID)},
 	}
 
 	return e.producer.Publish(ctx,
-		e.cfg.KafkaExecutionDoneTopic,
-		[]byte(job.SubmissionID), // partition key → all events for same submission land on same partition
+		e.cfg.KafkaExecutionResultTopic,
+		[]byte(result.SubmissionID), // partition key → all events for same submission land on same partition
 		payload,
 		headers,
 	)
 }
 
 func (e *Executor) publishSystemError(ctx context.Context, job *domain.SubmissionJob, reason string) error {
-	// Same reasoning as the completed-path call in Handle(): without this,
-	// a system-level failure (as opposed to a user-code failure) leaves the
-	// submission stuck at RUNNING forever for a Go-routed request, since
-	// nothing consumes executions.failed.v1 back into submission-service either.
-	if err := e.submissionClient.MarkTerminal(ctx, job.SubmissionID, domain.VerdictSystemError, reason, "", nil); err != nil {
-		log.Warn().Err(err).Str("submission_id", job.SubmissionID).
-			Msg("could not report system error to submission-service")
+	// Publish the SAME unified result event (status=SYSTEM_ERROR) that a
+	// normal completion would, so execution-result-service (and, via its
+	// submission-update-topic event, submission-service) always hears about
+	// this submission's terminal state - a system failure is a valid, if
+	// sad, terminal outcome, not something to leave stuck at PENDING.
+	resultErr := e.publishResult(ctx, &domain.ExecutionResult{
+		SubmissionID: job.SubmissionID,
+		UserID:       job.UserID,
+		ProblemID:    job.ProblemID,
+		Verdict:      domain.VerdictSystemError,
+		WorkerID:     e.cfg.WorkerID,
+		CompletedAt:  time.Now().UTC(),
+	}, reason)
+	if resultErr != nil {
+		log.Warn().Err(resultErr).Str("submission_id", job.SubmissionID).
+			Msg("could not publish system-error result event")
 	}
 
+	// Also published to executions.failed.v1 for the separate infra-alerting
+	// pipeline (distinct concern from the user-facing result above).
 	event := domain.ExecutionFailedEvent{
 		EventID:      uuid.New().String(),
 		EventVersion: 1,

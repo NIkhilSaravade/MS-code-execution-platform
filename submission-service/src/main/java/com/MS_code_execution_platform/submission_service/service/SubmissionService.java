@@ -1,6 +1,5 @@
 package com.MS_code_execution_platform.submission_service.service;
 
-import com.MS_code_execution_platform.submission_service.dto.ExecutionResultEvent;
 import com.MS_code_execution_platform.submission_service.dto.SubmissionRequest;
 import com.MS_code_execution_platform.submission_service.dto.SubmissionResponse;
 import com.MS_code_execution_platform.submission_service.entity.Submission;
@@ -73,43 +72,18 @@ public class SubmissionService {
                 .build();
     }
 
-    public void updateSubmissionResult(ExecutionResultEvent event) {
-
-        Submission submission = submissionRepository
-                .findById(event.getSubmissionId())
-                .orElseThrow();
-
-        submission.setStatus(event.getStatus());
-        submission.setOutput(event.getOutput());
-        if (event.getTestCaseResults() != null && !event.getTestCaseResults().isNull()) {
-            submission.setTestCaseResults(event.getTestCaseResults().toString());
-        }
-
-        submissionRepository.save(submission);
-    }
-
-    // Called by worker-service-go over HTTP - this IS the terminal-result path
-    // for the Go worker (see SubmissionClient.MarkTerminal): unlike the Java
-    // worker, which reports results via the execution-result-topic Kafka
-    // consumer below, nothing currently consumes executions.completed.v1 back
-    // into submission-service, so this HTTP call is not just "faster
-    // optimistic feedback" for that path - it's the only thing that ever
-    // moves a Go-routed submission out of RUNNING.
-    public void updateState(Long submissionId, String state, String reason, String output, String testCaseResults) {
+    // Called from the submission-update-topic consumer, once
+    // execution-result-service has persisted the full judged result and
+    // published its lightweight status update - see
+    // kafka.SubmissionUpdateConsumer. The result detail itself lives only in
+    // execution-result-service (GET /api/results/{submissionId}).
+    public void updateStatus(Long submissionId, String status) {
 
         Submission submission = submissionRepository.findById(submissionId)
                 .orElseThrow(() -> new NoSuchElementException(
                         "Submission not found: " + submissionId));
 
-        submission.setStatus(state);
-        submission.setReason(reason);
-        if (output != null) {
-            submission.setOutput(output);
-        }
-        if (testCaseResults != null) {
-            submission.setTestCaseResults(testCaseResults);
-        }
-
+        submission.setStatus(status);
         submissionRepository.save(submission);
     }
 }

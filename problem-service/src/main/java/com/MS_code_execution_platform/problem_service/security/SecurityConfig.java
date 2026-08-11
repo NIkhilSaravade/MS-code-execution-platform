@@ -38,6 +38,11 @@ public class SecurityConfig {
                         // ROLE_SERVICE is the narrowest fix.
                         .requestMatchers(HttpMethod.GET, "/problems/**").hasAnyRole("USER", "ADMIN", "SERVICE")
                         .requestMatchers("/problems/**").hasAnyRole("USER", "ADMIN")
+                        // Practice page's 2D "Board" (whimsical-style) view - each user
+                        // reads/writes only their own cards/edges/positions (enforced in
+                        // BoardCardService/BoardConnectionService/BoardPositionService),
+                        // so any authenticated USER/ADMIN may hit these routes.
+                        .requestMatchers("/board/**").hasAnyRole("USER", "ADMIN")
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(oauth2 -> oauth2
                         .jwt(jwt -> jwt.jwtAuthenticationConverter(jwtAuthenticationConverter())));

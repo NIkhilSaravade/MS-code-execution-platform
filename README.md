@@ -24,24 +24,42 @@ API Gateway (:8080)  ←── OAuth2 Resource Server (RS256 / JWKS)
    ├── User-Service (:8081, gRPC 9090) — user CRUD, roles, admin bootstrap
    ├── Problem-Service (:8082)      — problem CRUD, test cases (MinIO-backed),
    │                                  per-language harness generation
-   └── Submission-Service (:8083)   — applies the generated harness, THE WORKER SWITCH
+   └── Submission-Service (:8083)   — fetches + embeds harness/test cases/limits,
+                                       THE WORKER SWITCH
              │
-   [Kafka: submission-topic  OR  submissions.created.v1 — by ACTIVE_WORKER]
+   [Kafka: submission-topic  OR  submissions.created.v1 — by ACTIVE_WORKER,
+    both now carry the test cases/limits inline, not just the code]
              │
      ┌───────┴────────┐
 Worker-Service      Worker-Service-Go
   (:8084, Java)      (no HTTP port, Go)
+  (unchanged,        (redesigned: no more problem-service calls per
+   comparison-only)    submission; computes its own static time/space
+                        complexity estimate from the user's code)
      └───────┬────────┘
-   [Kafka: execution-result-topic / executions.completed.v1]
+      [Kafka: execution-result-topic — the SINGLE result topic
+       both workers publish to; executions.completed.v1 removed]
              │
-     Execution-Result-Service (:8085)
-
-AI-Analysis-Service (Python FastAPI, :8000)
-    └── Groq LLM + ChromaDB RAG + Eureka + own JWT verification
+     Execution-Result-Service (:8085)  — now the actual source of truth
+     for judged results (was previously write-only/unused by the Go path)
+             │
+        ┌────┴─────┐
+        ▼          ▼
+ [Kafka:            [Kafka: analysis.trigger.v1]
+  submission-               │
+  update-topic]             ▼
+        │            AI-Analysis-Service (:8000)
+        ▼            └── Groq LLM + ChromaDB RAG + Eureka
+ Submission-Service          own JWT verification, own Kafka
+ (status only)                consumer — auto-runs on every
+                               judged submission now, not just
+                               on a manual POST /ai/analyze
 ```
 
 **Service Registry:** Eureka (`discovery-service`, :8761) — **both workers now register**, and worker-service-go resolves problem-service/submission-service/auth-service via Eureka lookups rather than static URLs.
 **Centralized Config:** Spring Cloud Config Server (`config-service`, :8888) — currently unused by any service; kept for future adoption.
+
+**Result pipeline redesign (worker-service-go path only — see [Complexity & AI Analysis](#complexity--ai-analysis-of-a-submission)):** previously, `worker-service-go` reported a submission's result directly to `submission-service` over HTTP, and separately published a richer Kafka event to a topic (`executions.completed.v1`) that nothing consumed — `execution-result-service` was effectively dead code for the default (Go) worker path, and there was no execution timing, memory, or complexity data anywhere the frontend could reach. The pipeline now has a single ingestion point: both workers publish to `execution-result-topic`, `execution-result-service` persists the full result (including wall-time, memory, and the Go worker's own complexity estimate) and is the only thing `submission-service` and `ai-analysis-service` hear back from.
 
 ---
 
@@ -53,8 +71,9 @@ AI-Analysis-Service (Python FastAPI, :8000)
 - **Generated Judging Harnesses** — Admins author a language-agnostic function signature once; `problem-service` auto-generates real, runnable boilerplate (stdin→typed args→call→JSON stdout) for every supported language, so users submit a plain `class Solution { ... }`/function instead of a full script
 - **7-Language Code Execution** — Python, Java, C++, C, JavaScript, TypeScript, and Go run in isolated Docker sandboxes, executed by two workers (Java and Go) running side by side for comparison
 - **Run vs Submit** — "Run" judges only a problem's visible/sample test cases; "Submit" judges everything, hidden cases included — every test case is always evaluated and reported (no short-circuit on first failure)
-- **Async Verdict Pipeline** — Kafka-driven submission → execution → result flow, with TLS + SASL + ACLs on Kafka and a dead-letter queue on the Go worker
-- **AI Code Analysis** — RAG-powered LLM feedback for both passing and failing submissions, with PostgreSQL result caching
+- **Async Verdict Pipeline** — Kafka-driven submission → execution → result flow, with TLS + SASL + ACLs on Kafka and a dead-letter queue on the Go worker; `execution-result-service` is the single source of truth for a judged result (output, per-test-case breakdown, runtime, memory)
+- **Deterministic Complexity Estimate** — `worker-service-go` statically analyzes the user's own submitted code (loop nesting, recursion, sort calls, sized allocations) to estimate time/space Big-O, independent of and always available regardless of the LLM
+- **AI Code Analysis** — RAG-powered LLM feedback (including its own, richer complexity guess, optimization suggestions, and code smells) for both passing and failing submissions, auto-triggered right after judging and cached in PostgreSQL
 - **Hardened Data Layer** — Flyway-managed schemas, least-privilege DB roles, TLS-only Postgres connections
 - **Unified API Gateway** — Single entry point, JWT resource server
 
@@ -69,11 +88,11 @@ AI-Analysis-Service (Python FastAPI, :8000)
 | `auth-service` | Java | 8086 | Token issuance, JWKS, client-credentials grants |
 | `user-service` | Java | 8081 (+ gRPC 9090) | User CRUD, roles, admin bootstrap |
 | `problem-service` | Java | 8082 | Problem CRUD, test case storage (MinIO), per-language harness generation |
-| `submission-service` | Java | 8083 | Accepts submissions, applies the generated harness, publishes to Kafka |
-| `worker-service` | Java | 8084 | Docker code executor, Kafka consumer (legacy, kept for comparison) |
-| `worker-service-go` | Go | — | Docker/sandbox code executor, Kafka consumer + DLQ producer |
-| `execution-result-service` | Java | 8085 | Consumes results from Kafka, stores verdicts |
-| `ai-analysis-service` | Python | 8000 | FastAPI — LLM code analysis with RAG |
+| `submission-service` | Java | 8083 | Accepts submissions, applies the generated harness, fetches + embeds test cases/limits, publishes to Kafka; tracks only lifecycle/status (result detail lives in `execution-result-service`) |
+| `worker-service` | Java | 8084 | Docker code executor, Kafka consumer (legacy, kept for comparison — no timing/complexity data) |
+| `worker-service-go` | Go | — | Docker/sandbox code executor, Kafka consumer + DLQ producer; computes its own static time/space complexity estimate and reports timing/memory |
+| `execution-result-service` | Java | 8085 | Single source of truth for judged results (output, per-test-case breakdown, timing, memory, complexity estimate); notifies `submission-service` (status) and `ai-analysis-service` (auto-trigger) via Kafka |
+| `ai-analysis-service` | Python | 8000 | FastAPI — LLM code analysis with RAG; now also a Kafka consumer, auto-triggered per judged submission |
 | `api-gateway` | Java | 8080 | JWT resource server + reverse proxy |
 | `frontend` | React/Vite/TypeScript | 5173 (dev) | Landing page, practice list, Monaco-based solve page. Run separately, not in `docker-compose.yml`. |
 
@@ -133,7 +152,7 @@ AI-Analysis-Service (Python FastAPI, :8000)
 cp .env.example .env
 ```
 
-Fill in the required secrets: Postgres per-service passwords, `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD`, `ADMIN_EMAIL`/`ADMIN_PASSWORD`, `WORKER_SERVICE_CLIENT_SECRET`, `SUBMISSION_SERVICE_CLIENT_SECRET`, Kafka per-identity SASL passwords, `GROQ_API_KEY`, and `GITHUB_PASSWORD` (required for `config-service` to start, even though nothing consumes it yet). `ACTIVE_WORKER` (`java`/`go`, default `go`) picks which worker judges new submissions — see [THE WORKER SWITCH](#the-worker-switch).
+Fill in the required secrets: Postgres per-service passwords, `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD`, `ADMIN_EMAIL`/`ADMIN_PASSWORD`, `WORKER_SERVICE_CLIENT_SECRET`, `SUBMISSION_SERVICE_CLIENT_SECRET`, `AI_ANALYSIS_SERVICE_CLIENT_SECRET`, Kafka per-identity SASL passwords (including `KAFKA_AI_ANALYSIS_SERVICE_PASSWORD`), `GROQ_API_KEY`, and `GITHUB_PASSWORD` (required for `config-service` to start, even though nothing consumes it yet). `ACTIVE_WORKER` (`java`/`go`, default `go`) picks which worker judges new submissions — see [THE WORKER SWITCH](#the-worker-switch).
 
 ### 2. Build the TypeScript sandbox image (one-time)
 
@@ -219,24 +238,25 @@ All requests go through the API Gateway at `http://localhost:8080`. Most endpoin
 | Method | Endpoint | Description |
 |---|---|---|
 | POST | `/submissions` | Submit code for execution. Body: `{ userId, problemId, code, language, includeHidden }` — `includeHidden: false` = "Run" (visible test cases only), `true`/omitted = "Submit" (all test cases, hidden included). |
-| GET | `/submissions/{id}` | Get a submission by ID (caller must own it) — includes a `testCaseResults` array (per-case pass/fail, with content redacted for hidden cases) once judged |
+| GET | `/submissions/{id}` | Get a submission by ID (caller must own it) — `status` only (`PENDING` → `PASSED`/`FAILED`/etc). Result detail (output, per-test-case breakdown, timing) now lives in `execution-result-service`, not here. |
 | GET | `/submissions/user/{userId}` | Get all submissions for a user (caller's JWT subject must match `userId`) |
 
 ### Execution Results (`execution-result-service`)
 
 | Method | Endpoint | Description |
 |---|---|---|
-| GET | `/api/results/{submissionId}` | Get execution verdict for a submission |
+| GET | `/api/results/{submissionId}` | The full judged-result detail once `GET /submissions/{id}`'s status goes terminal: `output`, `reason`, `testCaseResults`, `wallTimeMs`, `maxMemoryKb`, `estimatedTimeComplexity`, `estimatedSpaceComplexity` (the last four are only ever populated on the `worker-service-go` path — see [Complexity & AI Analysis](#complexity--ai-analysis-of-a-submission)). Object-level authz, same "caller must own it" rule as submissions. |
 
 ### AI Analysis (`ai-analysis-service`)
 
-Not currently routed through the gateway — call it directly on `http://localhost:8000`.
+Routed through the gateway at `/ai/**`.
 
 | Method | Endpoint | Description |
 |---|---|---|
-| POST | `/ai/analyze` | Get AI feedback on a submission |
+| POST | `/ai/analyze` | Get AI feedback on a submission (forwards the caller's own token). Cache-checked first; a cache hit from the auto-trigger below usually means this returns instantly. |
+| GET | `/ai/analysis/{submissionId}` | Cache-only lookup — what the frontend actually polls. Returns `{"status": "PENDING"}` until the auto-triggered analysis (see below) has landed, then `{"status": "READY", "analysis": {...}, "source": "AI" \| "CACHE"}`. Object-level authz (the caller must own the submission). |
 
-**Request body:**
+**POST /ai/analyze request body:**
 ```json
 { "submissionId": 123 }
 ```
@@ -245,14 +265,22 @@ Not currently routed through the gateway — call it directly on `http://localho
 
 ## Code Execution Flow
 
-1. Client POSTs to `/submissions` with `{ problemId, userId, code, language, includeHidden }`
-2. `submission-service` saves the raw submission, fetches the problem's generated harness for that language (if any) and glues it to the user's code, then publishes to Kafka — `submission-topic` or `submissions.created.v1`, depending on `ACTIVE_WORKER`
-3. `worker-service` or `worker-service-go` consumes the message, fetches test cases from `problem-service` (filtered to visible-only if `includeHidden` was `false`), and runs the *combined* code in an isolated sandbox — one test case at a time
-4. Each test case's output is compared against its expected output; every case is always run and reported (no short-circuit on first failure), producing per-case `PASSED`/`FAILED`/`TLE`/`MLE`/`RE`/`CE` results and an overall verdict; failures on the Go worker are also published to a dead-letter queue
-5. The result is published to `execution-result-topic` / `executions.completed.v1`
-6. `execution-result-service` consumes and persists the verdict; the Go worker also reports its terminal result directly to `submission-service` over HTTP (nothing currently consumes `executions.completed.v1` back into it)
-7. Client polls `GET /submissions/{id}` (or `GET /api/results/{submissionId}`) to retrieve the verdict and per-test-case results
-8. Optionally, client calls `POST /ai/analyze` (directly on port 8000) for LLM-generated feedback
+1. Client POSTs to `/submissions` with `{ problemId, userId, code, language, includeHidden }`.
+2. `submission-service` saves the submission (`status: PENDING`), fetches the problem's generated harness for that language (if any) and glues it to the user's code, then — **on the Go path** — also fetches the problem's test cases + judging limits (`InternalProblemClient`, one extra call to `problem-service`'s internal API) and embeds all of it, plus the user's *original* (pre-harness) code, into the Kafka event. Publishes to `submission-topic` (Java) or `submissions.created.v1` (Go), depending on `ACTIVE_WORKER`.
+3. `worker-service` or `worker-service-go` consumes the message and runs the harness-glued code in an isolated sandbox, one test case at a time (filtered to visible-only if `includeHidden` was `false`). **The Go worker never calls `problem-service` itself anymore** — everything it needs was already in the event.
+4. Each test case's output is compared against its expected output; every case is always run and reported (no short-circuit on first failure), producing per-case `PASSED`/`FAILED`/`TLE`/`MLE`/`RE`/`CE` results and an overall verdict. The Go worker also measures wall-time (and best-effort peak memory via `docker stats`) per test case, and runs a static complexity analysis on the user's original code (see below). Infra-level failures on the Go worker are also published to a dead-letter queue.
+5. **Both workers publish to the same topic, `execution-result-topic`** — the single ingestion point (`executions.completed.v1` and the Go worker's old direct HTTP callback to `submission-service` are gone).
+6. `execution-result-service` consumes and persists the full result (output, per-test-case breakdown, timing/memory, complexity estimate — the Java worker's messages simply leave the timing/complexity fields null). It then publishes two lightweight Kafka events: `submission-update-topic` (consumed by `submission-service`, which flips its own `status` column) and `analysis.trigger.v1` (consumed by `ai-analysis-service`, which runs its LLM analysis automatically).
+7. Client polls `GET /submissions/{id}` for status; once terminal, fetches `GET /api/results/{submissionId}` for the full detail, and separately/non-blockingly polls `GET /ai/analysis/{submissionId}` for the LLM verdict.
+
+### Complexity & AI Analysis of a submission
+
+Two independent layers, so a slow or unreachable AI service never blocks the deterministic result:
+
+- **`worker-service-go`'s own estimate** (`internal/complexity`) — a deterministic, static structural analysis of the user's *original* submitted code: loop nesting depth, recursion (and whether it's linear or branching), sort-call usage, sized-allocation detection. Classifies into standard Big-O buckets (`O(1)` … `O(n^3)`, `O(2^n)` for branching recursion). No LLM, no network call, always produces an answer — this replaced an earlier timing-based regression across test cases that degraded to "insufficient data" for most problems (too few test cases with too little size variation to fit a meaningful curve). Surfaced via `GET /api/results/{submissionId}`'s `estimatedTimeComplexity`/`estimatedSpaceComplexity`.
+- **`ai-analysis-service`'s LLM verdict** — a Groq-backed, RAG-grounded analysis returning its own (richer, natural-language) `timeComplexity`/`spaceComplexity` plus optimization suggestions and code smells (passed submissions) or a likely failure reason, debugging suggestion, and edge cases (failed submissions). Auto-triggered by `execution-result-service`'s `analysis.trigger.v1` event — `ai-analysis-service` authenticates to `submission-service`/`problem-service` as itself (OAuth2 client-credentials, no end-user token to forward from a Kafka trigger) to fetch what it needs, then caches the result by `submission_id`. Surfaced via `GET /ai/analysis/{submissionId}`.
+
+The frontend's Solve page renders these as two separate console tabs — **Complexity** (the worker's own estimate + runtime/memory) and **AI Analysis** (the LLM verdict).
 
 ### How the harness system works
 
@@ -280,9 +308,9 @@ An admin creates a problem with an optional `signature` — e.g. for Two Sum: fu
 
 - JWTs are RS256, issued by `auth-service`, verified independently by every other business service against `auth-service`'s JWKS endpoint (issuer `https://auth-service`, audience `ms-code-execution`).
 - `auth-service` and `user-service` communicate over gRPC (port 9090).
-- Machine-to-machine calls (e.g. workers calling `problem-service`/`submission-service`, `submission-service` calling `problem-service` for a harness) use OAuth2 client-credentials tokens obtained from `POST /auth/token`.
+- Machine-to-machine calls (`submission-service` calling `problem-service` for a harness + test cases/limits, `ai-analysis-service` calling `submission-service`/`problem-service` when triggered by Kafka rather than a forwarded user request) use OAuth2 client-credentials tokens obtained from `POST /auth/token`. Registered clients: `worker-service`, `submission-service`, `ai-analysis-service` (`service-clients.clients.*` in `auth-service`).
 - `user-service` seeds a single admin account idempotently at startup (`ADMIN_EMAIL`/`ADMIN_PASSWORD`); that admin can promote other users via `PATCH /users/{email}/role`, and is required to call `POST /problems`/`POST /problems/{id}/harness/regenerate`.
-- Object-level access control on submissions: `/submissions/{id}` is scoped to the requesting user (404, not 403, on mismatch); `/submissions/user/{userId}` requires the JWT subject to match `userId`.
+- Object-level access control: `/submissions/{id}`, `/api/results/{submissionId}`, and `/ai/analysis/{submissionId}` are all scoped to the requesting user (404, not 403, on mismatch); `/submissions/user/{userId}` requires the JWT subject to match `userId`.
 
 ---
 
@@ -294,9 +322,11 @@ The AI service uses a **RAG (Retrieval-Augmented Generation)** pipeline:
 2. Selects a prompt template based on submission status (`PASSED` or `FAILED`)
 3. Invokes **Groq LLM** via LangChain with the code, problem, and retrieved context
 4. Caches the result in PostgreSQL to avoid redundant LLM calls
-5. Returns structured JSON feedback
+5. Returns structured JSON feedback (for `PASSED`: `timeComplexity`, `spaceComplexity`, `optimizationSuggestions`, `codeSmells`, `alternativeApproach`; for `FAILED`: `failureReason`, `debuggingSuggestion`, `edgeCases`, `hints`)
 
 It also independently verifies incoming JWTs (PyJWT + `PyJWKClient` against `auth-service`'s JWKS) rather than trusting the caller.
+
+**Two trigger paths, one pipeline:** `POST /ai/analyze` (manual, forwards the caller's own JWT) and an `aiokafka` consumer on `analysis.trigger.v1` (automatic, fired by `execution-result-service` right after judging — no end-user token to forward, so this path authenticates as the service itself via OAuth2 client-credentials, see `auth/token_client.py`) both funnel through the same cache-check → LLM-call → persist logic (`services/analysis_pipeline.py`). `GET /ai/analysis/{submissionId}` is a cache-only read for the frontend to poll.
 
 ---
 
@@ -318,14 +348,21 @@ MS-code-execution-platform/
 ├── user-service/                # User CRUD, roles, admin bootstrap, gRPC
 ├── problem-service/             # Problems + test cases (MinIO-backed) + harness generation
 │   └── src/main/java/.../harness/  # One HarnessGenerator per language + JSON-helper resources
-├── submission-service/          # Submission intake, harness application, Kafka producer
-├── worker-service/               # Java Docker code executor + Kafka consumer
+├── submission-service/          # Submission intake, harness application, embeds test cases/
+│   │                             # limits (InternalProblemClient), Kafka producer + status consumer
+├── worker-service/               # Java Docker code executor + Kafka consumer (legacy, unchanged)
 ├── worker-service-go/           # Go sandbox code executor + Kafka consumer/DLQ
-├── execution-result-service/    # Result storage + Kafka consumer
+│   └── internal/complexity/     # Static time/space complexity analysis (no problem-service
+│                                 # calls left in this worker - everything comes in the job event)
+├── execution-result-service/    # Single source of truth for judged results; Kafka consumer
+│                                 # (execution-result-topic) + two producers (submission-update-topic,
+│                                 # analysis.trigger.v1)
 ├── ai-analysis-service/         # Python FastAPI + LangChain RAG
 │   ├── main.py
 │   ├── security/                # JWT verification (JWKS)
-│   ├── services/
+│   ├── auth/                    # Service-to-service OAuth2 client-credentials (Kafka trigger path)
+│   ├── kafka/                   # analysis.trigger.v1 consumer (aiokafka)
+│   ├── services/                # analysis_pipeline.py (shared cache/LLM/persist logic)
 │   ├── prompts/
 │   ├── discovery/
 │   └── db/
@@ -333,7 +370,8 @@ MS-code-execution-platform/
 │   └── src/
 │       ├── pages/                # LandingPage, PracticePage, SolvePage, LoginPage, SignupPage
 │       ├── components/
-│       ├── api/                  # Backend client (auth, problems, submissions)
+│       ├── api/                  # Backend client (auth, problems, submissions, execution results,
+│       │                         # AI analysis)
 │       └── data/                 # Problem catalog + starter code per language
 └── docker-code/                 # Temp container artifacts (worker output)
 ```
@@ -386,7 +424,8 @@ Browse buckets at [http://localhost:9001](http://localhost:9001).
 ## Known Gaps / Follow-ups
 
 - `config-service` is deployed but not consumed by any service yet.
-- No `/ai/**` gateway route — `ai-analysis-service` must be called directly on port 8000.
 - Kafka admin credentials are hardcoded in `infra/kafka/kafka_server_jaas.conf` / `admin-client.properties`, not yet env-driven (planned: Vault or similar).
 - The frontend is not containerized/added to `docker-compose.yml` — run it separately with `npm run dev`.
-- Nothing currently consumes the Go worker's `executions.completed.v1` topic back into `submission-service` — its terminal result is delivered via a direct HTTP call instead (`SubmissionClient.MarkTerminal`).
+- The result-pipeline redesign (embedded test cases, timing, complexity estimate, single result topic) only applies to `worker-service-go`. The legacy `worker-service` (Java) is intentionally left unchanged for comparison — flipping `ACTIVE_WORKER=java` gets a correctly-judged verdict with no timing/memory/complexity fields (they're simply left null).
+- `worker-service-go`'s peak-memory sampling (`docker stats`, streamed for the sandbox container's lifetime) is best-effort and unrelated to the (separate, always-on) static complexity estimate. **This is a hard limit, not a tuning problem**: `dockerd`'s own stats collector has roughly a 1-second minimum latency before its first sample is available, confirmed by testing a container with a 300ms lifetime (its stats stayed empty, `-- / --`, the whole time, regardless of polling strategy) — most sandboxed executions finish well under that, so `maxMemoryKb` reports `0` for anything reasonably fast. A real fix would mean reading the sandbox container's cgroup memory files directly off the host filesystem instead of going through `dockerd`'s stats loop at all — deliberately not done, since the exact cgroup path is host-dependent (v1 vs v2, cgroupfs vs systemd driver) and would need real per-environment verification.
+- The static complexity estimate (`internal/complexity`) is a heuristic over the user's source text (loop nesting, recursion, common library calls), not a formal analysis — it can be fooled by unusual code structure, and branching-recursion detection assumes no memoization/DP (always reports `O(2^n)` for 2+ self-calls, even if the user added a memo table).

@@ -1,5 +1,8 @@
 package com.MS_code_execution_platform.submission_service.kafka;
 
+import com.MS_code_execution_platform.submission_service.client.InternalProblemClient;
+import com.MS_code_execution_platform.submission_service.dto.InternalLimitsResponse;
+import com.MS_code_execution_platform.submission_service.dto.InternalTestCasesResponse;
 import com.MS_code_execution_platform.submission_service.dto.SubmissionCreatedEvent;
 import com.MS_code_execution_platform.submission_service.dto.SubmissionEvent;
 import com.MS_code_execution_platform.submission_service.entity.Submission;
@@ -11,6 +14,8 @@ import org.springframework.stereotype.Component;
 
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
+import java.util.Collections;
+import java.util.List;
 import java.util.UUID;
 
 @Component
@@ -20,6 +25,7 @@ public class SubmissionProducer {
     private final KafkaTemplate<String, SubmissionEvent> kafkaTemplate;
     private final KafkaTemplate<String, SubmissionCreatedEvent> submissionCreatedKafkaTemplate;
     private final SubmissionCodeStorageService submissionCodeStorageService;
+    private final InternalProblemClient internalProblemClient;
 
     @Value("${kafka.topic.submissions-created}")
     private String submissionsCreatedTopic;
@@ -55,6 +61,16 @@ public class SubmissionProducer {
 
         String problemId = String.valueOf(submission.getProblemId());
 
+        // Fetched once here (instead of once per worker, per submission) and
+        // embedded into the event - see InternalProblemClient and the
+        // "worker overhead at scale" motivation for this redesign.
+        InternalTestCasesResponse testCases = internalProblemClient.getTestCases(submission.getProblemId());
+        InternalLimitsResponse limits = internalProblemClient.getLimits(submission.getProblemId());
+        List<com.MS_code_execution_platform.submission_service.dto.InternalTestCaseDTO> testCaseList =
+                testCases != null && testCases.getTestCases() != null
+                        ? testCases.getTestCases()
+                        : Collections.emptyList();
+
         SubmissionCreatedEvent event = new SubmissionCreatedEvent(
                 UUID.randomUUID().toString(),
                 1,
@@ -70,7 +86,11 @@ public class SubmissionProducer {
                 submission.getLanguage(),
                 upload.s3Key(),
                 upload.codeHash(),
-                includeHidden
+                includeHidden,
+                testCaseList,
+                limits != null ? limits.getTimeLimitMs() : 2000,
+                limits != null ? limits.getMemoryLimitMb() : 256,
+                submission.getCode()
         );
 
         submissionCreatedKafkaTemplate.send(submissionsCreatedTopic, event);

@@ -48,6 +48,16 @@ spring:
               predicates:
                 - Path=/solutions/**
 
+            - id: board-service
+              uri: lb://PROBLEM-SERVICE
+              predicates:
+                - Path=/board/**
+
+            - id: ai-analysis-service
+              uri: lb://AI-ANALYSIS-SERVICE
+              predicates:
+                - Path=/ai/**
+
 
 
 

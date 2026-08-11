@@ -525,21 +525,21 @@ services:
       KAFKA_TLS_CA_CERT_PATH: /certs/ca.crt
       KAFKA_SASL_USERNAME: worker
       KAFKA_SASL_PASSWORD: ${KAFKA_WORKER_PASSWORD:-worker-dev-secret}
-      SUBMISSION_SERVICE_URL: http://submission-service:8083
-      PROBLEM_SERVICE_URL: http://problem-service:8082
-      AUTH_SERVICE_URL: http://auth-service:8086
-      WORKER_CLIENT_ID: worker-service
-      WORKER_CLIENT_SECRET: ${WORKER_SERVICE_CLIENT_SECRET:-dev-only-secret-change-me}
+      # No SUBMISSION_SERVICE_URL/PROBLEM_SERVICE_URL/AUTH_SERVICE_URL/
+      # WORKER_CLIENT_ID/SECRET here anymore - this worker no longer calls
+      # either service directly. submission-service embeds test cases/limits
+      # into the Kafka event it consumes, and it reports results only to
+      # execution-result-topic (execution-result-service is the single
+      # ingestion point) - see the worker-overhead-at-scale redesign.
+      KAFKA_TOPIC_EXECUTION_RESULT: execution-result-topic
       S3_ENDPOINT: http://minio:9000
       S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
       S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
       SANDBOX_RUNTIME: runc  # gVisor (runsc) isn't installed on the host by default; see README
       SCRATCH_CONTAINER_DIR: /scratch
       SCRATCH_VOLUME_NAME: worker-scratch
-      # Registers with discovery-service (see internal/eureka) and resolves
-      # PROBLEM_SERVICE_URL/SUBMISSION_SERVICE_URL/AUTH_SERVICE_URL above
-      # through it instead - those three env vars are now only a fallback
-      # used if Eureka has no UP instance registered yet.
+      # Registers with discovery-service (see internal/eureka) for dashboard
+      # visibility only now - nothing left to resolve through it.
       EUREKA_SERVER_URL: http://discovery-service:8761/eureka
       EUREKA_APP_NAME: WORKER-SERVICE-GO
     depends_on:
@@ -549,11 +549,7 @@ services:
         condition: service_healthy
       discovery-service:
         condition: service_healthy
-      problem-service:
-        condition: service_started
       submission-service:
-        condition: service_started
-      auth-service:
         condition: service_started
     restart: on-failure:5
 
@@ -564,6 +560,7 @@ services:
       - "8000:8000"
     volumes:
       - ./infra/postgres/certs/ca.crt:/certs/postgres-ca.crt:ro
+      - ./infra/kafka/certs/ca.crt:/certs/ca.crt:ro
     environment:
       # No separate app role for this DB - see infra/postgres/init-multiple-databases.sh's note on why.
       DATABASE_URL: postgresql://ai_analysis_owner:${AI_ANALYSIS_DB_OWNER_PASSWORD:-ai-analysis-owner-dev-secret}@postgres:5432/ai_analysis_db?sslmode=verify-full&sslrootcert=/certs/postgres-ca.crt
@@ -573,11 +570,28 @@ services:
       JWT_ISSUER: https://auth-service
       JWT_AUDIENCE: ms-code-execution
       GROQ_API_KEY: ${GROQ_API_KEY:?set GROQ_API_KEY in .env - required by langchain-groq}
+      # Consumes analysis.trigger.v1 (published by execution-result-service
+      # once a result is persisted) to run the LLM analysis automatically -
+      # see kafka/consumer.py. Authenticates to submission-service/
+      # problem-service as itself via client-credentials (see
+      # auth/token_client.py and auth-service's service-clients config).
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
+      KAFKA_TLS_CA_CERT_PATH: /certs/ca.crt
+      KAFKA_SASL_USERNAME: ai_analysis_service
+      KAFKA_AI_ANALYSIS_SERVICE_PASSWORD: ${KAFKA_AI_ANALYSIS_SERVICE_PASSWORD:-ai-analysis-service-dev-secret}
+      KAFKA_TOPIC_ANALYSIS_TRIGGER: analysis.trigger.v1
+      KAFKA_CONSUMER_GROUP_ID: ai-analysis-group
+      AI_ANALYSIS_SERVICE_CLIENT_ID: ai-analysis-service
+      AI_ANALYSIS_SERVICE_CLIENT_SECRET: ${AI_ANALYSIS_SERVICE_CLIENT_SECRET:-dev-only-secret-change-me}
     depends_on:
       postgres:
         condition: service_healthy
       discovery-service:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      auth-service:
+        condition: service_started
     restart: on-failure:5
 
 volumes:

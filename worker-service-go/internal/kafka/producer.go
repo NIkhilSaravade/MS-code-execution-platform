@@ -44,7 +44,17 @@ func NewProducer(cfg *config.Config) (*Producer, error) {
 		WriteBackoffMin:        100 * time.Millisecond,
 		WriteBackoffMax:        5 * time.Second,
 		BatchTimeout:           10 * time.Millisecond,
-		Compression:            kafkago.Snappy,
+		// Gzip, not Snappy: this worker's results now flow into
+		// execution-result-topic, consumed by a JVM service. Snappy
+		// decompression on the JVM side needs snappy-java's native (JNI)
+		// library, which fails to load on an Alpine/musl base image
+		// (execution-result-service's eclipse-temurin:17-jre-alpine has no
+		// glibc dynamic linker) - this crashed its Kafka listener container
+		// outright the first time a Snappy-compressed message actually
+		// reached it (previously nothing consumed this worker's output).
+		// Gzip decodes via java.util.zip, built into the JDK - no native
+		// dependency, works on any base image.
+		Compression: kafkago.Gzip,
 		AllowAutoTopicCreation: false, // topics must be pre-created by ops
 		Logger: kafkago.LoggerFunc(func(s string, a ...interface{}) {
 			log.Debug().Msgf("kafka-go writer: "+s, a...)

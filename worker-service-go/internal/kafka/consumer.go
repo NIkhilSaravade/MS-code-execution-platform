@@ -181,6 +181,10 @@ func (c *Consumer) process(ctx context.Context, msg kafkago.Message) (retErr err
 		CodeHash:         event.CodeHash,
 		IncludeHidden:    event.IncludeHidden,
 		OccurredAt:       event.OccurredAt,
+		TestCases:        event.TestCases,
+		TimeLimitMS:      event.TimeLimitMS,
+		MemoryLimitMB:    event.MemoryLimitMB,
+		RawCode:          event.RawCode,
 		TraceParent:      carrier.Get(domain.HeaderTraceParent),
 		TraceState:       carrier.Get(domain.HeaderTraceState),
 	}

@@ -7,7 +7,7 @@ set -e
 BOOTSTRAP="kafka:9093"
 CONFIG="/certs/admin-client.properties"
 
-TOPICS="submission-topic execution-result-topic submissions.created.v1 executions.completed.v1 executions.failed.v1 dlq.submissions.created.v1"
+TOPICS="submission-topic execution-result-topic submissions.created.v1 executions.failed.v1 dlq.submissions.created.v1 submission-update-topic analysis.trigger.v1"
 
 echo "Creating topics (if missing)..."
 for t in $TOPICS; do
@@ -19,7 +19,11 @@ echo "Granting ACLs..."
 
 # worker (both the old Java worker-service and worker-service-go share this
 # trust boundary - see the guide's phrasing, "the worker"): consume the
-# submission topics, produce the execution-result topics. Nothing else.
+# submission topics, produce results to execution-result-topic only - both
+# workers report to execution-result-service now, nothing consumes
+# executions.completed.v1 anymore (removed as part of the single-topic
+# result-reporting redesign; executions.failed.v1/dlq stay for worker-side
+# infra-failure reporting, a separate concern).
 kafka-acls --bootstrap-server "$BOOTSTRAP" --command-config "$CONFIG" \
   --add --allow-principal User:worker \
   --operation Read --operation Describe \
@@ -29,12 +33,14 @@ kafka-acls --bootstrap-server "$BOOTSTRAP" --command-config "$CONFIG" \
 kafka-acls --bootstrap-server "$BOOTSTRAP" --command-config "$CONFIG" \
   --add --allow-principal User:worker \
   --operation Write --operation Describe \
-  --topic execution-result-topic --topic executions.completed.v1 \
+  --topic execution-result-topic \
   --topic executions.failed.v1 --topic dlq.submissions.created.v1
 
 # submission-service: produces submission-topic (legacy Java worker) and
-# submissions.created.v1 (worker-service-go), consumes execution-result-topic
-# to update a submission's status once the worker finishes.
+# submissions.created.v1 (worker-service-go); consumes submission-update-topic
+# to update a submission's status once execution-result-service has
+# persisted the full result (no longer reads execution-result-topic
+# directly - execution-result-service is the only consumer of that topic now).
 kafka-acls --bootstrap-server "$BOOTSTRAP" --command-config "$CONFIG" \
   --add --allow-principal User:submission_service \
   --operation Write --operation Describe \
@@ -43,12 +49,27 @@ kafka-acls --bootstrap-server "$BOOTSTRAP" --command-config "$CONFIG" \
 kafka-acls --bootstrap-server "$BOOTSTRAP" --command-config "$CONFIG" \
   --add --allow-principal User:submission_service \
   --operation Read --operation Describe \
-  --topic execution-result-topic --group submission-group
+  --topic submission-update-topic --group submission-group
 
-# execution-result-service: only ever reads execution-result-topic.
+# execution-result-service: reads execution-result-topic (from either
+# worker), produces submission-update-topic (submission-service) and
+# analysis.trigger.v1 (ai-analysis-service).
 kafka-acls --bootstrap-server "$BOOTSTRAP" --command-config "$CONFIG" \
   --add --allow-principal User:execution_result_service \
   --operation Read --operation Describe \
   --topic execution-result-topic --group execution-result-group
+
+kafka-acls --bootstrap-server "$BOOTSTRAP" --command-config "$CONFIG" \
+  --add --allow-principal User:execution_result_service \
+  --operation Write --operation Describe \
+  --topic submission-update-topic --topic analysis.trigger.v1
+
+# ai-analysis-service: consumes analysis.trigger.v1 to run its LLM analysis
+# automatically after a submission is judged (see Kafka consumer in
+# ai-analysis-service/kafka/consumer.py).
+kafka-acls --bootstrap-server "$BOOTSTRAP" --command-config "$CONFIG" \
+  --add --allow-principal User:ai_analysis_service \
+  --operation Read --operation Describe \
+  --topic analysis.trigger.v1 --group ai-analysis-group
 
 echo "Kafka topics and ACLs configured."

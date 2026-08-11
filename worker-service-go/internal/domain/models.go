@@ -80,6 +80,15 @@ type SubmissionJob struct {
 	IncludeHidden    bool
 	OccurredAt       time.Time
 
+	// Embedded by submission-service - see SubmissionCreatedEvent.TestCases.
+	// This worker no longer calls problem-service to fetch these itself.
+	TestCases     []TestCaseDTO
+	TimeLimitMS   int
+	MemoryLimitMB int
+
+	// The user's original code (pre-harness) - see SubmissionCreatedEvent.RawCode.
+	RawCode string
+
 	// Trace context forwarded from the Kafka header so spans chain correctly.
 	TraceParent string
 	TraceState  string
@@ -100,6 +109,12 @@ type TestCaseResult struct {
 	StdoutTruncated bool    `json:"stdout_truncated"`
 	StderrTruncated bool    `json:"stderr_truncated"`
 
+	// InputSizeBytes is just a length, never the hidden content itself - safe
+	// to report for every test case (see complexity.Estimate, which regresses
+	// WallTimeMS/MaxMemoryKB against this across a submission's test cases to
+	// produce an empirical time/space complexity estimate).
+	InputSizeBytes int `json:"input_size_bytes"`
+
 	// Hidden mirrors the test case's !IsSample - true for hidden cases.
 	// Input/Expected/Actual are only ever populated for non-hidden cases
 	// (see executor.go's executeAllTestCases): a hidden test case's content
@@ -112,7 +127,8 @@ type TestCaseResult struct {
 
 // --------------------------------------------------------------------------
 // ExecutionResult — the aggregate outcome of all test cases for one submission.
-// This is what gets published as executions.completed.v1.
+// This is what gets published to execution-result-topic (see
+// executor.publishResult) - execution-result-service is the only consumer.
 // --------------------------------------------------------------------------
 
 type ExecutionResult struct {
@@ -133,13 +149,17 @@ type ExecutionResult struct {
 	SandboxRuntime   string
 	CompletedAt      time.Time
 
+	// Empirical estimate from complexity.Estimate - a heuristic derived from
+	// wall-time/memory growth against input size across this submission's own
+	// test cases, NOT a formal proof. Distinct from ai-analysis-service's
+	// separate, LLM-derived timeComplexity/spaceComplexity.
+	EstimatedTimeComplexity  string
+	EstimatedSpaceComplexity string
+
 	// Populated on system-level failure (not user-code failure).
 	SystemError string
 
-	// LastStdout is the most recent test case's raw output. Not part of the
-	// executions.completed.v1 event (kept lightweight, see uploadArtifacts) -
-	// used only for the optimistic-feedback HTTP call to submission-service
-	// (SubmissionClient.MarkTerminal) so the frontend has something to show
-	// immediately instead of waiting on artifact upload/S3 fetch.
+	// LastStdout is the most recent test case's raw output - becomes the
+	// event's "output" field (see uploadArtifacts).
 	LastStdout []byte
 }

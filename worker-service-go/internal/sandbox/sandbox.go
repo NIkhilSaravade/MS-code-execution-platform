@@ -5,17 +5,20 @@
 package sandbox
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -349,8 +352,12 @@ func (s *Sandbox) runContainer(
 	cpuQuota float64,
 	writableSource bool,
 ) (*containerResult, error) {
-	// Build the docker run command with every mandatory security flag.
-	args := s.buildDockerArgs(desc, scratchDir, memoryLimitMB, cpuQuota, cmd, writableSource)
+	// A named container (instead of an anonymous one) so peakMemorySampler
+	// can poll `docker stats` for it by name while it's still running -
+	// --rm removes it immediately on exit, which would otherwise race any
+	// stats query issued afterward.
+	containerName := "exec-" + uuid.New().String()
+	args := s.buildDockerArgs(desc, scratchDir, memoryLimitMB, cpuQuota, cmd, writableSource, containerName)
 
 	// The wall-clock timeout is enforced by the host via context cancellation.
 	// We do NOT rely on the container to time itself out — a compromised or
@@ -373,7 +380,18 @@ func (s *Sandbox) runContainer(
 
 	start := time.Now()
 
+	// Best-effort peak-memory sampling: poll `docker stats` for this
+	// container by name while it runs. If sampling fails entirely (e.g. the
+	// container exits before the first sample, or `docker stats` itself
+	// errors), peakMemoryKB just stays 0 - callers treat that as "no data"
+	// rather than a hard failure.
+	samplerCtx, stopSampler := context.WithCancel(ctx)
+	memSampleCh := make(chan int64, 1)
+	go samplePeakMemoryKB(samplerCtx, containerName, memSampleCh)
+
 	err := dockerCmd.Run()
+	stopSampler()
+	peakMemoryKB := <-memSampleCh
 
 	wallTimeMS := time.Since(start).Milliseconds()
 
@@ -381,6 +399,7 @@ func (s *Sandbox) runContainer(
 		Stdout:          stdoutBuf.Bytes(),
 		Stderr:          stderrBuf.Bytes(),
 		WallTimeMS:      wallTimeMS,
+		MaxMemoryKB:     peakMemoryKB,
 		StdoutTruncated: stdoutBuf.truncated,
 		StderrTruncated: stderrBuf.truncated,
 	}
@@ -431,14 +450,16 @@ func (s *Sandbox) buildDockerArgs(
 	cpuQuota float64,
 	cmd []string,
 	writableSource bool,
+	containerName string,
 ) []string {
 	memoryFlag := strconv.Itoa(memoryLimitMB) + "m"
 	cpuFlag := strconv.FormatFloat(cpuQuota, 'f', 2, 64)
 
 	args := []string{
 		"run",
-		"--rm", // auto-remove the container on exit — no zombie containers
-		"-i",   // attach stdin — without this, `docker run` never connects
+		"--rm",                  // auto-remove the container on exit — no zombie containers
+		"--name", containerName, // lets peakMemorySampler poll `docker stats` by name
+		"-i", // attach stdin — without this, `docker run` never connects
 		// the container's stdin at all, so a program that actually
 		// reads from it (e.g. the harness's sys.stdin.read() - see
 		// problem-service's harness package) gets nothing instead
@@ -520,6 +541,102 @@ func (s *Sandbox) buildDockerArgs(
 	// Append the command (compile or exec).
 	args = append(args, cmd...)
 	return args
+}
+
+// samplePeakMemoryKB streams `docker stats` for containerName until ctx is
+// cancelled (the container has exited), tracking the highest memory usage
+// seen, then sends the result on resultCh.
+//
+// This spawns exactly ONE `docker stats` process for the container's whole
+// lifetime rather than re-invoking the CLI on a poll interval - an earlier
+// version did that (`docker stats --no-stream`, one process per sample,
+// every 25ms), but a single such invocation was measured taking ~1.5s
+// end-to-end inside this container (CLI startup + API round trip), far
+// longer than most sandboxed executions run - the sampler never landed a
+// single sample before the container had already exited and been removed.
+// Streaming mode pays that startup cost once and then reads continuous
+// updates over the same connection.
+//
+// Still best-effort: a container whose entire lifetime is shorter than
+// docker stats' first update tick reports 0, same as before.
+func samplePeakMemoryKB(ctx context.Context, containerName string, resultCh chan<- int64) {
+	cmd := exec.CommandContext(ctx, "docker", "stats", containerName, "--format", "{{.MemUsage}}")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		resultCh <- 0
+		return
+	}
+	if err := cmd.Start(); err != nil {
+		resultCh <- 0
+		return
+	}
+
+	var peakKB int64
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		// Streaming mode prefixes each update with an ANSI cursor-repositioning
+		// escape sequence (even though stdout isn't a TTY here) - strip it
+		// before parsing the actual "used / limit" text.
+		line := ansiEscapePattern.ReplaceAllString(scanner.Text(), "")
+		if kb := parseMemUsageKB(strings.TrimSpace(line)); kb > peakKB {
+			peakKB = kb
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		// Expected once ctx is cancelled and the process is killed - not
+		// worth logging (see the function doc: best-effort sample).
+		_ = err
+	}
+
+	// ctx cancellation (via CommandContext) kills the process; Wait() reaps
+	// it. Errors here are expected (killed process) and not worth reporting -
+	// this is a best-effort sample, not a correctness-critical measurement.
+	_ = cmd.Wait()
+	resultCh <- peakKB
+}
+
+var ansiEscapePattern = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
+
+// parseMemUsageKB parses `docker stats`' MemUsage format, e.g.
+// "12.5MiB / 256MiB" -> the used-memory side, converted to KB. Returns 0 on
+// any format it doesn't recognize rather than erroring - this is a
+// best-effort sample, not a correctness-critical measurement.
+func parseMemUsageKB(memUsage string) int64 {
+	used, _, found := strings.Cut(memUsage, " / ")
+	if !found {
+		return 0
+	}
+	used = strings.TrimSpace(used)
+
+	var unit string
+	var numEnd int
+	for numEnd = 0; numEnd < len(used); numEnd++ {
+		c := used[numEnd]
+		if !(c >= '0' && c <= '9' || c == '.') {
+			break
+		}
+	}
+	if numEnd == 0 {
+		return 0
+	}
+	value, err := strconv.ParseFloat(used[:numEnd], 64)
+	if err != nil {
+		return 0
+	}
+	unit = strings.ToUpper(strings.TrimSpace(used[numEnd:]))
+
+	switch unit {
+	case "B":
+		return int64(value / 1024)
+	case "KIB", "KB":
+		return int64(value)
+	case "MIB", "MB":
+		return int64(value * 1024)
+	case "GIB", "GB":
+		return int64(value * 1024 * 1024)
+	default:
+		return 0
+	}
 }
 
 // forceRemoveContainer attempts to force-kill a container that may still be

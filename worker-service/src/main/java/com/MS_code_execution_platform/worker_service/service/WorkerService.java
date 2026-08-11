@@ -95,7 +95,9 @@ public class WorkerService {
         String status = allPassed ? "PASSED" : "FAILED";
 
         ExecutionResultEvent resultEvent = ExecutionResultEvent.builder()
-                .submissionId(event.getSubmissionId())
+                .submissionId(String.valueOf(event.getSubmissionId()))
+                .userId(String.valueOf(event.getUserId()))
+                .problemId(String.valueOf(event.getProblemId()))
                 .output(lastOutput)
                 .status(status)
                 .testCaseResults(results)

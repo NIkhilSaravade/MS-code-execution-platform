@@ -2,9 +2,10 @@
 // sandboxes, and publishes execution results back to Kafka.
 
 //The whole service in one sentence:
-// main.go builds everything → consumer.go receives a Kafka message
-// → executor.go orchestrates → sandbox.go runs Docker → problem/submission clients talk to other services
-// → s3client.go moves files → producer.go publishes the result.
+// main.go builds everything → consumer.go receives a Kafka message (already
+// carrying test cases/limits, embedded by submission-service) → executor.go
+// orchestrates → sandbox.go runs Docker → s3client.go moves files →
+// producer.go publishes the result to execution-result-topic.
 
 // Startup order:
 //  1. Load config from environment
@@ -25,8 +26,6 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
-	"github.com/nikhilsaravade95/code-execution-platform/worker-service/internal/auth"
-	"github.com/nikhilsaravade95/code-execution-platform/worker-service/internal/clients"
 	"github.com/nikhilsaravade95/code-execution-platform/worker-service/internal/config"
 	"github.com/nikhilsaravade95/code-execution-platform/worker-service/internal/eureka"
 	"github.com/nikhilsaravade95/code-execution-platform/worker-service/internal/executor"
@@ -78,21 +77,12 @@ func main() {
 	}
 
 	// ── Eureka (discovery-service) ─────────────────────────────────────────────
-	// Registers this worker for dashboard visibility and resolves
-	// problem-service/submission-service/auth-service through Eureka instead
-	// of fixed URLs - see internal/eureka's package doc for why a hand-rolled
-	// client instead of a third-party library.
+	// Registers this worker for dashboard visibility only now - it no longer
+	// calls problem-service/submission-service itself (see the
+	// embedded-job-payload / single-result-topic redesign), so there's
+	// nothing left to resolve through Eureka.
 	eurekaClient := eureka.New(cfg.EurekaServerURL, cfg.EurekaAppName)
 	go eurekaClient.RunLifecycle(ctx)
-
-	// ── HTTP clients ──────────────────────────────────────────────────────────
-	// The worker authenticates to problem-service/submission-service as itself
-	// (OAuth2 client-credentials against auth-service), since it has no inbound
-	// user request to forward a token from. Both clients share one TokenSource
-	// so they share its cache instead of each re-authenticating independently.
-	tokenSource := auth.NewTokenSource(cfg.AuthServiceBaseURL, cfg.WorkerClientID, cfg.WorkerClientSecret, eurekaClient)
-	submissionClient := clients.NewSubmissionClient(cfg, tokenSource, eurekaClient)
-	problemClient := clients.NewProblemClient(cfg, tokenSource, eurekaClient)
 
 	// ── Kafka producer (used by executor to publish result events) ────────────
 	producer, err := kafka.NewProducer(cfg)
@@ -104,7 +94,7 @@ func main() {
 	sb := sandbox.New(cfg)
 
 	// ── Executor (the kafka.Handler implementation) ────────────────────────────
-	exec := executor.New(cfg, sb, submissionClient, problemClient, s3Client, producer)
+	exec := executor.New(cfg, sb, s3Client, producer)
 
 	// ── Kafka consumer ────────────────────────────────────────────────────────
 	// DLQ producer shares the same underlying writer; it just targets a different topic.
