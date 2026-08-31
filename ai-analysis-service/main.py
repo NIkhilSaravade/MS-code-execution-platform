@@ -5,6 +5,7 @@ from pydantic import BaseModel
 import httpx
 
 from services import analysis_pipeline
+from services.exceptions import AnalysisOutputInvalid
 from db.init_db import create_tables
 from discovery.eureka_client import register_with_eureka
 from discovery.service_resolver import get_service_url
@@ -70,7 +71,10 @@ async def analyze_code(
             )
         problem = problem_response.json()
 
-    return analysis_pipeline.run_analysis(request.submissionId, submission, problem)
+    try:
+        return analysis_pipeline.run_analysis(request.submissionId, submission, problem)
+    except AnalysisOutputInvalid as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.get("/ai/analysis/{submission_id}")

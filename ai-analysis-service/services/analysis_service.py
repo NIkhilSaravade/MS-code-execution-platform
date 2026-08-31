@@ -1,8 +1,12 @@
 import json
 import re
 
+from pydantic import ValidationError
+
+from services.exceptions import AnalysisOutputInvalid
 from services.llm_provider import LLMProvider
 from services.rag_service import RAGService
+from services.schemas import FailedAnalysis, PassedAnalysis
 from prompts.passed_prompt import passed_prompt
 from prompts.failed_prompt import failed_prompt
 
@@ -58,22 +62,26 @@ class AnalysisService:
         raw_text = response.content
         print("Raw LLM Output:", raw_text)
 
-        # 🔥 Step 3: Clean and parse JSON
+        # 🔥 Step 3: Clean and strictly validate against the schema matching
+        # this submission's verdict. Any failure here - not valid JSON, or
+        # valid JSON that doesn't match the schema - is a hard error: the
+        # caller decides what to do (POST /ai/analyze returns 502, the Kafka
+        # consumer logs and drops the message), but this result is never
+        # cached (see services/analysis_pipeline.py).
+        schema = PassedAnalysis if submission["status"] == "PASSED" else FailedAnalysis
+
         try:
             cleaned_json = AnalysisService.clean_llm_response(raw_text)
-            parsed = json.loads(cleaned_json)
+            parsed = schema.model_validate_json(cleaned_json)
+        except (json.JSONDecodeError, ValidationError) as e:
+            raise AnalysisOutputInvalid(
+                f"LLM response failed {schema.__name__} validation: {e}",
+                raw_response=raw_text,
+            ) from e
 
-            return {
-                "analysisType": parsed.get("analysisType"),
-                "parsedAnalysis": parsed,
-                "rawResponse": raw_text
-            }
-
-        except Exception as e:
-            print("JSON Parse Failed:", e)
-
-            return {
-                "analysisType": "ERROR",
-                "parsedAnalysis": None,
-                "rawResponse": raw_text
-            }
+        parsed_dict = parsed.model_dump()
+        return {
+            "analysisType": parsed_dict.get("analysisType"),
+            "parsedAnalysis": parsed_dict,
+            "rawResponse": raw_text
+        }
