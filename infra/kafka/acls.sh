@@ -7,7 +7,7 @@ set -e
 BOOTSTRAP="kafka:9093"
 CONFIG="/certs/admin-client.properties"
 
-TOPICS="submission-topic execution-result-topic submissions.created.v1 executions.failed.v1 dlq.submissions.created.v1 submission-update-topic analysis.trigger.v1"
+TOPICS="submission-topic execution-result-topic submissions.created.v1 executions.failed.v1 dlq.submissions.created.v1 submission-update-topic analysis.trigger.v1 analysis.trigger.v1.retry-1 analysis.trigger.v1.retry-2 analysis.trigger.v1.dlq"
 
 echo "Creating topics (if missing)..."
 for t in $TOPICS; do
@@ -64,12 +64,21 @@ kafka-acls --bootstrap-server "$BOOTSTRAP" --command-config "$CONFIG" \
   --operation Write --operation Describe \
   --topic submission-update-topic --topic analysis.trigger.v1
 
-# ai-analysis-service: consumes analysis.trigger.v1 to run its LLM analysis
-# automatically after a submission is judged (see Kafka consumer in
-# ai-analysis-service/kafka/consumer.py).
+# ai-analysis-service: consumes analysis.trigger.v1 (and its own delayed
+# retry topics) to run its LLM analysis automatically after a submission is
+# judged, and produces to those retry topics plus a DLQ topic when
+# processing fails (see ai-analysis-service/kafka/consumer.py's retry/DLQ
+# topology).
 kafka-acls --bootstrap-server "$BOOTSTRAP" --command-config "$CONFIG" \
   --add --allow-principal User:ai_analysis_service \
   --operation Read --operation Describe \
-  --topic analysis.trigger.v1 --group ai-analysis-group
+  --topic analysis.trigger.v1 --topic analysis.trigger.v1.retry-1 \
+  --topic analysis.trigger.v1.retry-2 --group ai-analysis-group
+
+kafka-acls --bootstrap-server "$BOOTSTRAP" --command-config "$CONFIG" \
+  --add --allow-principal User:ai_analysis_service \
+  --operation Write --operation Describe \
+  --topic analysis.trigger.v1.retry-1 --topic analysis.trigger.v1.retry-2 \
+  --topic analysis.trigger.v1.dlq
 
 echo "Kafka topics and ACLs configured."

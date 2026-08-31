@@ -18,6 +18,22 @@ class AnalysisCache(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class ProcessedEvent(Base):
+    """Idempotency record for kafka/consumer.py's analysis.trigger.v1
+    pipeline (main topic + its delayed-retry topics + DLQ - see that
+    module). Manual offset commits mean a crash between "handled" and
+    "committed" can redeliver a message; this table lets the consumer
+    recognize and skip an event it already finished, instead of relying
+    solely on analysis_pipeline's own submission_id cache (which only
+    dedupes the LLM call, not the whole handling path including
+    fetch-from-upstream)."""
+
+    __tablename__ = "processed_events"
+
+    event_key = Column(String(128), primary_key=True)
+    processed_at = Column(DateTime, default=datetime.utcnow)
+
+
 class SubmissionAnalysisMap(Base):
     """Maps a submission_id to the AnalysisCache row that answers it. Kept
     separate from AnalysisCache so GET /ai/analysis/{submission_id}'s
