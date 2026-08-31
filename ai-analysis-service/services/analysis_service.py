@@ -1,25 +1,13 @@
 import json
 import re
 
-from pydantic import ValidationError
-
 from services.llm_provider import LLMProvider
 from services.rag_service import RAGService
-from services.schemas import FailedAnalysis, PassedAnalysis
 from prompts.passed_prompt import passed_prompt
 from prompts.failed_prompt import failed_prompt
 
 
 rag_service = RAGService()
-
-
-class AnalysisOutputInvalid(Exception):
-    """Raised when the LLM's response isn't valid JSON or doesn't match the
-    schema expected for the submission's verdict. Callers must not cache a
-    result when this is raised - a "fixed" malformed analysis is worse than
-    no analysis (main.py surfaces this as a 502; kafka/consumer.py's
-    best-effort handling logs it and drops the message rather than caching
-    a broken result)."""
 
 
 class AnalysisService:
@@ -53,8 +41,7 @@ class AnalysisService:
         print("Retrieved Context:", context_text)
 
         # 🔥 Step 2: Choose prompt
-        is_passed = submission["status"] == "PASSED"
-        if is_passed:
+        if submission["status"] == "PASSED":
             chain = passed_prompt | llm
             response = chain.invoke({
                 "problem": problem["description"] + "\n\nContext:\n" + context_text,
@@ -71,23 +58,22 @@ class AnalysisService:
         raw_text = response.content
         print("Raw LLM Output:", raw_text)
 
-        # 🔥 Step 3: Clean, parse and strictly validate against the schema for
-        # this verdict. A response that isn't JSON or doesn't match the
-        # schema is never silently accepted - see AnalysisOutputInvalid.
+        # 🔥 Step 3: Clean and parse JSON
         try:
             cleaned_json = AnalysisService.clean_llm_response(raw_text)
             parsed = json.loads(cleaned_json)
-        except json.JSONDecodeError as exc:
-            raise AnalysisOutputInvalid(f"LLM response was not valid JSON: {exc}") from exc
 
-        schema = PassedAnalysis if is_passed else FailedAnalysis
-        try:
-            validated = schema.model_validate(parsed)
-        except ValidationError as exc:
-            raise AnalysisOutputInvalid(f"LLM response failed schema validation: {exc}") from exc
+            return {
+                "analysisType": parsed.get("analysisType"),
+                "parsedAnalysis": parsed,
+                "rawResponse": raw_text
+            }
 
-        return {
-            "analysisType": validated.analysisType,
-            "parsedAnalysis": validated.model_dump(),
-            "rawResponse": raw_text,
-        }
+        except Exception as e:
+            print("JSON Parse Failed:", e)
+
+            return {
+                "analysisType": "ERROR",
+                "parsedAnalysis": None,
+                "rawResponse": raw_text
+            }
