@@ -11,7 +11,7 @@ pyjwt[crypto]
 litellm
 langchain-community
 langchain-core
-chromadb
+pgvector
 sentence-transformers
 structlog
 opentelemetry-api

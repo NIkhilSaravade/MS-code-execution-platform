@@ -80,6 +80,18 @@ create_owner_only_db() {
     REVOKE CONNECT ON DATABASE $db FROM PUBLIC;
     GRANT CONNECT ON DATABASE $db TO $owner_role;
 EOSQL
+
+  # ai_analysis_db's RAGService (services/rag_service.py) stores its
+  # knowledge-base embeddings in Postgres via pgvector rather than a local
+  # Chroma index, so every instance of this service shares one index
+  # instead of each pod getting its own private one. Created as the
+  # Postgres superuser here rather than relying on pgvector's "trusted
+  # extension" mechanism for $owner_role, since that depends on how the
+  # extension package was built (see docker-compose.yml's postgres image,
+  # which must actually ship pgvector - postgres:16-alpine does not).
+  psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$db" <<-EOSQL
+    CREATE EXTENSION IF NOT EXISTS vector;
+EOSQL
 }
 
 create_service_db "user_service" \

@@ -10,9 +10,6 @@ __pycache__/
 # Environment variables / secrets
 .env
 
-# ChromaDB / vector store persistence
-chroma_db/
-
 # IDE
 .idea/
 .vscode/

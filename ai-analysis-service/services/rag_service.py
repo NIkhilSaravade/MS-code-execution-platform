@@ -1,6 +1,22 @@
-from langchain_community.vectorstores import Chroma
+import os
+
+from dotenv import load_dotenv
 from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.vectorstores import PGVector
 from langchain_core.documents import Document
+
+load_dotenv()
+
+
+def _pgvector_connection_string() -> str:
+    # db/database.py's DATABASE_URL is a bare "postgresql://..." SQLAlchemy
+    # URL (defaults to the psycopg2 dialect); PGVector wants that dialect
+    # spelled out explicitly. sslmode/sslrootcert query params carry over
+    # unchanged - this cluster requires TLS (see CLAUDE.md).
+    database_url = os.environ["DATABASE_URL"]
+    if database_url.startswith("postgresql://"):
+        return database_url.replace("postgresql://", "postgresql+psycopg2://", 1)
+    return database_url
 
 
 class RAGService:
@@ -10,10 +26,16 @@ class RAGService:
             model_name="all-MiniLM-L6-v2"
         )
 
-        self.vector_store = Chroma(
-            collection_name="algo_knowledge",
+        # Shared, Postgres-backed index (pgvector) instead of a local
+        # ./chroma_db directory - every replica of this service reads/writes
+        # the same index now, rather than each pod getting its own private
+        # one (see infra/postgres/init-multiple-databases.sh's
+        # CREATE EXTENSION vector for ai_analysis_db).
+        self.vector_store = PGVector(
+            connection_string=_pgvector_connection_string(),
             embedding_function=self.embedding,
-            persist_directory="./chroma_db"
+            collection_name="algo_knowledge",
+            use_jsonb=True,
         )
 
     def add_documents(self, texts):

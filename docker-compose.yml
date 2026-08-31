@@ -16,7 +16,12 @@ services:
   # ── Infra ────────────────────────────────────────────────────────────────
 
   postgres:
-    image: postgres:16-alpine
+    # pgvector/pgvector's pgN images are a drop-in postgres:N build with the
+    # pgvector extension already installed - needed for ai_analysis_db's
+    # RAGService (see infra/postgres/init-multiple-databases.sh's
+    # CREATE EXTENSION vector). Every other service's DB ignores the
+    # extension entirely, so this is a safe swap for them too.
+    image: pgvector/pgvector:pg16
     container_name: postgres
     environment:
       POSTGRES_USER: postgres
