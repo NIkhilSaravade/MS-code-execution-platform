@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Text, DateTime, Float, ForeignKey
 from datetime import datetime
 from db.database import Base
 
@@ -32,6 +32,25 @@ class ProcessedEvent(Base):
 
     event_key = Column(String(128), primary_key=True)
     processed_at = Column(DateTime, default=datetime.utcnow)
+
+
+class UsageLedger(Base):
+    """One row per LLM call made in services/analysis_service.py - a
+    prerequisite for any future per-user budget/kill-switch work (not
+    implemented here, just the tracking). Recorded for every call
+    regardless of whether its output later passes strict validation, since
+    the cost was incurred either way."""
+
+    __tablename__ = "usage_ledger"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String, index=True, nullable=False)
+    submission_id = Column(Integer, index=True, nullable=False)
+    model = Column(String(64), nullable=False)
+    input_tokens = Column(Integer, nullable=False, default=0)
+    output_tokens = Column(Integer, nullable=False, default=0)
+    estimated_cost_usd = Column(Float, nullable=False, default=0.0)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 class SubmissionAnalysisMap(Base):

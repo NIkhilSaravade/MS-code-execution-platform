@@ -78,7 +78,7 @@ def run_analysis(submission_id: int, submission: dict, problem: dict) -> dict:
         ).first()
 
         if cache_row is None:
-            result = AnalysisService.analyze(submission, problem)
+            result = AnalysisService.analyze(submission_id, submission, problem)
             cache_row = AnalysisCache(
                 cache_key=cache_key,
                 problem_id=problem_id,

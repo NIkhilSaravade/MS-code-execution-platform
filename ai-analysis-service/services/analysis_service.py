@@ -4,9 +4,10 @@ import re
 from pydantic import ValidationError
 
 from services.exceptions import AnalysisOutputInvalid
-from services.llm_provider import LLMProvider
+from services.llm_provider import LLMProvider, MODEL_NAME
 from services.rag_service import RAGService
 from services.schemas import FailedAnalysis, PassedAnalysis
+from services.usage_tracker import record_usage
 from prompts.passed_prompt import passed_prompt
 from prompts.failed_prompt import failed_prompt
 
@@ -34,7 +35,7 @@ class AnalysisService:
         return cleaned.strip()
 
     @staticmethod
-    def analyze(submission, problem):
+    def analyze(submission_id, submission, problem):
 
         llm = LLMProvider.get_llm()
 
@@ -61,6 +62,19 @@ class AnalysisService:
 
         raw_text = response.content
         print("Raw LLM Output:", raw_text)
+
+        # 🔥 Step 2.5: Record usage for every LLM call made, regardless of
+        # whether its output later passes validation - the cost was
+        # incurred either way. usage_metadata is populated by ChatGroq via
+        # langchain-core's standard interface.
+        usage = getattr(response, "usage_metadata", None) or {}
+        record_usage(
+            user_id=submission["userId"],
+            submission_id=submission_id,
+            model=response.response_metadata.get("model_name", MODEL_NAME),
+            input_tokens=usage.get("input_tokens", 0),
+            output_tokens=usage.get("output_tokens", 0),
+        )
 
         # 🔥 Step 3: Clean and strictly validate against the schema matching
         # this submission's verdict. Any failure here - not valid JSON, or
