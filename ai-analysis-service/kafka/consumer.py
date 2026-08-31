@@ -13,6 +13,7 @@ from db.database import SessionLocal
 from db.models import ProcessedEvent
 from discovery.service_resolver import get_service_url
 from services import analysis_pipeline
+from services.circuit_breaker import get_breaker
 
 # Consumes analysis.trigger.v1, published by execution-result-service right
 # after it persists a judged result (see ExecutionResultService). This is
@@ -99,15 +100,20 @@ async def _fetch_submission_and_problem(submission_id: int) -> tuple[dict, dict]
     submission_service_url = await get_service_url("SUBMISSION-SERVICE")
     problem_service_url = await get_service_url("PROBLEM-SERVICE")
 
+    submission_breaker = get_breaker("submission-service")
+    problem_breaker = get_breaker("problem-service")
+
     async with httpx.AsyncClient(timeout=10.0) as client:
-        submission_response = await client.get(
+        submission_response = await submission_breaker.call(
+            client.get,
             f"{submission_service_url}/internal/submissions/{submission_id}",
             headers=headers,
         )
         submission_response.raise_for_status()
         submission = submission_response.json()
 
-        problem_response = await client.get(
+        problem_response = await problem_breaker.call(
+            client.get,
             f"{problem_service_url}/problems/{submission['problemId']}",
             headers=headers,
         )

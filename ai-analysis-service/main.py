@@ -5,6 +5,7 @@ from pydantic import BaseModel
 import httpx
 
 from services import analysis_pipeline
+from services.circuit_breaker import CircuitOpenError, get_breaker
 from services.exceptions import AnalysisOutputInvalid
 from db.init_db import create_tables
 from discovery.eureka_client import register_with_eureka
@@ -48,28 +49,36 @@ async def analyze_code(
     submission_service_url = await get_service_url("SUBMISSION-SERVICE")
     problem_service_url = await get_service_url("PROBLEM-SERVICE")
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        submission_response = await client.get(
-            f"{submission_service_url}/submissions/{request.submissionId}",
-            headers=headers
-        )
-        if submission_response.status_code != 200:
-            raise HTTPException(
-                status_code=submission_response.status_code,
-                detail=submission_response.text
-            )
-        submission = submission_response.json()
+    submission_breaker = get_breaker("submission-service")
+    problem_breaker = get_breaker("problem-service")
 
-        problem_response = await client.get(
-            f"{problem_service_url}/problems/{submission['problemId']}",
-            headers=headers
-        )
-        if problem_response.status_code != 200:
-            raise HTTPException(
-                status_code=problem_response.status_code,
-                detail=problem_response.text
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            submission_response = await submission_breaker.call(
+                client.get,
+                f"{submission_service_url}/submissions/{request.submissionId}",
+                headers=headers,
             )
-        problem = problem_response.json()
+            if submission_response.status_code != 200:
+                raise HTTPException(
+                    status_code=submission_response.status_code,
+                    detail=submission_response.text
+                )
+            submission = submission_response.json()
+
+            problem_response = await problem_breaker.call(
+                client.get,
+                f"{problem_service_url}/problems/{submission['problemId']}",
+                headers=headers,
+            )
+            if problem_response.status_code != 200:
+                raise HTTPException(
+                    status_code=problem_response.status_code,
+                    detail=problem_response.text
+                )
+            problem = problem_response.json()
+    except CircuitOpenError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     try:
         return analysis_pipeline.run_analysis(request.submissionId, submission, problem)
