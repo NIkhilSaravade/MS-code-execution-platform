@@ -12,8 +12,12 @@ from auth.token_client import get_service_token
 from db.database import SessionLocal
 from db.models import ProcessedEvent
 from discovery.service_resolver import get_service_url
+from logging_config import get_logger
 from services import analysis_pipeline
 from services.circuit_breaker import get_breaker
+from tracing import extract_trace_context, inject_trace_headers, tracer
+
+log = get_logger(__name__)
 
 # Consumes analysis.trigger.v1, published by execution-result-service right
 # after it persists a judged result (see ExecutionResultService). This is
@@ -142,6 +146,7 @@ async def _forward(
         headers.append((HEADER_NOT_BEFORE, str(time.time() + delay_seconds).encode("utf-8")))
     if error is not None:
         headers.append((HEADER_ERROR, error[:2000].encode("utf-8", errors="replace")))
+    headers = inject_trace_headers(headers)
     await producer.send_and_wait(topic, payload, headers=headers)
 
 
@@ -149,59 +154,68 @@ async def _handle_message(
     record: ConsumerRecord, producer: AIOKafkaProducer, topics: dict
 ) -> None:
     tier = _retry_tier_of(record.topic, topics)
+    parent_context = extract_trace_context(record.headers)
 
-    if tier >= 0:
-        not_before = _header_value(record, HEADER_NOT_BEFORE)
-        if not_before is not None:
-            remaining = float(not_before) - time.time()
-            if remaining > 0:
-                await asyncio.sleep(remaining)
+    with tracer.start_as_current_span("analysis.trigger.handle", context=parent_context) as span:
+        span.set_attribute("messaging.kafka.topic", record.topic)
+        span.set_attribute("analysis.retry_tier", tier)
 
-    try:
-        event = json.loads(record.value)
-        submission_id = int(event["submissionId"])
-    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-        print(f"analysis.trigger.v1: skipping unparseable message: {record.value!r}")
-        return
+        if tier >= 0:
+            not_before = _header_value(record, HEADER_NOT_BEFORE)
+            if not_before is not None:
+                remaining = float(not_before) - time.time()
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
 
-    event_key = f"{topics['main']}:{submission_id}"
-    if _is_processed(event_key):
-        return
+        try:
+            event = json.loads(record.value)
+            submission_id = int(event["submissionId"])
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            log.warning("analysis_trigger.unparseable_message", payload=repr(record.value))
+            return
 
-    try:
-        if analysis_pipeline.get_cached(submission_id) is None:
-            await _process_event(submission_id)
-        _mark_processed(event_key)
-        print(f"analysis.trigger.v1: analyzed submission {submission_id}")
-    except Exception as exc:
-        next_tier = tier + 1
-        if next_tier < len(topics["retries"]):
-            await _forward(
-                producer,
-                topics["retries"][next_tier],
-                record.value,
-                retry_count=next_tier + 1,
-                delay_seconds=RETRY_DELAYS_SECONDS[next_tier],
-                error=str(exc),
-            )
-            print(
-                f"analysis.trigger.v1: submission {submission_id} failed "
-                f"({exc}), forwarded to retry tier {next_tier + 1}"
-            )
-        else:
-            await _forward(
-                producer,
-                topics["dlq"],
-                record.value,
-                retry_count=tier + 1,
-                delay_seconds=None,
-                error=str(exc),
-            )
+        span.set_attribute("analysis.submission_id", submission_id)
+        event_key = f"{topics['main']}:{submission_id}"
+        if _is_processed(event_key):
+            return
+
+        try:
+            if analysis_pipeline.get_cached(submission_id) is None:
+                await _process_event(submission_id)
             _mark_processed(event_key)
-            print(
-                f"analysis.trigger.v1: submission {submission_id} failed "
-                f"({exc}) after exhausting retries, forwarded to DLQ"
-            )
+            log.info("analysis_trigger.analyzed", submission_id=submission_id)
+        except Exception as exc:
+            next_tier = tier + 1
+            if next_tier < len(topics["retries"]):
+                await _forward(
+                    producer,
+                    topics["retries"][next_tier],
+                    record.value,
+                    retry_count=next_tier + 1,
+                    delay_seconds=RETRY_DELAYS_SECONDS[next_tier],
+                    error=str(exc),
+                )
+                log.warning(
+                    "analysis_trigger.retry_scheduled",
+                    submission_id=submission_id,
+                    retry_tier=next_tier + 1,
+                    error=str(exc),
+                )
+            else:
+                await _forward(
+                    producer,
+                    topics["dlq"],
+                    record.value,
+                    retry_count=tier + 1,
+                    delay_seconds=None,
+                    error=str(exc),
+                )
+                _mark_processed(event_key)
+                log.error(
+                    "analysis_trigger.dlq",
+                    submission_id=submission_id,
+                    error=str(exc),
+                )
 
 
 async def run_consumer_loop() -> None:
@@ -232,9 +246,10 @@ async def run_consumer_loop() -> None:
 
     await consumer.start()
     await producer.start()
-    print(
-        f"analysis.trigger.v1: consumer started "
-        f"(topics={[topics['main'], *topics['retries']]}, group={group_id})"
+    log.info(
+        "analysis_trigger.consumer_started",
+        topics=[topics["main"], *topics["retries"]],
+        group_id=group_id,
     )
     try:
         async for record in consumer:
@@ -247,7 +262,7 @@ async def run_consumer_loop() -> None:
                 await _handle_message(record, producer, topics)
                 await consumer.commit()
             except Exception as exc:
-                print(f"analysis.trigger.v1: unexpected error handling message, will redeliver: {exc}")
+                log.error("analysis_trigger.unexpected_error", error=str(exc))
     finally:
         await consumer.stop()
         await producer.stop()

@@ -4,6 +4,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 import httpx
 
+from logging_config import get_logger
 from services import analysis_pipeline
 from services.circuit_breaker import CircuitOpenError, get_breaker
 from services.exceptions import AnalysisOutputInvalid
@@ -12,13 +13,16 @@ from discovery.eureka_client import register_with_eureka
 from discovery.service_resolver import get_service_url
 from security.jwt_verifier import get_current_claims
 from kafka.consumer import start_background as start_kafka_consumer
+from tracing import configure_tracing
 
+log = get_logger(__name__)
 
 app = FastAPI()
 
 
 @app.on_event("startup")
 async def startup():
+    configure_tracing(app)
     create_tables()
     await register_with_eureka()
     # Best-effort, fire-and-forget - see kafka/consumer.py's module docstring
@@ -39,10 +43,10 @@ async def analyze_code(
 ):
     cached = analysis_pipeline.get_cached(request.submissionId)
     if cached:
-        print("Returning from CACHE")
+        log.info("analyze.cache_hit", submission_id=request.submissionId)
         return {"analysis": cached["analysis"], "source": cached["source"]}
 
-    print("Not found in cache. Calling services via Eureka...")
+    log.info("analyze.cache_miss", submission_id=request.submissionId)
 
     headers = {"Authorization": authorization}
 

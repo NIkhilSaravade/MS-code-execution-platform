@@ -3,6 +3,7 @@ import re
 
 from pydantic import ValidationError
 
+from logging_config import get_logger
 from services.exceptions import AnalysisOutputInvalid
 from services.llm_provider import LLMProvider, MODEL_NAME
 from services.rag_service import RAGService
@@ -11,6 +12,7 @@ from services.usage_tracker import record_usage
 from prompts.passed_prompt import passed_prompt
 from prompts.failed_prompt import failed_prompt
 
+log = get_logger(__name__)
 
 rag_service = RAGService()
 
@@ -43,7 +45,7 @@ class AnalysisService:
         context_docs = rag_service.retrieve(problem["description"])
         context_text = "\n".join([doc.page_content for doc in context_docs])
 
-        print("Retrieved Context:", context_text)
+        log.debug("analyze.rag_context_retrieved", submission_id=submission_id, context=context_text)
 
         # 🔥 Step 2: Choose prompt
         if submission["status"] == "PASSED":
@@ -61,7 +63,7 @@ class AnalysisService:
             })
 
         raw_text = response.content
-        print("Raw LLM Output:", raw_text)
+        log.debug("analyze.llm_raw_output", submission_id=submission_id, raw_response=raw_text)
 
         # 🔥 Step 2.5: Record usage for every LLM call made, regardless of
         # whether its output later passes validation - the cost was
@@ -88,6 +90,12 @@ class AnalysisService:
             cleaned_json = AnalysisService.clean_llm_response(raw_text)
             parsed = schema.model_validate_json(cleaned_json)
         except (json.JSONDecodeError, ValidationError) as e:
+            log.warning(
+                "analyze.output_invalid",
+                submission_id=submission_id,
+                schema=schema.__name__,
+                error=str(e),
+            )
             raise AnalysisOutputInvalid(
                 f"LLM response failed {schema.__name__} validation: {e}",
                 raw_response=raw_text,

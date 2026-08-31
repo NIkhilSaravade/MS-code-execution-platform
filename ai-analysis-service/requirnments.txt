@@ -13,3 +13,8 @@ langchain-community
 langchain-core
 chromadb
 sentence-transformers
+structlog
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-instrumentation-fastapi
+opentelemetry-exporter-otlp-proto-http
