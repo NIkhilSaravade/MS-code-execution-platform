@@ -5,7 +5,7 @@ from pydantic import ValidationError
 
 from logging_config import get_logger
 from services.exceptions import AnalysisOutputInvalid
-from services.llm_provider import LLMProvider, MODEL_NAME
+from services.llm_provider import LLMProvider
 from services.rag_service import RAGService
 from services.schemas import FailedAnalysis, PassedAnalysis
 from services.usage_tracker import record_usage
@@ -39,43 +39,40 @@ class AnalysisService:
     @staticmethod
     def analyze(submission_id, submission, problem):
 
-        llm = LLMProvider.get_llm()
-
         # 🔥 Step 1: Retrieve context using RAG
         context_docs = rag_service.retrieve(problem["description"])
         context_text = "\n".join([doc.page_content for doc in context_docs])
 
         log.debug("analyze.rag_context_retrieved", submission_id=submission_id, context=context_text)
 
-        # 🔥 Step 2: Choose prompt
+        # 🔥 Step 2: Render the prompt and call the LLM
         if submission["status"] == "PASSED":
-            chain = passed_prompt | llm
-            response = chain.invoke({
-                "problem": problem["description"] + "\n\nContext:\n" + context_text,
-                "code": submission["code"]
-            })
+            prompt_text = passed_prompt.format(
+                problem=problem["description"] + "\n\nContext:\n" + context_text,
+                code=submission["code"],
+            )
         else:
-            chain = failed_prompt | llm
-            response = chain.invoke({
-                "problem": problem["description"] + "\n\nContext:\n" + context_text,
-                "code": submission["code"],
-                "error": submission.get("errorMessage", "Unknown error")
-            })
+            prompt_text = failed_prompt.format(
+                problem=problem["description"] + "\n\nContext:\n" + context_text,
+                code=submission["code"],
+                error=submission.get("errorMessage", "Unknown error"),
+            )
 
-        raw_text = response.content
+        response = LLMProvider.complete(prompt_text)
+        raw_text = response.choices[0].message.content
         log.debug("analyze.llm_raw_output", submission_id=submission_id, raw_response=raw_text)
 
         # 🔥 Step 2.5: Record usage for every LLM call made, regardless of
         # whether its output later passes validation - the cost was
-        # incurred either way. usage_metadata is populated by ChatGroq via
-        # langchain-core's standard interface.
-        usage = getattr(response, "usage_metadata", None) or {}
+        # incurred either way. response.usage/.model reflect whichever
+        # model actually answered (primary or litellm's fallback).
+        usage = getattr(response, "usage", None)
         record_usage(
             user_id=submission["userId"],
             submission_id=submission_id,
-            model=response.response_metadata.get("model_name", MODEL_NAME),
-            input_tokens=usage.get("input_tokens", 0),
-            output_tokens=usage.get("output_tokens", 0),
+            model=response.model,
+            input_tokens=getattr(usage, "prompt_tokens", 0) or 0,
+            output_tokens=getattr(usage, "completion_tokens", 0) or 0,
         )
 
         # 🔥 Step 3: Clean and strictly validate against the schema matching

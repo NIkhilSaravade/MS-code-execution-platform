@@ -8,7 +8,7 @@ psycopg2-binary
 python-dotenv
 py-eureka-client
 pyjwt[crypto]
-langchain-groq
+litellm
 langchain-community
 langchain-core
 chromadb
