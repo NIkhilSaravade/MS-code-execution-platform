@@ -9,7 +9,7 @@ A LeetCode-style competitive coding platform built with a microservices architec
 
 ## Architecture Overview
 
-The platform consists of **8 Java/Spring Boot services**, **1 Go service**, **1 Python FastAPI service**, and **1 React frontend**, orchestrated via Spring Cloud + Eureka, with a fully containerized backend infrastructure stack (Postgres, MinIO, Kafka).
+The platform consists of **7 Java/Spring Boot services**, **1 Go service**, **1 Python FastAPI service**, and **1 React frontend**, orchestrated via Spring Cloud + Eureka, with a fully containerized backend infrastructure stack (Postgres, MinIO, Kafka).
 
 ```
 Frontend (React/Vite, :5173, run separately)
@@ -52,7 +52,6 @@ API Gateway (:8080)  ←── OAuth2 Resource Server (RS256 / JWKS)
 ```
 
 **Service Registry:** Eureka (`discovery-service`, :8761) — `worker-service-go` registers for dashboard visibility only; it no longer resolves anything through Eureka (submission-service embeds everything a worker needs into the Kafka event).
-**Centralized Config:** Spring Cloud Config Server (`config-service`, :8888) — currently unused by any service; kept for future adoption.
 
 **Result pipeline (see [Complexity & AI Analysis](#complexity--ai-analysis-of-a-submission)):** `worker-service-go` publishes to a single topic, `execution-result-topic`; `execution-result-service` persists the full result (including wall-time, memory, and the worker's own complexity estimate) and is the only thing `submission-service` and `ai-analysis-service` hear back from.
 
@@ -79,13 +78,13 @@ API Gateway (:8080)  ←── OAuth2 Resource Server (RS256 / JWKS)
 | Service | Language | Port | Description |
 |---|---|---|---|
 | `discovery-service` | Java | 8761 | Eureka service registry |
-| `config-service` | Java | 8888 | Centralized config server (currently unused) |
 | `auth-service` | Java | 8086 | Token issuance, JWKS, client-credentials grants |
 | `user-service` | Java | 8081 (+ gRPC 9090) | User CRUD, roles, admin bootstrap |
 | `problem-service` | Java | 8082 | Problem CRUD, test case storage (MinIO), per-language harness generation |
 | `submission-service` | Java | 8083 | Accepts submissions, applies the generated harness, fetches + embeds test cases/limits, publishes to Kafka; tracks only lifecycle/status (result detail lives in `execution-result-service`) |
 | `worker-service-go` | Go | 8091 (health only) | Docker/sandbox code executor, Kafka consumer + DLQ producer; computes its own static time/space complexity estimate and reports timing/memory |
 | `execution-result-service` | Java | 8085 | Single source of truth for judged results (output, per-test-case breakdown, timing, memory, complexity estimate); notifies `submission-service` (status) and `ai-analysis-service` (auto-trigger) via Kafka |
+| `solution-service` | Java | 8087 | Per-problem written solutions + step-through visualizer HTML, backed by Postgres + MinIO/S3 |
 | `ai-analysis-service` | Python | 8000 | FastAPI — LLM code analysis with RAG; now also a Kafka consumer, auto-triggered per judged submission |
 | `api-gateway` | Java | 8080 | JWT resource server + reverse proxy |
 | `frontend` | React/Vite/TypeScript | 5173 (dev) | Landing page, practice list, Monaco-based solve page. Run separately, not in `docker-compose.yml`. |
@@ -150,7 +149,7 @@ A legacy Java worker (`worker-service`) previously ran side by side with `worker
 cp .env.example .env
 ```
 
-Fill in the required secrets: Postgres per-service passwords, `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD`, `ADMIN_EMAIL`/`ADMIN_PASSWORD`, `WORKER_SERVICE_CLIENT_SECRET`, `SUBMISSION_SERVICE_CLIENT_SECRET`, `AI_ANALYSIS_SERVICE_CLIENT_SECRET`, Kafka per-identity SASL passwords (including `KAFKA_AI_ANALYSIS_SERVICE_PASSWORD`), `GROQ_API_KEY`, and `GITHUB_PASSWORD` (required for `config-service` to start, even though nothing consumes it yet). `ACTIVE_WORKER` (`java`/`go`, default `go`) picks which worker judges new submissions — see [THE WORKER SWITCH](#the-worker-switch).
+Fill in the required secrets: Postgres per-service passwords, `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD`, `ADMIN_EMAIL`/`ADMIN_PASSWORD`, `SUBMISSION_SERVICE_CLIENT_SECRET`, `AI_ANALYSIS_SERVICE_CLIENT_SECRET`, `REDIS_PASSWORD`, Kafka per-identity SASL passwords (including `KAFKA_AI_ANALYSIS_SERVICE_PASSWORD`), and `GROQ_API_KEY`.
 
 ### 2. Build the TypeScript sandbox image (one-time)
 
@@ -168,7 +167,7 @@ Every other language's sandbox image (`python`, `eclipse-temurin`, `gcc`, `node`
 docker-compose up -d
 ```
 
-This brings up: Postgres (TLS, per-service roles), MinIO, Zookeeper/Kafka (SASL_SSL + ACLs), Kafka UI, `discovery-service`, `config-service`, `auth-service`, `user-service`, `problem-service`, `submission-service`, both workers, `execution-result-service`, `ai-analysis-service`, and `api-gateway`.
+This brings up: Postgres (TLS, per-service roles), MinIO, Redis, Zookeeper/Kafka (SASL_SSL + ACLs), Kafka UI, an OTel Collector + Jaeger, `discovery-service`, `auth-service`, `user-service`, `problem-service`, `submission-service`, `worker-service-go`, `execution-result-service`, `solution-service`, `ai-analysis-service`, and `api-gateway`.
 
 Databases, roles, Kafka topics/ACLs, and MinIO buckets are all provisioned automatically by one-shot init containers (`infra/postgres/init-multiple-databases.sh`, `kafka-init`, `minio-init`) — no manual `CREATE DATABASE` step required.
 
@@ -337,7 +336,6 @@ MS-code-execution-platform/
 │       └── node-typescript/     # Dockerfile for the locally-built TypeScript sandbox image
 ├── api-gateway/                 # Spring Cloud Gateway + JWT resource server
 ├── discovery-service/           # Eureka server
-├── config-service/               # Spring Cloud Config server (currently unused)
 ├── auth-service/                # Token issuance, JWKS, client-credentials
 ├── user-service/                # User CRUD, roles, admin bootstrap, gRPC
 ├── problem-service/             # Problems + test cases (MinIO-backed) + harness generation
@@ -416,8 +414,7 @@ Browse buckets at [http://localhost:9001](http://localhost:9001).
 
 ## Known Gaps / Follow-ups
 
-- `config-service` is deployed but not consumed by any service yet.
-- Only `ai-analysis-service` and `worker-service-go` are OTel-instrumented (see [Observability](#tech-stack)); the other 9 Java services aren't, and there's no correlation/request ID propagated across all of them, so a submission's full path through the system can't be traced end-to-end in one place yet - only the two instrumented hops.
+- Only `ai-analysis-service` and `worker-service-go` are OTel-instrumented (see [Observability](#tech-stack)); the 7 Java services aren't, and there's no correlation/request ID propagated across all of them, so a submission's full path through the system can't be traced end-to-end in one place yet - only the two instrumented hops.
 - Jaeger runs with in-memory storage (no Elasticsearch/Cassandra backend) - traces are lost on restart. Fine for local dev/demo, not for real production trace retention.
 - Kafka admin credentials are hardcoded in `infra/kafka/kafka_server_jaas.conf` / `admin-client.properties`, not yet env-driven (planned: Vault or similar).
 - The frontend is not containerized/added to `docker-compose.yml` — run it separately with `npm run dev`.
