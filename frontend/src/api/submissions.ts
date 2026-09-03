@@ -10,12 +10,10 @@ export interface SubmissionCreatedResponse {
   status: string;
 }
 
-// One test case's judged outcome. Field names are aligned across both
-// workers (see worker-service's dto.TestCaseResult / worker-service-go's
-// domain.TestCaseResult) so this shape is the same regardless of which one
-// judged the submission (see THE WORKER SWITCH). input/expected/actual are
-// only ever present for non-hidden test cases - a hidden one only ever
-// reveals whether it passed, never its content.
+// One test case's judged outcome (see worker-service-go's
+// domain.TestCaseResult). input/expected/actual are only ever present for
+// non-hidden test cases - a hidden one only ever reveals whether it passed,
+// never its content.
 export interface TestCaseResult {
   ordinal: number;
   passed: boolean;
@@ -27,12 +25,9 @@ export interface TestCaseResult {
 
 // Mirrors submission-service's Submission entity, as returned by
 // GET /submissions/{id}. `status` starts at "PENDING", moves to "RUNNING"
-// once a worker picks it up, and ends at a terminal verdict string - which
-// terminal values are possible depends on which worker judged it (see
-// THE WORKER SWITCH in submission-service's SubmissionService and
-// docker-compose.yml's ACTIVE_WORKER): the Java worker reports
-// "PASSED"/"FAILED", the Go worker reports "PASSED"/"FAILED"/"RE"/"CE"/
-// "TLE"/"MLE"/"SYSTEM_ERROR" (see worker-service-go/internal/domain/models.go).
+// once worker-service-go picks it up, and ends at a terminal verdict string:
+// "PASSED"/"FAILED"/"RE"/"CE"/"TLE"/"MLE"/"SYSTEM_ERROR" (see
+// worker-service-go/internal/domain/models.go).
 //
 // Result detail (output/reason/testCaseResults/timing/complexity) is NOT
 // here - execution-result-service is the single source of truth for that
@@ -54,9 +49,7 @@ export interface Submission {
 
 // Mirrors execution-result-service's ExecutionResultResponse, as returned by
 // GET /api/results/{submissionId} - the full judged-result detail, fetched
-// once GET /submissions/{id}'s status goes terminal. wallTimeMs/maxMemoryKb/
-// estimatedTimeComplexity/estimatedSpaceComplexity are only ever populated
-// when worker-service-go (not the legacy Java worker) judged the submission.
+// once GET /submissions/{id}'s status goes terminal.
 export interface ExecutionResult {
   submissionId: number;
   status: string;

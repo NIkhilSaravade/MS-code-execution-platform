@@ -17,10 +17,9 @@ export type Language = 'javascript' | 'typescript' | 'python' | 'java' | 'cpp' |
 // selection. The type annotation `: { id: Language; label: string }[]`
 // is an "inline" object type — same idea as an interface, just not given
 // its own name since it's only used here.
-// Labels include the version that actually judges a submission - i.e. the
-// Go worker's version (worker-service-go is the default ACTIVE_WORKER; the
-// legacy Java worker runs older versions for some languages - see
-// CLAUDE.md's "Multi-language judging" section). C/C++ show the compiled
+// Labels include the version that actually judges a submission - i.e.
+// worker-service-go's version (see CLAUDE.md's "Multi-language judging"
+// section). C/C++ show the compiled
 // LANGUAGE STANDARD (-std=c++17/-std=c11, pinned explicitly in both
 // workers' compile commands), not the compiler version, since that's what
 // programmers actually care about and matches how LeetCode itself labels
