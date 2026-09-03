@@ -61,7 +61,12 @@ public class ProblemController {
         return problemService.getProblemResponse(problemId);
     }
 
-    // Used by Worker Service
+    // Exposes hidden test cases' expected output - only the frontend's
+    // ADMIN-gated edit page calls this (see api/problems.ts's getTestCases),
+    // but nothing here or in SecurityConfig actually restricts it to ADMIN:
+    // any authenticated USER token can call this directly and read hidden
+    // test case answers. Needs @PreAuthorize("hasRole('ADMIN')"), same
+    // pattern as ProblemService.regenerateHarness.
     @GetMapping("/{problemId}/testcases")
     public List<TestCaseResponse> getTestCases(@PathVariable Long problemId) {
         return problemService.getTestCasesForWorker(problemId);
