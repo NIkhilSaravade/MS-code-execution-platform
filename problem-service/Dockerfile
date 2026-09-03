@@ -13,9 +13,16 @@ RUN mvn clean package -DskipTests -B
 # -------- Stage 2: Runtime --------
 FROM eclipse-temurin:17-jre-alpine
 
+# Non-root - a compromised JVM (dependency CVE, deserialization bug, etc.)
+# shouldn't get root inside its own container just because nothing here
+# said otherwise.
+RUN addgroup -S app && adduser -S app -G app
+
 WORKDIR /app
 
-COPY --from=builder /build/target/*.jar app.jar
+COPY --from=builder --chown=app:app /build/target/*.jar app.jar
+
+USER app:app
 
 EXPOSE 8082
 
