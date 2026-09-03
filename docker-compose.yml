@@ -310,23 +310,6 @@ services:
       timeout: 5s
       retries: 15
 
-  config-service:
-    build: ./config-service
-    container_name: config-service
-    ports:
-      - "8888:8888"
-    environment:
-      <<: *eureka-env
-      JAVA_TOOL_OPTIONS: -Xmx256m
-      GITHUB_PASSWORD: ${GITHUB_PASSWORD:?set GITHUB_PASSWORD in .env - a GitHub PAT for the private config repo}
-    depends_on:
-      discovery-service:
-        condition: service_healthy
-    restart: on-failure:3
-    # Note: nothing else in this stack currently consumes config-service
-    # (no service has spring-cloud-starter-config on its classpath yet) -
-    # it's included for completeness but is inert until something does.
-
   # ── Application services ─────────────────────────────────────────────────
 
   auth-service:
