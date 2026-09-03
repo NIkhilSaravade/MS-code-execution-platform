@@ -14,6 +14,16 @@ spring:
           issuer-uri: https://auth-service
           audiences: ms-code-execution
 
+  # Backs the RequestRateLimiter filters below (see RateLimiterConfig).
+  # Password-only, no TLS - unlike Postgres/Kafka this holds nothing but
+  # short-lived rate-limit counters, no business data or credentials, so the
+  # extra cert/TLS-config surface wasn't judged worth it here.
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:dev-only-secret-change-me}
+
   cloud:
     gateway:
       server:
@@ -38,11 +48,34 @@ spring:
               uri: lb://SUBMISSION-SERVICE
               predicates:
                 - Path=/submissions/**
+              filters:
+                # Judging a submission is expensive (a Docker sandbox spin-up
+                # per test case) - without this, one user could flood the
+                # Kafka queue and starve every other user's workers. Keyed
+                # per-user (see RateLimiterConfig.userKeyResolver), not
+                # per-route globally, so one abusive account only throttles
+                # itself.
+                - name: RequestRateLimiter
+                  args:
+                    redis-rate-limiter.replenishRate: 2
+                    redis-rate-limiter.burstCapacity: 10
+                    redis-rate-limiter.requestedTokens: 1
+                    key-resolver: "#{@userKeyResolver}"
 
             - id: execution-result-service
               uri: lb://EXECUTION-RESULT-SERVICE
               predicates:
                 - Path=/api/results/**
+              filters:
+                # Looser than submission-service - this is a cheap DB read
+                # the frontend polls periodically, not a judging trigger, but
+                # still worth capping per-user against a runaway poll loop.
+                - name: RequestRateLimiter
+                  args:
+                    redis-rate-limiter.replenishRate: 10
+                    redis-rate-limiter.burstCapacity: 20
+                    redis-rate-limiter.requestedTokens: 1
+                    key-resolver: "#{@userKeyResolver}"
 
             - id: solution-service
               uri: lb://SOLUTION-SERVICE

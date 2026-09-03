@@ -97,6 +97,21 @@ services:
       exit 0;
       "
 
+  # Backs api-gateway's per-user RequestRateLimiter (see RateLimiterConfig,
+  # application.yml). No host port published - only api-gateway talks to it,
+  # over the compose network. Password-only, no TLS: unlike Postgres/Kafka
+  # this holds nothing but short-lived rate-limit counters.
+  redis:
+    image: redis:7.4-alpine
+    container_name: redis
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:-dev-only-secret-change-me}"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-dev-only-secret-change-me}", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: on-failure:5
+
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
     container_name: zookeeper
@@ -333,11 +348,16 @@ services:
       - "8080:8080"
     environment:
       <<: *eureka-resourceserver-env
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-dev-only-secret-change-me}
     depends_on:
       discovery-service:
         condition: service_healthy
       auth-service:
         condition: service_started
+      redis:
+        condition: service_healthy
     restart: on-failure:5
 
   problem-service:
