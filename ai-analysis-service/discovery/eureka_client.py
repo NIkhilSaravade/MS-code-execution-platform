@@ -19,3 +19,11 @@ async def register_with_eureka():
         instance_id=f"AI-ANALYSIS-SERVICE-{hostname}-{port}",
         renewal_interval_in_secs=30
     )
+
+
+async def deregister_from_eureka():
+    """Called on SIGTERM (see main.py's lifespan shutdown) so Kubernetes
+    rolling deploys don't leave a dead instance registered until the next
+    lease-expiry timeout - other services would keep routing to it via
+    Eureka lookups until then otherwise."""
+    await eureka_client.stop_async()

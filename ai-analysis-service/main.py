@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
@@ -8,8 +9,9 @@ from logging_config import get_logger
 from services import analysis_pipeline
 from services.circuit_breaker import CircuitOpenError, get_breaker
 from services.exceptions import AnalysisOutputInvalid
+from db.database import engine
 from db.init_db import create_tables
-from discovery.eureka_client import register_with_eureka
+from discovery.eureka_client import deregister_from_eureka, register_with_eureka
 from discovery.service_resolver import get_service_url
 from security.jwt_verifier import get_current_claims
 from kafka.consumer import start_background as start_kafka_consumer
@@ -17,18 +19,39 @@ from tracing import configure_tracing
 
 log = get_logger(__name__)
 
-app = FastAPI()
 
-
-@app.on_event("startup")
-async def startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     configure_tracing(app)
     create_tables()
     await register_with_eureka()
     # Best-effort, fire-and-forget - see kafka/consumer.py's module docstring
     # for why a failure here must never affect judged results or this
     # service's own HTTP endpoints.
-    start_kafka_consumer(asyncio.get_event_loop())
+    consumer_task = start_kafka_consumer(asyncio.get_event_loop())
+
+    yield
+
+    # Runs on SIGTERM (uvicorn/Kubernetes) - without this, a rolling deploy
+    # kills the Kafka consumer mid-message (see run_consumer_loop's own
+    # try/finally, which never gets a chance to run) and leaves this
+    # instance registered in Eureka until its lease expires, so other
+    # services keep routing to a process that's already gone.
+    consumer_task.cancel()
+    try:
+        await consumer_task
+    except asyncio.CancelledError:
+        pass
+    await deregister_from_eureka()
+    engine.dispose()
+
+
+app = FastAPI(lifespan=lifespan)
+
+
+@app.get("/health")
+async def health():
+    return {"status": "UP"}
 
 
 class AnalyzeRequest(BaseModel):
