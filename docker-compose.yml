@@ -471,6 +471,10 @@ services:
   worker-service-go:
     build: ./worker-service-go
     container_name: worker-service-go
+    ports:
+      # Kubernetes liveness/readiness probe target - see cmd/worker/main.go's
+      # /healthz, /readyz. This worker has no other HTTP surface at all.
+      - "8090:8090"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./infra/kafka/certs/ca.crt:/certs/ca.crt:ro

@@ -79,6 +79,11 @@ type Config struct {
 	// Observability
 	OTLPEndpoint string
 	LogLevel     string
+
+	// Kubernetes liveness probe. This worker otherwise has no HTTP server at
+	// all (it's a pure Kafka consumer), so there's nothing else for a probe
+	// to hit.
+	HealthPort string
 }
 
 // Load reads all config from the environment. Returns an error if any required
@@ -155,6 +160,8 @@ func Load() (*Config, error) {
 	// Observability
 	cfg.OTLPEndpoint = getEnvOrDefault("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
 	cfg.LogLevel = getEnvOrDefault("LOG_LEVEL", "info")
+
+	cfg.HealthPort = getEnvOrDefault("HEALTH_PORT", "8090")
 
 	if len(errs) > 0 {
 		return nil, fmt.Errorf("config errors: %s", strings.Join(errs, "; "))
