@@ -1,5 +1,6 @@
 server:
   port: 8085
+  shutdown: graceful
 
 spring:
   application:
@@ -50,3 +51,21 @@ eureka:
   client:
     service-url:
       defaultZone: http://localhost:8761/eureka
+
+# Kubernetes liveness/readiness probes (see SecurityConfig's permitAll on
+# /actuator/health).
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+# Graceful shutdown: finish in-flight requests before the JVM exits -
+# Kubernetes sends SIGTERM on pod termination/rolling deploy. Spring Kafka's
+# listener container stops as part of this too, so an in-flight consumer
+# poll finishes before the context closes.
+spring.lifecycle.timeout-per-shutdown-phase: 20s
