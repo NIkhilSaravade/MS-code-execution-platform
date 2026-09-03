@@ -123,9 +123,13 @@ A legacy Java worker (`worker-service`) previously ran side by side with `worker
 - PostgreSQL for analysis result caching
 
 **Infrastructure**
-- Docker Compose: Postgres, MinIO, Kafka + Zookeeper + Kafka UI, plus every backend application service (frontend excluded — run separately)
+- Docker Compose: Postgres, MinIO, Redis, Kafka + Zookeeper + Kafka UI, an OpenTelemetry Collector + Jaeger, plus every backend application service (frontend excluded — run separately)
 - Object storage: MinIO (`platform-test-cases`, `platform-artifacts` buckets)
 - Sandbox execution images — see [Supported Languages](#supported-languages) below
+
+**Observability**
+- Structured JSON logging on every Java service (`logstash-logback-encoder`) and ai-analysis-service (`structlog`); `worker-service-go` logs JSON via `zerolog`
+- Distributed tracing: `ai-analysis-service` and `worker-service-go` are OTel-instrumented, exporting to an `otel-collector` → `jaeger` pipeline (Jaeger UI at [http://localhost:16686](http://localhost:16686)). In-memory storage only — traces don't survive a `jaeger` restart, which is fine for local dev/demo purposes but not sized for real production trace volume. The other 9 Java services aren't instrumented — there's no cross-service trace propagation yet, so a request that touches multiple services shows up as separate, unlinked traces per instrumented hop.
 
 ---
 
@@ -413,6 +417,8 @@ Browse buckets at [http://localhost:9001](http://localhost:9001).
 ## Known Gaps / Follow-ups
 
 - `config-service` is deployed but not consumed by any service yet.
+- Only `ai-analysis-service` and `worker-service-go` are OTel-instrumented (see [Observability](#tech-stack)); the other 9 Java services aren't, and there's no correlation/request ID propagated across all of them, so a submission's full path through the system can't be traced end-to-end in one place yet - only the two instrumented hops.
+- Jaeger runs with in-memory storage (no Elasticsearch/Cassandra backend) - traces are lost on restart. Fine for local dev/demo, not for real production trace retention.
 - Kafka admin credentials are hardcoded in `infra/kafka/kafka_server_jaas.conf` / `admin-client.properties`, not yet env-driven (planned: Vault or similar).
 - The frontend is not containerized/added to `docker-compose.yml` — run it separately with `npm run dev`.
 - `worker-service-go`'s peak-memory sampling (`docker stats`, streamed for the sandbox container's lifetime) is best-effort and unrelated to the (separate, always-on) static complexity estimate. **This is a hard limit, not a tuning problem**: `dockerd`'s own stats collector has roughly a 1-second minimum latency before its first sample is available, confirmed by testing a container with a 300ms lifetime (its stats stayed empty, `-- / --`, the whole time, regardless of polling strategy) — most sandboxed executions finish well under that, so `maxMemoryKb` reports `0` for anything reasonably fast. A real fix would mean reading the sandbox container's cgroup memory files directly off the host filesystem instead of going through `dockerd`'s stats loop at all — deliberately not done, since the exact cgroup path is host-dependent (v1 vs v2, cgroupfs vs systemd driver) and would need real per-environment verification.

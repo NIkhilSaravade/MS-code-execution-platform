@@ -259,6 +259,37 @@ services:
       kafka:
         condition: service_healthy
 
+  # Trace backend for ai-analysis-service/worker-service-go's existing
+  # OpenTelemetry instrumentation, which otherwise has nowhere to send spans.
+  # In-memory storage only (jaegertracing/all-in-one's default) - traces
+  # don't survive a restart, which is fine for local dev/demo purposes and
+  # avoids standing up a real backend (Elasticsearch/Cassandra) just for
+  # this. Not resource-sized for production trace volume.
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    container_name: jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"
+    restart: on-failure:5
+
+  # Receives OTLP from the two instrumented services and forwards to Jaeger.
+  # A separate collector (rather than pointing services straight at
+  # Jaeger's own OTLP receiver) buffers/batches so a Jaeger restart doesn't
+  # immediately start dropping spans, and gives a single place to add a
+  # second exporter (e.g. a metrics backend) later without touching either
+  # service.
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.114.0
+    container_name: otel-collector
+    volumes:
+      - ./infra/otel/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    depends_on:
+      - jaeger
+    restart: on-failure:5
+
   # ── Platform infra ───────────────────────────────────────────────────────
 
   discovery-service:
@@ -539,6 +570,10 @@ services:
       # visibility only now - nothing left to resolve through it.
       EUREKA_SERVER_URL: http://discovery-service:8761/eureka
       EUREKA_APP_NAME: WORKER-SERVICE-GO
+      # Was left at its localhost:4318 default before, which is wrong
+      # inside a container (that's this container's own loopback, not
+      # otel-collector's) - traces were exported into the void.
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
     depends_on:
       kafka-init:
         condition: service_completed_successfully
@@ -547,6 +582,8 @@ services:
       discovery-service:
         condition: service_healthy
       submission-service:
+        condition: service_started
+      otel-collector:
         condition: service_started
     restart: on-failure:5
 
@@ -580,9 +617,15 @@ services:
       KAFKA_CONSUMER_GROUP_ID: ai-analysis-group
       AI_ANALYSIS_SERVICE_CLIENT_ID: ai-analysis-service
       AI_ANALYSIS_SERVICE_CLIENT_SECRET: ${AI_ANALYSIS_SERVICE_CLIENT_SECRET:-dev-only-secret-change-me}
+      # Was previously unset here, so tracing.py fell back to
+      # ConsoleSpanExporter (spans only ever printed to stdout, never
+      # actually exported anywhere).
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
     depends_on:
       postgres:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
       discovery-service:
         condition: service_healthy
       kafka-init:

@@ -22,7 +22,6 @@ log = get_logger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    configure_tracing(app)
     create_tables()
     await register_with_eureka()
     # Best-effort, fire-and-forget - see kafka/consumer.py's module docstring
@@ -47,6 +46,14 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+# Must happen here, not inside lifespan's startup handler: Starlette caches
+# its middleware stack on the very first ASGI call, which is the
+# "lifespan" scope invocation itself - by the time a startup handler runs,
+# that stack is already built, so FastAPIInstrumentor.instrument_app's
+# added middleware would silently never take effect (confirmed - every
+# request traced 0 spans until this moved out of lifespan).
+configure_tracing(app)
 
 
 @app.get("/health")
