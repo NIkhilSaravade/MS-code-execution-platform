@@ -1,7 +1,6 @@
 package com.MS_code_execution_platform.submission_service.config;
 
 import com.MS_code_execution_platform.submission_service.dto.SubmissionCreatedEvent;
-import com.MS_code_execution_platform.submission_service.dto.SubmissionEvent;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.springframework.beans.factory.annotation.Value;
@@ -58,21 +57,8 @@ public class KafkaProducerConfig {
         return config;
     }
 
-    @Bean
-    public ProducerFactory<String, SubmissionEvent> producerFactory() {
-        return new DefaultKafkaProducerFactory<>(baseProducerConfig());
-    }
-
-    @Bean
-    public KafkaTemplate<String, SubmissionEvent> kafkaTemplate() {
-        return new KafkaTemplate<>(producerFactory());
-    }
-
-    // Second producer for the newer submissions.created.v1 event shape that
-    // worker-service-go consumes (see SubmissionCreatedEvent) - published
-    // alongside the legacy SubmissionEvent so both worker-service (Java) and
-    // worker-service-go keep receiving submissions, per CLAUDE.md's
-    // "both workers run side by side intentionally" note.
+    // Producer for the submissions.created.v1 event shape that
+    // worker-service-go consumes (see SubmissionCreatedEvent).
     @Bean
     public ProducerFactory<String, SubmissionCreatedEvent> submissionCreatedProducerFactory() {
         return new DefaultKafkaProducerFactory<>(baseProducerConfig());

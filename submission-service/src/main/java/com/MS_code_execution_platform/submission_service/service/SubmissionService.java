@@ -6,7 +6,6 @@ import com.MS_code_execution_platform.submission_service.entity.Submission;
 import com.MS_code_execution_platform.submission_service.kafka.SubmissionProducer;
 import com.MS_code_execution_platform.submission_service.repository.SubmissionRepository;
 import lombok.RequiredArgsConstructor;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -21,18 +20,6 @@ public class SubmissionService {
     private final SubmissionRepository submissionRepository;
     private final SubmissionProducer submissionProducer;
     private final HarnessApplier harnessApplier;
-
-    // THE WORKER SWITCH. "java" routes every new submission to the legacy
-    // worker-service (submission-topic / execution-result-topic); "go" routes
-    // it to worker-service-go (submissions.created.v1 / executions.completed.v1).
-    // Only ONE worker ever sees a given submission - both dual-publishing and
-    // consuming would otherwise race two independent judges against each
-    // other for the same submission with no way to know which result you'd get.
-    // Set via ACTIVE_WORKER in docker-compose.yml (or application.properties'
-    // worker.active for a local, non-Docker run) - change it and restart
-    // submission-service to switch.
-    @Value("${worker.active}")
-    private String activeWorker;
 
     public SubmissionResponse createSubmission(SubmissionRequest request) {
 
@@ -60,11 +47,7 @@ public class SubmissionService {
         String codeToRun = harnessApplier.apply(
                 submission.getProblemId(), submission.getLanguage(), submission.getCode());
 
-        if ("go".equalsIgnoreCase(activeWorker)) {
-            submissionProducer.sendSubmissionCreatedEvent(submission, codeToRun, includeHidden);
-        } else {
-            submissionProducer.sendSubmissionEvent(submission, codeToRun, includeHidden);
-        }
+        submissionProducer.sendSubmissionCreatedEvent(submission, codeToRun, includeHidden);
 
         return SubmissionResponse.builder()
                 .submissionId(submission.getId())

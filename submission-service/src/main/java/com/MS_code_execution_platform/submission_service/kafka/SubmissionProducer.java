@@ -4,7 +4,6 @@ import com.MS_code_execution_platform.submission_service.client.InternalProblemC
 import com.MS_code_execution_platform.submission_service.dto.InternalLimitsResponse;
 import com.MS_code_execution_platform.submission_service.dto.InternalTestCasesResponse;
 import com.MS_code_execution_platform.submission_service.dto.SubmissionCreatedEvent;
-import com.MS_code_execution_platform.submission_service.dto.SubmissionEvent;
 import com.MS_code_execution_platform.submission_service.entity.Submission;
 import com.MS_code_execution_platform.submission_service.storage.SubmissionCodeStorageService;
 import lombok.RequiredArgsConstructor;
@@ -22,7 +21,6 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class SubmissionProducer {
 
-    private final KafkaTemplate<String, SubmissionEvent> kafkaTemplate;
     private final KafkaTemplate<String, SubmissionCreatedEvent> submissionCreatedKafkaTemplate;
     private final SubmissionCodeStorageService submissionCodeStorageService;
     private final InternalProblemClient internalProblemClient;
@@ -35,22 +33,7 @@ public class SubmissionProducer {
     // what actually gets judged may have a generated harness appended (see
     // HarnessApplier) - the worker needs the combined, runnable version.
 
-    // Legacy event, consumed by worker-service (Java) — carries the code inline.
-    public void sendSubmissionEvent(Submission submission, String codeToRun, boolean includeHidden) {
-
-        SubmissionEvent event = new SubmissionEvent(
-                submission.getId(),
-                submission.getUserId(),
-                submission.getProblemId(),
-                codeToRun,
-                submission.getLanguage(),
-                includeHidden
-        );
-
-        kafkaTemplate.send("submission-topic", event);
-    }
-
-    // Newer event, consumed by worker-service-go — code is uploaded to
+    // Consumed by worker-service-go — code is uploaded to
     // platform-artifacts first and referenced by key (job.CodeS3Key) instead
     // of being embedded, matching worker-service-go's SubmissionCreatedEvent
     // envelope (internal/domain/events.go).

@@ -390,14 +390,9 @@ services:
       S3_ENDPOINT: http://minio:9000
       S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
       S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
-      # THE WORKER SWITCH: "java" -> worker-service (legacy), "go" ->
-      # worker-service-go. Change this and `docker-compose up -d
-      # submission-service` (no rebuild needed) to flip which worker judges
-      # every new submission. See SubmissionService.createSubmission.
-      ACTIVE_WORKER: ${ACTIVE_WORKER:-go}
       # Fetches a problem's generated harness before judging (see
-      # HarnessApplier) - same service-credential pattern worker-service/
-      # worker-service-go use to call problem-service.
+      # HarnessApplier) - same service-credential pattern worker-service-go
+      # uses to call problem-service.
       AUTH_SERVICE_URL: http://auth-service:8086
       PROBLEM_SERVICE_URL: http://problem-service:8082
       SUBMISSION_SERVICE_CLIENT_ID: submission-service
