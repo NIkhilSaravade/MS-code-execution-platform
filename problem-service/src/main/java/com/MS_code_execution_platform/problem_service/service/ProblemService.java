@@ -175,6 +175,10 @@ public class ProblemService {
         return problems.map(this::toResponse);
     }
 
+    // Exposes hidden test cases' expected output - route-level SecurityConfig
+    // only requires USER/ADMIN, so this method-level check is the actual
+    // enforcement (same defense-in-depth pattern as createProblem above).
+    @PreAuthorize("hasRole('ADMIN')")
     public List<TestCaseResponse> getTestCasesForWorker(Long problemId) {
 
         return testCaseRepository.findByProblemId(problemId)
