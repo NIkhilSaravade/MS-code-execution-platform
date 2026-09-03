@@ -161,7 +161,7 @@ func Load() (*Config, error) {
 	cfg.OTLPEndpoint = getEnvOrDefault("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
 	cfg.LogLevel = getEnvOrDefault("LOG_LEVEL", "info")
 
-	cfg.HealthPort = getEnvOrDefault("HEALTH_PORT", "8090")
+	cfg.HealthPort = getEnvOrDefault("HEALTH_PORT", "8091")
 
 	if len(errs) > 0 {
 		return nil, fmt.Errorf("config errors: %s", strings.Join(errs, "; "))

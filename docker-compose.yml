@@ -494,7 +494,8 @@ services:
     ports:
       # Kubernetes liveness/readiness probe target - see cmd/worker/main.go's
       # /healthz, /readyz. This worker has no other HTTP surface at all.
-      - "8090:8090"
+      # 8091, not 8090 - that's already kafka-ui's host port.
+      - "8091:8091"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./infra/kafka/certs/ca.crt:/certs/ca.crt:ro

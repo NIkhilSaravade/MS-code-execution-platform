@@ -57,9 +57,12 @@ RUN chmod +x /entrypoint.sh
 # containers the worker spawns run as nobody:65534, same as before.
 RUN addgroup -S worker && adduser -S worker -G worker
 
-# Expose no ports — the worker is a pure consumer/producer, no inbound connections.
+# Only inbound surface: the Kubernetes/local health endpoint (see
+# cmd/worker/main.go's /healthz, /readyz) - the worker itself is still a
+# pure Kafka consumer/producer with no other inbound connections.
+EXPOSE 8091
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD pgrep worker || exit 1
+    CMD wget -q -O /dev/null http://localhost:8091/healthz || exit 1
 
 ENTRYPOINT ["/entrypoint.sh"]

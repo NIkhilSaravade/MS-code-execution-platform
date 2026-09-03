@@ -84,7 +84,7 @@ API Gateway (:8080)  ←── OAuth2 Resource Server (RS256 / JWKS)
 | `user-service` | Java | 8081 (+ gRPC 9090) | User CRUD, roles, admin bootstrap |
 | `problem-service` | Java | 8082 | Problem CRUD, test case storage (MinIO), per-language harness generation |
 | `submission-service` | Java | 8083 | Accepts submissions, applies the generated harness, fetches + embeds test cases/limits, publishes to Kafka; tracks only lifecycle/status (result detail lives in `execution-result-service`) |
-| `worker-service-go` | Go | 8090 (health only) | Docker/sandbox code executor, Kafka consumer + DLQ producer; computes its own static time/space complexity estimate and reports timing/memory |
+| `worker-service-go` | Go | 8091 (health only) | Docker/sandbox code executor, Kafka consumer + DLQ producer; computes its own static time/space complexity estimate and reports timing/memory |
 | `execution-result-service` | Java | 8085 | Single source of truth for judged results (output, per-test-case breakdown, timing, memory, complexity estimate); notifies `submission-service` (status) and `ai-analysis-service` (auto-trigger) via Kafka |
 | `ai-analysis-service` | Python | 8000 | FastAPI — LLM code analysis with RAG; now also a Kafka consumer, auto-triggered per judged submission |
 | `api-gateway` | Java | 8080 | JWT resource server + reverse proxy |

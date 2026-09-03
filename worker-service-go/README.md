@@ -106,7 +106,7 @@ for the full list. Key variables:
 | `SANDBOX_WALL_TIMEOUT` | `10s` | Wall-clock execution timeout |
 | `S3_ENDPOINT` | `http://localhost:9000` | MinIO / S3 endpoint |
 | `EUREKA_SERVER_URL` | `http://localhost:8761/eureka` | Registers for dashboard visibility only - not used to resolve any other service |
-| `HEALTH_PORT` | `8090` | Serves `GET /healthz` (liveness) and `GET /readyz` (readiness) - this worker's only HTTP surface, added for Kubernetes probes |
+| `HEALTH_PORT` | `8091` | Serves `GET /healthz` (liveness) and `GET /readyz` (readiness) - this worker's only HTTP surface, added for Kubernetes probes (not `8090` - that's kafka-ui's host port) |
 
 No `SUBMISSION_SERVICE_URL`/`PROBLEM_SERVICE_URL` - this worker doesn't call either service directly (see Architecture above).
 

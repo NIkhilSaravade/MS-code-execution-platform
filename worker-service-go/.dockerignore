@@ -1,0 +1,9 @@
+bin/
+*.exe
+.git
+.gitignore
+.idea/
+.vscode/
+*.env
+.env.local
+README.md
