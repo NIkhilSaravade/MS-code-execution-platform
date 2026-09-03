@@ -28,6 +28,15 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/problems").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.PUT, "/problems/**").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.DELETE, "/problems/**").hasRole("ADMIN")
+                        // submission-service's HarnessApplier fetches GET /problems/{id}
+                        // (for harnessByLanguage) using its own service-credential token,
+                        // not a forwarded user token - /internal/** doesn't expose this
+                        // (only test-cases/limits), so it has to be this route. GET
+                        // /problems/{id}/testcases stays ADMIN-only regardless of this,
+                        // via its own @PreAuthorize on
+                        // ProblemService.getTestCasesForWorker - that's the real
+                        // hidden-test-case gate, not this route-level rule.
+                        .requestMatchers(HttpMethod.GET, "/problems/**").hasAnyRole("USER", "ADMIN", "SERVICE")
                         .requestMatchers("/problems/**").hasAnyRole("USER", "ADMIN")
                         // Practice page's 2D "Board" (whimsical-style) view - each user
                         // reads/writes only their own cards/edges/positions (enforced in
