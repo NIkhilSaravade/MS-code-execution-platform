@@ -28,15 +28,6 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/problems").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.PUT, "/problems/**").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.DELETE, "/problems/**").hasRole("ADMIN")
-                        // worker-service (the legacy Java worker) reads test cases via
-                        // GET /problems/{id}/testcases with a service-credential token
-                        // (ROLE_SERVICE), not a user's - worker-service-go instead uses
-                        // /internal/** for the same purpose, but this older worker never
-                        // got migrated and was only ever granted USER/ADMIN access here,
-                        // so every call 403'd. Read-only, and test case content isn't
-                        // sensitive, so extending GET (not the broader /problems/**) to
-                        // ROLE_SERVICE is the narrowest fix.
-                        .requestMatchers(HttpMethod.GET, "/problems/**").hasAnyRole("USER", "ADMIN", "SERVICE")
                         .requestMatchers("/problems/**").hasAnyRole("USER", "ADMIN")
                         // Practice page's 2D "Board" (whimsical-style) view - each user
                         // reads/writes only their own cards/edges/positions (enforced in
