@@ -5,6 +5,7 @@ import com.MS_code_execution_platform.problem_service.dto.ProblemResponse;
 import com.MS_code_execution_platform.problem_service.dto.TestCaseResponse;
 import com.MS_code_execution_platform.problem_service.entity.Problem;
 import com.MS_code_execution_platform.problem_service.service.ProblemService;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.web.bind.annotation.*;
@@ -19,7 +20,7 @@ public class ProblemController {
     private final ProblemService problemService;
 
     @PostMapping
-    public Problem createProblem(@RequestBody ProblemRequest request) {
+    public Problem createProblem(@Valid @RequestBody ProblemRequest request) {
         return problemService.createProblem(request);
     }
 
@@ -28,7 +29,7 @@ public class ProblemController {
     // returns, so this one never risks echoing hidden test cases' expected
     // output back in the response body.
     @PutMapping("/{problemId}")
-    public ProblemResponse updateProblem(@PathVariable Long problemId, @RequestBody ProblemRequest request) {
+    public ProblemResponse updateProblem(@PathVariable Long problemId, @Valid @RequestBody ProblemRequest request) {
         return problemService.updateProblem(problemId, request);
     }
 
@@ -61,7 +62,9 @@ public class ProblemController {
         return problemService.getProblemResponse(problemId);
     }
 
-    // Used by Worker Service
+    // Exposes hidden test cases' expected output - ADMIN-only, enforced via
+    // @PreAuthorize on ProblemService.getTestCasesForWorker (route-level
+    // SecurityConfig only requires USER/ADMIN, not narrow enough on its own).
     @GetMapping("/{problemId}/testcases")
     public List<TestCaseResponse> getTestCases(@PathVariable Long problemId) {
         return problemService.getTestCasesForWorker(problemId);

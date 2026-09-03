@@ -29,7 +29,12 @@ def configure_tracing(app=None) -> None:
     otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
     if otlp_endpoint:
         from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-        provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=otlp_endpoint)))
+        # OTLPSpanExporter only auto-appends /v1/traces when it reads
+        # OTEL_EXPORTER_OTLP_ENDPOINT itself - passing `endpoint=` explicitly
+        # (as below) bypasses that, so it has to be done here or every
+        # export 404s against a real collector's OTLP HTTP receiver.
+        traces_endpoint = otlp_endpoint.rstrip("/") + "/v1/traces"
+        provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=traces_endpoint)))
     else:
         provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
 

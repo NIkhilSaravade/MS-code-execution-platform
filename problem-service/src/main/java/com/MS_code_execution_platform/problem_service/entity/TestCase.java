@@ -25,8 +25,8 @@ public class TestCase {
     private boolean hidden;
 
     // S3-backed fields for worker-service-go (see TestCaseStorageService).
-    // input/expectedOutput above stay populated too, for the older Java
-    // worker-service's GET /problems/{id}/testcases, which returns inline content.
+    // input/expectedOutput above stay populated too, for GET
+    // /problems/{id}/testcases (the admin edit page), which returns inline content.
     //
     // Explicit @Column names: Hibernate's default naming strategy handles a
     // digit next to an uppercase letter surprisingly - "inputS3Key" becomes

@@ -135,7 +135,12 @@ export default function PracticePage() {
   const filtered = useMemo(() => {
     return problems.filter((p) => {
       // .toLowerCase() on both sides makes the search case-insensitive.
-      const matchesSearch = p.name.toLowerCase().includes(search.toLowerCase());
+      // (p.name ?? '') guards against a null name - the type says `string`,
+      // but problem-service doesn't actually require it server-side, so a
+      // single bad row (e.g. created via a raw API call with the wrong
+      // field name) would otherwise throw here and blank the whole page
+      // for every user, not just fail to match the search.
+      const matchesSearch = (p.name ?? '').toLowerCase().includes(search.toLowerCase());
       const matchesDifficulty = difficulty === 'All' || p.difficulty === difficulty;
       return matchesSearch && matchesDifficulty;
     });

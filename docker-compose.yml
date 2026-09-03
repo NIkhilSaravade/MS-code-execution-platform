@@ -97,6 +97,21 @@ services:
       exit 0;
       "
 
+  # Backs api-gateway's per-user RequestRateLimiter (see RateLimiterConfig,
+  # application.yml). No host port published - only api-gateway talks to it,
+  # over the compose network. Password-only, no TLS: unlike Postgres/Kafka
+  # this holds nothing but short-lived rate-limit counters.
+  redis:
+    image: redis:7.4-alpine
+    container_name: redis
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:-dev-only-secret-change-me}"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-dev-only-secret-change-me}", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: on-failure:5
+
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
     container_name: zookeeper
@@ -244,6 +259,37 @@ services:
       kafka:
         condition: service_healthy
 
+  # Trace backend for ai-analysis-service/worker-service-go's existing
+  # OpenTelemetry instrumentation, which otherwise has nowhere to send spans.
+  # In-memory storage only (jaegertracing/all-in-one's default) - traces
+  # don't survive a restart, which is fine for local dev/demo purposes and
+  # avoids standing up a real backend (Elasticsearch/Cassandra) just for
+  # this. Not resource-sized for production trace volume.
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    container_name: jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"
+    restart: on-failure:5
+
+  # Receives OTLP from the two instrumented services and forwards to Jaeger.
+  # A separate collector (rather than pointing services straight at
+  # Jaeger's own OTLP receiver) buffers/batches so a Jaeger restart doesn't
+  # immediately start dropping spans, and gives a single place to add a
+  # second exporter (e.g. a metrics backend) later without touching either
+  # service.
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.114.0
+    container_name: otel-collector
+    volumes:
+      - ./infra/otel/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    depends_on:
+      - jaeger
+    restart: on-failure:5
+
   # ── Platform infra ───────────────────────────────────────────────────────
 
   discovery-service:
@@ -251,27 +297,18 @@ services:
     container_name: discovery-service
     ports:
       - "8761:8761"
+    environment:
+      # Conservative per-service heap caps (see JAVA_TOOL_OPTIONS on every
+      # other Java service here) - sized to fit ~9 JVMs + Kafka/Zookeeper/
+      # Postgres/MinIO comfortably on a shared 24GB box. JAVA_TOOL_OPTIONS
+      # is read automatically by the JVM at launch - no Dockerfile/
+      # entrypoint changes needed.
+      JAVA_TOOL_OPTIONS: -Xmx256m
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8761/"]
       interval: 5s
       timeout: 5s
       retries: 15
-
-  config-service:
-    build: ./config-service
-    container_name: config-service
-    ports:
-      - "8888:8888"
-    environment:
-      <<: *eureka-env
-      GITHUB_PASSWORD: ${GITHUB_PASSWORD:?set GITHUB_PASSWORD in .env - a GitHub PAT for the private config repo}
-    depends_on:
-      discovery-service:
-        condition: service_healthy
-    restart: on-failure:3
-    # Note: nothing else in this stack currently consumes config-service
-    # (no service has spring-cloud-starter-config on its classpath yet) -
-    # it's included for completeness but is inert until something does.
 
   # ── Application services ─────────────────────────────────────────────────
 
@@ -284,6 +321,7 @@ services:
       - ./infra/postgres/certs/ca.crt:/certs/postgres-ca.crt:ro
     environment:
       <<: *eureka-env
+      JAVA_TOOL_OPTIONS: -Xmx320m
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/auth_service?sslmode=verify-full&sslrootcert=/certs/postgres-ca.crt
       SPRING_DATASOURCE_USERNAME: auth_service_app
       SPRING_DATASOURCE_PASSWORD: ${AUTH_SERVICE_DB_APP_PASSWORD:-auth-service-app-dev-secret}
@@ -292,7 +330,6 @@ services:
       SPRING_FLYWAY_PASSWORD: ${AUTH_SERVICE_DB_OWNER_PASSWORD:-auth-service-owner-dev-secret}
       # grpc.client.user-service.address stays at its default (discovery:///USER-SERVICE)
       # from application.properties - it's already Eureka-based, no override needed here.
-      WORKER_SERVICE_CLIENT_SECRET: ${WORKER_SERVICE_CLIENT_SECRET:-dev-only-secret-change-me}
     depends_on:
       postgres:
         condition: service_healthy
@@ -310,6 +347,7 @@ services:
       - ./infra/postgres/certs/ca.crt:/certs/postgres-ca.crt:ro
     environment:
       <<: *eureka-resourceserver-env
+      JAVA_TOOL_OPTIONS: -Xmx256m
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/user_service?sslmode=verify-full&sslrootcert=/certs/postgres-ca.crt
       SPRING_DATASOURCE_USERNAME: user_service_app
       SPRING_DATASOURCE_PASSWORD: ${USER_SERVICE_DB_APP_PASSWORD:-user-service-app-dev-secret}
@@ -334,11 +372,17 @@ services:
       - "8080:8080"
     environment:
       <<: *eureka-resourceserver-env
+      JAVA_TOOL_OPTIONS: -Xmx400m
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-dev-only-secret-change-me}
     depends_on:
       discovery-service:
         condition: service_healthy
       auth-service:
         condition: service_started
+      redis:
+        condition: service_healthy
     restart: on-failure:5
 
   problem-service:
@@ -350,6 +394,7 @@ services:
       - ./infra/postgres/certs/ca.crt:/certs/postgres-ca.crt:ro
     environment:
       <<: *eureka-resourceserver-env
+      JAVA_TOOL_OPTIONS: -Xmx384m
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/problem_service?sslmode=verify-full&sslrootcert=/certs/postgres-ca.crt
       SPRING_DATASOURCE_USERNAME: problem_service_app
       SPRING_DATASOURCE_PASSWORD: ${PROBLEM_SERVICE_DB_APP_PASSWORD:-problem-service-app-dev-secret}
@@ -380,6 +425,7 @@ services:
       - ./infra/postgres/certs/ca.crt:/certs/postgres-ca.crt:ro
     environment:
       <<: *eureka-resourceserver-env
+      JAVA_TOOL_OPTIONS: -Xmx384m
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/submission_service?sslmode=verify-full&sslrootcert=/certs/postgres-ca.crt
       SPRING_DATASOURCE_USERNAME: submission_service_app
       SPRING_DATASOURCE_PASSWORD: ${SUBMISSION_SERVICE_DB_APP_PASSWORD:-submission-service-app-dev-secret}
@@ -391,14 +437,9 @@ services:
       S3_ENDPOINT: http://minio:9000
       S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
       S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
-      # THE WORKER SWITCH: "java" -> worker-service (legacy), "go" ->
-      # worker-service-go. Change this and `docker-compose up -d
-      # submission-service` (no rebuild needed) to flip which worker judges
-      # every new submission. See SubmissionService.createSubmission.
-      ACTIVE_WORKER: ${ACTIVE_WORKER:-go}
       # Fetches a problem's generated harness before judging (see
-      # HarnessApplier) - same service-credential pattern worker-service/
-      # worker-service-go use to call problem-service.
+      # HarnessApplier) - same service-credential pattern worker-service-go
+      # uses to call problem-service.
       AUTH_SERVICE_URL: http://auth-service:8086
       PROBLEM_SERVICE_URL: http://problem-service:8082
       SUBMISSION_SERVICE_CLIENT_ID: submission-service
@@ -427,6 +468,7 @@ services:
       - ./infra/postgres/certs/ca.crt:/certs/postgres-ca.crt:ro
     environment:
       <<: *eureka-resourceserver-env
+      JAVA_TOOL_OPTIONS: -Xmx320m
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/solution_service?sslmode=verify-full&sslrootcert=/certs/postgres-ca.crt
       SPRING_DATASOURCE_USERNAME: solution_service_app
       SPRING_DATASOURCE_PASSWORD: ${SOLUTION_SERVICE_DB_APP_PASSWORD:-solution-service-app-dev-secret}
@@ -455,6 +497,7 @@ services:
       - ./infra/postgres/certs/ca.crt:/certs/postgres-ca.crt:ro
     environment:
       <<: *eureka-resourceserver-env
+      JAVA_TOOL_OPTIONS: -Xmx256m
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/execution_result_service?sslmode=verify-full&sslrootcert=/certs/postgres-ca.crt
       SPRING_DATASOURCE_USERNAME: execution_result_service_app
       SPRING_DATASOURCE_PASSWORD: ${EXECUTION_RESULT_SERVICE_DB_APP_PASSWORD:-execution-result-service-app-dev-secret}
@@ -474,51 +517,14 @@ services:
         condition: service_started
     restart: on-failure:5
 
-  # Old Java worker - kept for coexistence with worker-service-go (see repo
-  # history) for a side-by-side performance comparison. Authenticates to
-  # problem-service via OAuth2 client-credentials (see client.AuthTokenClient),
-  # same trust boundary/credentials as worker-service-go's "worker" identity.
-  worker-service:
-    build: ./worker-service
-    container_name: worker-service
-    ports:
-      - "8084:8084"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ./infra/kafka/certs/ca.crt:/certs/ca.crt:ro
-      # Shared with the sibling execution containers this service launches
-      # via docker.sock, same reasoning as worker-service-go's worker-scratch
-      # volume - a separate volume since the two workers use different
-      # internal layouts (per-submission subdirs here vs MkdirTemp there).
-      - worker-scratch-java:/scratch
-    environment:
-      <<: *eureka-env
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9093
-      KAFKA_WORKER_PASSWORD: ${KAFKA_WORKER_PASSWORD:-worker-dev-secret}
-      PROBLEM_SERVICE_URL: http://problem-service:8082
-      AUTH_SERVICE_URL: http://auth-service:8086
-      WORKER_CLIENT_ID: worker-service
-      WORKER_CLIENT_SECRET: ${WORKER_SERVICE_CLIENT_SECRET:-dev-only-secret-change-me}
-      # DockerExecutionService's default (a Windows named pipe) only exists
-      # on a Windows host running the JVM directly - inside this container
-      # the actual Docker socket is the /var/run/docker.sock bind-mount above.
-      DOCKER_HOST: unix:///var/run/docker.sock
-      WORKER_SCRATCH_DIR: /scratch
-      WORKER_SCRATCH_VOLUME: worker-scratch-java
-    depends_on:
-      kafka-init:
-        condition: service_completed_successfully
-      discovery-service:
-        condition: service_healthy
-      problem-service:
-        condition: service_started
-      auth-service:
-        condition: service_started
-    restart: on-failure:5
-
   worker-service-go:
     build: ./worker-service-go
     container_name: worker-service-go
+    ports:
+      # Kubernetes liveness/readiness probe target - see cmd/worker/main.go's
+      # /healthz, /readyz. This worker has no other HTTP surface at all.
+      # 8091, not 8090 - that's already kafka-ui's host port.
+      - "8091:8091"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./infra/kafka/certs/ca.crt:/certs/ca.crt:ro
@@ -547,6 +553,10 @@ services:
       # visibility only now - nothing left to resolve through it.
       EUREKA_SERVER_URL: http://discovery-service:8761/eureka
       EUREKA_APP_NAME: WORKER-SERVICE-GO
+      # Was left at its localhost:4318 default before, which is wrong
+      # inside a container (that's this container's own loopback, not
+      # otel-collector's) - traces were exported into the void.
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
     depends_on:
       kafka-init:
         condition: service_completed_successfully
@@ -555,6 +565,8 @@ services:
       discovery-service:
         condition: service_healthy
       submission-service:
+        condition: service_started
+      otel-collector:
         condition: service_started
     restart: on-failure:5
 
@@ -588,9 +600,15 @@ services:
       KAFKA_CONSUMER_GROUP_ID: ai-analysis-group
       AI_ANALYSIS_SERVICE_CLIENT_ID: ai-analysis-service
       AI_ANALYSIS_SERVICE_CLIENT_SECRET: ${AI_ANALYSIS_SERVICE_CLIENT_SECRET:-dev-only-secret-change-me}
+      # Was previously unset here, so tracing.py fell back to
+      # ConsoleSpanExporter (spans only ever printed to stdout, never
+      # actually exported anywhere).
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
     depends_on:
       postgres:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
       discovery-service:
         condition: service_healthy
       kafka-init:
@@ -617,8 +635,3 @@ volumes:
   # exactly, and it doubles as SCRATCH_VOLUME_NAME's default.
   worker-scratch:
     name: worker-scratch
-  # Same idea, for worker-service (Java) - see its DockerExecutionService
-  # comment. A separate volume from worker-scratch since the two workers use
-  # different internal directory layouts.
-  worker-scratch-java:
-    name: worker-scratch-java

@@ -28,14 +28,14 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/problems").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.PUT, "/problems/**").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.DELETE, "/problems/**").hasRole("ADMIN")
-                        // worker-service (the legacy Java worker) reads test cases via
-                        // GET /problems/{id}/testcases with a service-credential token
-                        // (ROLE_SERVICE), not a user's - worker-service-go instead uses
-                        // /internal/** for the same purpose, but this older worker never
-                        // got migrated and was only ever granted USER/ADMIN access here,
-                        // so every call 403'd. Read-only, and test case content isn't
-                        // sensitive, so extending GET (not the broader /problems/**) to
-                        // ROLE_SERVICE is the narrowest fix.
+                        // submission-service's HarnessApplier fetches GET /problems/{id}
+                        // (for harnessByLanguage) using its own service-credential token,
+                        // not a forwarded user token - /internal/** doesn't expose this
+                        // (only test-cases/limits), so it has to be this route. GET
+                        // /problems/{id}/testcases stays ADMIN-only regardless of this,
+                        // via its own @PreAuthorize on
+                        // ProblemService.getTestCasesForWorker - that's the real
+                        // hidden-test-case gate, not this route-level rule.
                         .requestMatchers(HttpMethod.GET, "/problems/**").hasAnyRole("USER", "ADMIN", "SERVICE")
                         .requestMatchers("/problems/**").hasAnyRole("USER", "ADMIN")
                         // Practice page's 2D "Board" (whimsical-style) view - each user

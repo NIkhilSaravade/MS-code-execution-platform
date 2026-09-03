@@ -86,8 +86,6 @@ interface RunResult {
   // judged before this existed, or a submission that failed before reaching
   // any test case - e.g. CE - won't have one).
   testCaseResults: TestCaseResult[] | null;
-  // Only ever populated when worker-service-go (not the legacy Java worker)
-  // judged the submission - see execution-result-service's ExecutionResult.
   wallTimeMs: number | null;
   maxMemoryKb: number | null;
   estimatedTimeComplexity: string | null;

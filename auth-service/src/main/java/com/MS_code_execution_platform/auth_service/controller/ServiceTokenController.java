@@ -12,7 +12,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 /**
  * OAuth2 client-credentials grant endpoint (RFC 6749 section 4.4) for
- * service-to-service callers (e.g. worker-service). Distinct from
+ * service-to-service callers (e.g. submission-service). Distinct from
  * AuthController, which handles end-user login/register/refresh.
  */
 @RestController

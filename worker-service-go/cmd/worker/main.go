@@ -18,8 +18,10 @@ package main
 
 import (
 	"context"
+	"net/http"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -107,6 +109,32 @@ func main() {
 		log.Fatal().Err(err).Msg("failed to create kafka consumer")
 	}
 
+	// ── Health endpoint ───────────────────────────────────────────────────────
+	// This worker is otherwise a pure Kafka consumer with no HTTP server at
+	// all, so Kubernetes has nothing to point a liveness/readiness probe at
+	// without this. /healthz answers as soon as the process is up (liveness);
+	// /readyz flips to 200 once the consumer goroutine has actually been
+	// launched below (readiness) - separate atomics so a probe can tell
+	// "process alive but still starting" apart from "actually consuming".
+	var ready atomic.Bool
+	healthMux := http.NewServeMux()
+	healthMux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	healthMux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		if ready.Load() {
+			w.WriteHeader(http.StatusOK)
+		} else {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+	})
+	healthServer := &http.Server{Addr: ":" + cfg.HealthPort, Handler: healthMux}
+	go func() {
+		if err := healthServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Warn().Err(err).Msg("health server stopped unexpectedly")
+		}
+	}()
+
 	// ── Run ───────────────────────────────────────────────────────────────────
 	// cancelCtx controls the consumer loop. On signal, we cancel it and give
 	// in-flight executions time to finish before exiting.
@@ -117,6 +145,7 @@ func main() {
 	go func() {
 		consumerErrCh <- consumer.Run(cancelCtx)
 	}()
+	ready.Store(true)
 
 	log.Info().Msg("worker-service ready — waiting for submissions")
 
@@ -135,7 +164,14 @@ func main() {
 
 	// ── Graceful shutdown ─────────────────────────────────────────────────────
 	log.Info().Msg("initiating graceful shutdown")
+	ready.Store(false)
 	cancel()
+
+	shutdownHealthCtx, shutdownHealthCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	if err := healthServer.Shutdown(shutdownHealthCtx); err != nil {
+		log.Warn().Err(err).Msg("error shutting down health server")
+	}
+	shutdownHealthCancel()
 
 	// Deregister immediately rather than leaving Eureka to expire the lease
 	// on its own after ~90s of missed heartbeats - keeps the dashboard

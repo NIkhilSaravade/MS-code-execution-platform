@@ -13,8 +13,8 @@ import java.nio.charset.StandardCharsets;
  * Test-case content (input/expected output) lives in S3, not Postgres -
  * worker-service-go downloads it directly by key rather than round-tripping
  * it through problem-service on every execution. The 'input'/'expectedOutput'
- * TEXT columns on TestCase are kept alongside this for the older Java
- * worker-service, which still expects inline content on GET /problems/{id}/testcases.
+ * TEXT columns on TestCase are kept alongside this for GET
+ * /problems/{id}/testcases (the admin edit page), which still expects inline content.
  */
 @Service
 @RequiredArgsConstructor

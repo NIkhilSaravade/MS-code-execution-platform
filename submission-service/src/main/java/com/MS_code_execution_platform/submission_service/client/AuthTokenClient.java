@@ -15,9 +15,7 @@ import java.util.Map;
 /**
  * OAuth2 client-credentials grant against auth-service's /auth/token - this
  * service authenticates as itself to call problem-service, not on behalf of
- * a user. Mirrors worker-service's client.AuthTokenClient exactly (same
- * proven pattern, just a different client_id/secret - see
- * service-clients.clients.submission-service in auth-service).
+ * a user (see service-clients.clients.submission-service in auth-service).
  *
  * Uses its own plain RestTemplate (not the interceptor-enabled bean from
  * RestTemplateConfig) since /auth/token itself is unauthenticated - using

@@ -15,7 +15,7 @@ import java.util.stream.Collectors;
  * Generates the boilerplate appended after a user's `class Solution { ... }`
  * for Java submissions: a `public class Main` (the sandbox's javac/java
  * invocation requires the public class to be named Main - see
- * worker-service's CodeExecutionService) that reads JSON from stdin, calls
+ * worker-service-go's sandbox.go) that reads JSON from stdin, calls
  * the user's method with typed arguments, and prints the JSON result.
  *
  * The sandbox's execution image is plain `javac`/`java` with no external

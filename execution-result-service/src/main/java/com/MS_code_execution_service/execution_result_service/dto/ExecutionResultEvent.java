@@ -7,13 +7,11 @@ import lombok.NoArgsConstructor;
 
 /**
  * Consumed from execution-result-topic - the single ingestion point for
- * judged results from either worker (see worker-service-go's
- * domain.ExecutionResultEvent and worker-service's own copy of this shape).
- * submissionId/userId/problemId are JSON strings on both producer sides.
+ * judged results (see worker-service-go's domain.ExecutionResultEvent).
+ * submissionId/userId/problemId are JSON strings on the producer side.
  *
  * wallTimeMs/maxMemoryKb/estimatedTimeComplexity/estimatedSpaceComplexity
- * are only ever populated by worker-service-go - the legacy worker-service
- * leaves them absent (null), which is expected and handled gracefully.
+ * are populated by worker-service-go's static/empirical estimates.
  */
 @Data
 @NoArgsConstructor
