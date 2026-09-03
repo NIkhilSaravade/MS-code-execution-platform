@@ -7,7 +7,7 @@ set -e
 BOOTSTRAP="kafka:9093"
 CONFIG="/certs/admin-client.properties"
 
-TOPICS="submission-topic execution-result-topic submissions.created.v1 executions.failed.v1 dlq.submissions.created.v1 submission-update-topic analysis.trigger.v1 analysis.trigger.v1.retry-1 analysis.trigger.v1.retry-2 analysis.trigger.v1.dlq"
+TOPICS="execution-result-topic submissions.created.v1 executions.failed.v1 dlq.submissions.created.v1 submission-update-topic analysis.trigger.v1 analysis.trigger.v1.retry-1 analysis.trigger.v1.retry-2 analysis.trigger.v1.dlq"
 
 echo "Creating topics (if missing)..."
 for t in $TOPICS; do
@@ -17,18 +17,16 @@ done
 
 echo "Granting ACLs..."
 
-# worker (both the old Java worker-service and worker-service-go share this
-# trust boundary - see the guide's phrasing, "the worker"): consume the
-# submission topics, produce results to execution-result-topic only - both
-# workers report to execution-result-service now, nothing consumes
-# executions.completed.v1 anymore (removed as part of the single-topic
-# result-reporting redesign; executions.failed.v1/dlq stay for worker-side
-# infra-failure reporting, a separate concern).
+# worker-service-go: consumes submissions.created.v1, produces results to
+# execution-result-topic - nothing consumes executions.completed.v1 anymore
+# (removed as part of the single-topic result-reporting redesign;
+# executions.failed.v1/dlq stay for worker-side infra-failure reporting, a
+# separate concern).
 kafka-acls --bootstrap-server "$BOOTSTRAP" --command-config "$CONFIG" \
   --add --allow-principal User:worker \
   --operation Read --operation Describe \
-  --topic submission-topic --topic submissions.created.v1 \
-  --group worker-group --group worker-service-cg
+  --topic submissions.created.v1 \
+  --group worker-service-cg
 
 kafka-acls --bootstrap-server "$BOOTSTRAP" --command-config "$CONFIG" \
   --add --allow-principal User:worker \
@@ -36,15 +34,15 @@ kafka-acls --bootstrap-server "$BOOTSTRAP" --command-config "$CONFIG" \
   --topic execution-result-topic \
   --topic executions.failed.v1 --topic dlq.submissions.created.v1
 
-# submission-service: produces submission-topic (legacy Java worker) and
-# submissions.created.v1 (worker-service-go); consumes submission-update-topic
-# to update a submission's status once execution-result-service has
-# persisted the full result (no longer reads execution-result-topic
-# directly - execution-result-service is the only consumer of that topic now).
+# submission-service: produces submissions.created.v1 (worker-service-go);
+# consumes submission-update-topic to update a submission's status once
+# execution-result-service has persisted the full result (no longer reads
+# execution-result-topic directly - execution-result-service is the only
+# consumer of that topic now).
 kafka-acls --bootstrap-server "$BOOTSTRAP" --command-config "$CONFIG" \
   --add --allow-principal User:submission_service \
   --operation Write --operation Describe \
-  --topic submission-topic --topic submissions.created.v1
+  --topic submissions.created.v1
 
 kafka-acls --bootstrap-server "$BOOTSTRAP" --command-config "$CONFIG" \
   --add --allow-principal User:submission_service \
