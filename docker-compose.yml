@@ -266,6 +266,13 @@ services:
     container_name: discovery-service
     ports:
       - "8761:8761"
+    environment:
+      # Conservative per-service heap caps (see JAVA_TOOL_OPTIONS on every
+      # other Java service here) - sized to fit ~9 JVMs + Kafka/Zookeeper/
+      # Postgres/MinIO comfortably on a shared 24GB box. JAVA_TOOL_OPTIONS
+      # is read automatically by the JVM at launch - no Dockerfile/
+      # entrypoint changes needed.
+      JAVA_TOOL_OPTIONS: -Xmx256m
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8761/"]
       interval: 5s
@@ -279,6 +286,7 @@ services:
       - "8888:8888"
     environment:
       <<: *eureka-env
+      JAVA_TOOL_OPTIONS: -Xmx256m
       GITHUB_PASSWORD: ${GITHUB_PASSWORD:?set GITHUB_PASSWORD in .env - a GitHub PAT for the private config repo}
     depends_on:
       discovery-service:
@@ -299,6 +307,7 @@ services:
       - ./infra/postgres/certs/ca.crt:/certs/postgres-ca.crt:ro
     environment:
       <<: *eureka-env
+      JAVA_TOOL_OPTIONS: -Xmx320m
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/auth_service?sslmode=verify-full&sslrootcert=/certs/postgres-ca.crt
       SPRING_DATASOURCE_USERNAME: auth_service_app
       SPRING_DATASOURCE_PASSWORD: ${AUTH_SERVICE_DB_APP_PASSWORD:-auth-service-app-dev-secret}
@@ -324,6 +333,7 @@ services:
       - ./infra/postgres/certs/ca.crt:/certs/postgres-ca.crt:ro
     environment:
       <<: *eureka-resourceserver-env
+      JAVA_TOOL_OPTIONS: -Xmx256m
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/user_service?sslmode=verify-full&sslrootcert=/certs/postgres-ca.crt
       SPRING_DATASOURCE_USERNAME: user_service_app
       SPRING_DATASOURCE_PASSWORD: ${USER_SERVICE_DB_APP_PASSWORD:-user-service-app-dev-secret}
@@ -348,6 +358,7 @@ services:
       - "8080:8080"
     environment:
       <<: *eureka-resourceserver-env
+      JAVA_TOOL_OPTIONS: -Xmx400m
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       REDIS_PASSWORD: ${REDIS_PASSWORD:-dev-only-secret-change-me}
@@ -369,6 +380,7 @@ services:
       - ./infra/postgres/certs/ca.crt:/certs/postgres-ca.crt:ro
     environment:
       <<: *eureka-resourceserver-env
+      JAVA_TOOL_OPTIONS: -Xmx384m
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/problem_service?sslmode=verify-full&sslrootcert=/certs/postgres-ca.crt
       SPRING_DATASOURCE_USERNAME: problem_service_app
       SPRING_DATASOURCE_PASSWORD: ${PROBLEM_SERVICE_DB_APP_PASSWORD:-problem-service-app-dev-secret}
@@ -399,6 +411,7 @@ services:
       - ./infra/postgres/certs/ca.crt:/certs/postgres-ca.crt:ro
     environment:
       <<: *eureka-resourceserver-env
+      JAVA_TOOL_OPTIONS: -Xmx384m
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/submission_service?sslmode=verify-full&sslrootcert=/certs/postgres-ca.crt
       SPRING_DATASOURCE_USERNAME: submission_service_app
       SPRING_DATASOURCE_PASSWORD: ${SUBMISSION_SERVICE_DB_APP_PASSWORD:-submission-service-app-dev-secret}
@@ -441,6 +454,7 @@ services:
       - ./infra/postgres/certs/ca.crt:/certs/postgres-ca.crt:ro
     environment:
       <<: *eureka-resourceserver-env
+      JAVA_TOOL_OPTIONS: -Xmx320m
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/solution_service?sslmode=verify-full&sslrootcert=/certs/postgres-ca.crt
       SPRING_DATASOURCE_USERNAME: solution_service_app
       SPRING_DATASOURCE_PASSWORD: ${SOLUTION_SERVICE_DB_APP_PASSWORD:-solution-service-app-dev-secret}
@@ -469,6 +483,7 @@ services:
       - ./infra/postgres/certs/ca.crt:/certs/postgres-ca.crt:ro
     environment:
       <<: *eureka-resourceserver-env
+      JAVA_TOOL_OPTIONS: -Xmx256m
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/execution_result_service?sslmode=verify-full&sslrootcert=/certs/postgres-ca.crt
       SPRING_DATASOURCE_USERNAME: execution_result_service_app
       SPRING_DATASOURCE_PASSWORD: ${EXECUTION_RESULT_SERVICE_DB_APP_PASSWORD:-execution-result-service-app-dev-secret}
