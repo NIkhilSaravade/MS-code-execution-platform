@@ -1,5 +1,6 @@
 package com.MS_code_execution_platform.api_gateway.config;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
@@ -64,12 +65,17 @@ public class SecurityConfig {
                 .build();
     }
 
-    // The Vite dev server picks whatever port is free (5173, 5174, ...), so
-    // an origin pattern instead of a fixed list avoids re-editing this every
-    // time a port is already taken.
+    // Comma-separated origin patterns. Default covers the Vite dev server,
+    // which picks whatever port is free (5173, 5174, ...) - an origin
+    // pattern avoids re-editing this every time a port is already taken.
+    // Prod/UAT override this via CORS_ALLOWED_ORIGIN_PATTERNS to add their
+    // real frontend origins (see 09-api-gateway.yaml).
+    @Value("${cors.allowed-origin-patterns:http://localhost:*}")
+    private String allowedOriginPatterns;
+
     private CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOriginPatterns(List.of("http://localhost:*"));
+        configuration.setAllowedOriginPatterns(List.of(allowedOriginPatterns.split(",")));
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(List.of("*"));
         configuration.setAllowCredentials(true);
