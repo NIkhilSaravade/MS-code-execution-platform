@@ -16,6 +16,19 @@ spec:
       labels:
         app: worker-service-go
     spec:
+      # Kafka's broker advertises itself to clients as "kafka:9093" (matches
+      # docker-compose's KAFKA_ADVERTISED_LISTENERS, needed for kafka-ui/
+      # acls.sh's own SASL admin client on that same docker network) - the
+      # initial bootstrap via KAFKA_BROKERS (10.0.0.14, from this Deployment's
+      # ConfigMap) succeeds, but kafka-go then needs to resolve that
+      # advertised hostname itself to find the consumer group coordinator,
+      # and "kafka" isn't a real DNS name inside this cluster. Mapping it to
+      # the VM's IP here is the k8s-native fix, without touching the broker
+      # config docker-compose's other siblings still rely on.
+      hostAliases:
+        - ip: "10.0.0.14"
+          hostnames:
+            - "kafka"
       serviceAccountName: worker-service-go
       # ghcr.io packages default to private, so pulling this image needs a
       # pull secret even though the cluster node has no other credentials -
