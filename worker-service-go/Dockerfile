@@ -1,14 +1,16 @@
 # ── Build stage ──────────────────────────────────────────────────────────────
-# --platform=$BUILDPLATFORM pins this stage to the *build host's* native arch
-# (set automatically by buildx) so cross-compiling for a different target
-# arch - e.g. the arm64 deploy VM, built from an amd64 GitHub Actions runner -
-# doesn't need QEMU emulation for the Go toolchain itself: `go build` already
-# cross-compiles natively via GOOS/GOARCH. TARGETOS/TARGETARCH are populated
-# by buildx to match whatever --platform the overall image build was invoked
-# with; the previous hardcoded GOARCH=amd64 here silently produced an amd64
-# binary even when asked to build for linux/arm64, which fails to run at all
-# on an arm64 node.
-FROM --platform=$BUILDPLATFORM golang:1.22-alpine AS builder
+# Deliberately NOT pinned to --platform=$BUILDPLATFORM. That cross-compile
+# trick (build natively on the amd64 runner via GOOS/GOARCH=$TARGETARCH,
+# skipping QEMU for the Go toolchain) is the standard documented pattern, but
+# in this workflow TARGETARCH resolved to "amd64" inside this stage even
+# though the image was requested as linux/arm64 (confirmed by logging it -
+# see git history) - producing an image correctly labeled arm64 whose binary
+# was actually amd64, which fails outright with "exec format error" on the
+# real arm64 node. Building this stage under the same QEMU-emulated arm64
+# as every other Dockerfile in this repo (no cross-compile args at all -
+# `go build` just targets whatever it's actually running on) is slower but
+# matches the one pattern already proven to work reliably here.
+FROM golang:1.22-alpine AS builder
 
 # Install git (needed by go mod download for private modules if any).
 RUN apk add --no-cache git ca-certificates
@@ -22,19 +24,9 @@ RUN go mod download
 
 COPY . .
 
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
-
 # Build a statically linked binary. CGO_ENABLED=0 ensures no libc dependency
-# so the binary runs in a scratch or distroless image. The echo isn't just
-# noise - a prior build produced a real arm64-labeled image whose binary was
-# actually amd64 (GHA's type=gha cache reused a stale layer from before this
-# file's TARGETARCH fix, under the same cache scope, without erroring or
-# warning anywhere), so logging what this build actually resolved to makes
-# that class of bug visible in the Actions log instead of only surfacing as
-# "exec format error" at runtime on the node.
-RUN echo "Building worker for GOOS=$TARGETOS GOARCH=$TARGETARCH" && \
-    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
+# so the binary runs in a scratch or distroless image.
+RUN CGO_ENABLED=0 go build \
     -ldflags="-w -s -X main.version=${VERSION:-dev}" \
     -o /worker \
     ./cmd/worker
