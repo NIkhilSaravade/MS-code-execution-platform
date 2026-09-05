@@ -37,6 +37,14 @@ concurrency:
 jobs:
   changes:
     runs-on: ubuntu-latest
+    # dorny/paths-filter diffs against the PR base via the GitHub API on
+    # pull_request events (rather than a local git diff, as it uses for
+    # push), which needs pull-requests: read on the job's token - without
+    # it the API call 403s with "Resource not accessible by integration"
+    # and the job fails before it ever gets to the actual path filtering.
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       matrix: ${{ steps.build-matrix.outputs.matrix }}
     steps:
