@@ -1,0 +1,30 @@
+# Connection info for the infra that stays OUTSIDE Kubernetes (Postgres,
+# Kafka, MinIO, Redis, the OTel Collector) - all run via docker-compose on
+# the SAME VM as this k3s cluster (see the "Option A" design decision:
+# reuse the existing hardened docker-compose infra instead of re-running it
+# as Kubernetes StatefulSets). Pods reach it over the node's own network,
+# via the VM's private IP - NOT a Kubernetes Service, since nothing here
+# runs as a Pod.
+#
+# 10.0.0.14 is this VM's private IP (see the OCI instance's "Private IP" -
+# stable as long as the instance isn't recreated). If you ever rebuild the
+# VM and get a new private IP, this is the one place to update it.
+#
+# This ConfigMap is applied once and shared by BOTH the platform (prod) and
+# platform-uat namespaces - UAT and Prod currently share the same Postgres/
+# Kafka/MinIO/Redis instances, kept apart by using different database names,
+# Kafka client identities, and bucket prefixes instead of separate infra
+# (see each service's env for the _UAT-suffixed values in the uat overlay).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: infra-endpoints
+  namespace: platform
+data:
+  POSTGRES_HOST: "10.0.0.14"
+  POSTGRES_PORT: "5432"
+  KAFKA_BOOTSTRAP_SERVERS: "10.0.0.14:9093"
+  S3_ENDPOINT: "http://10.0.0.14:9000"
+  REDIS_HOST: "10.0.0.14"
+  REDIS_PORT: "6379"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://10.0.0.14:4318"

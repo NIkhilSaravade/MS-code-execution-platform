@@ -1,0 +1,106 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: solution-service
+  namespace: platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: solution-service
+  template:
+    metadata:
+      labels:
+        app: solution-service
+    spec:
+      containers:
+        - name: solution-service
+          image: ghcr.io/nikhilsaravade/ms-code-execution-platform/solution-service:latest
+          envFrom:
+            - configMapRef:
+                name: infra-endpoints
+          env:
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Xmx320m"
+            - name: EUREKA_CLIENT_SERVICEURL_DEFAULTZONE
+              value: "http://discovery-service:8761/eureka/"
+            - name: EUREKA_INSTANCE_PREFER_IP_ADDRESS
+              value: "true"
+            - name: SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI
+              value: "http://auth-service:8086/.well-known/jwks.json"
+            - name: SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI
+              value: "https://auth-service"
+            - name: SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_AUDIENCES
+              value: "ms-code-execution"
+            - name: SPRING_DATASOURCE_URL
+              value: "jdbc:postgresql://$(POSTGRES_HOST):$(POSTGRES_PORT)/solution_service?sslmode=verify-full&sslrootcert=/certs/postgres-ca.crt"
+            - name: SPRING_DATASOURCE_USERNAME
+              value: "solution_service_app"
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: solution-service-secrets
+                  key: DB_APP_PASSWORD
+            - name: SPRING_FLYWAY_URL
+              value: "jdbc:postgresql://$(POSTGRES_HOST):$(POSTGRES_PORT)/solution_service?sslmode=verify-full&sslrootcert=/certs/postgres-ca.crt"
+            - name: SPRING_FLYWAY_USER
+              value: "solution_service_owner"
+            - name: SPRING_FLYWAY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: solution-service-secrets
+                  key: DB_OWNER_PASSWORD
+            - name: S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: minio-credentials
+                  key: ACCESS_KEY
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: minio-credentials
+                  key: SECRET_KEY
+          volumeMounts:
+            - name: postgres-ca-cert
+              mountPath: /certs/postgres-ca.crt
+              subPath: postgres-ca.crt
+              readOnly: true
+          ports:
+            - name: http
+              containerPort: 8087
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "384Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+      volumes:
+        - name: postgres-ca-cert
+          configMap:
+            name: postgres-ca-cert
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: solution-service
+  namespace: platform
+spec:
+  selector:
+    app: solution-service
+  ports:
+    - name: http
+      port: 8087
+      targetPort: 8087

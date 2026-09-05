@@ -105,6 +105,12 @@ services:
     image: redis:7.4-alpine
     container_name: redis
     command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:-dev-only-secret-change-me}"]
+    # Published to the host (unlike before) so that api-gateway, now running
+    # as a Kubernetes pod on this same VM rather than a sibling docker-compose
+    # container, can reach Redis via the host's IP - see infra/k8s/README.md's
+    # "infra-endpoints" ConfigMap.
+    ports:
+      - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-dev-only-secret-change-me}", "ping"]
       interval: 5s
@@ -286,6 +292,13 @@ services:
     volumes:
       - ./infra/otel/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    # OTLP/HTTP receiver published to the host so Kubernetes-pod services
+    # (ai-analysis-service) can reach it - see infra/k8s/README.md's
+    # "infra-endpoints" ConfigMap. Only the port app services actually use
+    # (OTLP/HTTP) is published, not the full set otel-collector-config.yaml
+    # defines.
+    ports:
+      - "4318:4318"
     depends_on:
       - jaeger
     restart: on-failure:5

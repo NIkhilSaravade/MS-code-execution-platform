@@ -1,8 +1,23 @@
-# worker-service-go on Kubernetes (k3s)
+# Platform on Kubernetes (k3s)
 
-Manifests for the Docker-Compose → Kubernetes migration of worker-service-go's
-sandbox execution mechanism. See the design discussion in the project history
-for the full reasoning; this file only covers the operational steps.
+Manifests for the Docker-Compose → Kubernetes migration. `00`-`04` cover
+worker-service-go's sandbox execution mechanism specifically (see the design
+discussion in the project history for that reasoning); `05`-`14` cover the
+other 9 services (discovery, auth, user, api-gateway, problem, submission,
+solution, execution-result, ai-analysis). This file covers the operational
+steps for both.
+
+**Scope of this pass: PROD only** (the `platform` namespace). UAT
+(`platform-uat`) is a deliberate follow-up, not done here - see "Known
+simplifications" at the bottom.
+
+**Design decision: Kafka/Postgres/MinIO/Redis stay OUTSIDE Kubernetes.** They
+keep running via `docker-compose` on this same VM (reusing the existing
+hardened setup - TLS certs, Kafka ACLs, DB init scripts - rather than
+re-running them as Kubernetes StatefulSets). Only the 10 application services
+(9 Java/Python services here, plus worker-service-go) move into Kubernetes.
+They reach the docker-compose infra over the VM's own network - see the
+`infra-endpoints` ConfigMap (`05-configmap-infra-endpoints.yaml`).
 
 ## Apply order
 
@@ -152,7 +167,130 @@ same way you would for any other service's move to this cluster.
    in worker-service-go's config is the knob for turning this on later
    (`SANDBOX_RUNTIME_CLASS=gvisor`); it stays empty (= node default) for now.
 
+## Deploying the other 9 services (05-14)
+
+Before applying these, the docker-compose infra needs two port changes to be
+reachable from Kubernetes pods (both already made in `docker-compose.yml`,
+just restart the affected containers on the VM to pick them up):
+```bash
+docker compose up -d redis otel-collector
+```
+Redis and the OTel Collector didn't publish any port to the host before
+(only ever reached by other docker-compose containers on the internal
+network) - api-gateway and ai-analysis-service, now Kubernetes pods, need to
+reach them over the VM's own network like everything else in
+`infra-endpoints`.
+
+### 1. CA cert ConfigMaps
+
+Same pattern as the seccomp profile - generated/maintained artifacts, not
+duplicated into a manifest:
+```bash
+kubectl create configmap postgres-ca-cert -n platform \
+  --from-file=postgres-ca.crt=../postgres/certs/ca.crt
+kubectl create configmap kafka-ca-cert -n platform \
+  --from-file=ca.crt=../kafka/certs/ca.crt
+```
+
+### 2. Secrets
+
+Every value below is the SAME password already sitting in your `.env` file
+for local docker-compose - copy them over, don't generate new ones (unless
+you're rotating, which you should do at some point before this is a public
+site - see `.env.example`'s own "rotate before any real deployment" notes).
+
+```bash
+kubectl create secret generic auth-service-secrets -n platform \
+  --from-literal=DB_APP_PASSWORD='<AUTH_SERVICE_DB_APP_PASSWORD>' \
+  --from-literal=DB_OWNER_PASSWORD='<AUTH_SERVICE_DB_OWNER_PASSWORD>'
+
+kubectl create secret generic user-service-secrets -n platform \
+  --from-literal=DB_APP_PASSWORD='<USER_SERVICE_DB_APP_PASSWORD>' \
+  --from-literal=DB_OWNER_PASSWORD='<USER_SERVICE_DB_OWNER_PASSWORD>' \
+  --from-literal=ADMIN_EMAIL='<ADMIN_EMAIL>' \
+  --from-literal=ADMIN_PASSWORD='<ADMIN_PASSWORD>'
+
+kubectl create secret generic api-gateway-secrets -n platform \
+  --from-literal=REDIS_PASSWORD='<REDIS_PASSWORD>'
+
+kubectl create secret generic problem-service-secrets -n platform \
+  --from-literal=DB_APP_PASSWORD='<PROBLEM_SERVICE_DB_APP_PASSWORD>' \
+  --from-literal=DB_OWNER_PASSWORD='<PROBLEM_SERVICE_DB_OWNER_PASSWORD>'
+
+kubectl create secret generic submission-service-secrets -n platform \
+  --from-literal=DB_APP_PASSWORD='<SUBMISSION_SERVICE_DB_APP_PASSWORD>' \
+  --from-literal=DB_OWNER_PASSWORD='<SUBMISSION_SERVICE_DB_OWNER_PASSWORD>' \
+  --from-literal=KAFKA_PASSWORD='<KAFKA_SUBMISSION_SERVICE_PASSWORD>' \
+  --from-literal=CLIENT_SECRET='<SUBMISSION_SERVICE_CLIENT_SECRET>'
+
+kubectl create secret generic solution-service-secrets -n platform \
+  --from-literal=DB_APP_PASSWORD='<SOLUTION_SERVICE_DB_APP_PASSWORD>' \
+  --from-literal=DB_OWNER_PASSWORD='<SOLUTION_SERVICE_DB_OWNER_PASSWORD>'
+
+kubectl create secret generic execution-result-service-secrets -n platform \
+  --from-literal=DB_APP_PASSWORD='<EXECUTION_RESULT_SERVICE_DB_APP_PASSWORD>' \
+  --from-literal=DB_OWNER_PASSWORD='<EXECUTION_RESULT_SERVICE_DB_OWNER_PASSWORD>' \
+  --from-literal=KAFKA_PASSWORD='<KAFKA_EXECUTION_RESULT_SERVICE_PASSWORD>'
+
+# ai-analysis-service has no separate app DB role (see
+# infra/postgres/init-multiple-databases.sh's note) - DATABASE_URL embeds
+# the owner password AND the host directly (Kubernetes doesn't expand
+# ConfigMap values inside a Secret's own value), matching the .env format:
+kubectl create secret generic ai-analysis-service-secrets -n platform \
+  --from-literal=DATABASE_URL='postgresql://ai_analysis_owner:<AI_ANALYSIS_DB_OWNER_PASSWORD>@10.0.0.14:5432/ai_analysis_db?sslmode=verify-full&sslrootcert=/certs/postgres-ca.crt' \
+  --from-literal=GROQ_API_KEY='<GROQ_API_KEY>' \
+  --from-literal=KAFKA_PASSWORD='<KAFKA_AI_ANALYSIS_SERVICE_PASSWORD>' \
+  --from-literal=CLIENT_SECRET='<AI_ANALYSIS_SERVICE_CLIENT_SECRET>'
+
+# Shared across problem/submission/solution-service - same MinIO root
+# credentials already used in docker-compose (not per-service roles yet).
+kubectl create secret generic minio-credentials -n platform \
+  --from-literal=ACCESS_KEY='<MINIO_ROOT_USER>' \
+  --from-literal=SECRET_KEY='<MINIO_ROOT_PASSWORD>'
+```
+
+### 3. Apply
+
+```bash
+kubectl apply -f 05-configmap-infra-endpoints.yaml
+kubectl apply -f 06-discovery-service.yaml
+kubectl apply -f 07-auth-service.yaml
+kubectl apply -f 08-user-service.yaml
+kubectl apply -f 09-api-gateway.yaml
+kubectl apply -f 10-problem-service.yaml
+kubectl apply -f 11-submission-service.yaml
+kubectl apply -f 12-solution-service.yaml
+kubectl apply -f 13-execution-result-service.yaml
+kubectl apply -f 14-ai-analysis-service.yaml
+```
+Apply `06` first and wait for it to be Ready (`kubectl rollout status
+deployment/discovery-service -n platform`) - every other service registers
+with it on startup and logs noisy (though not fatal) connection errors until
+it's up.
+
+### Exposing api-gateway
+
+Not done here - see the Cloudflare Tunnel setup (separate step). Once that's
+configured, it routes `api.nikhilsaravade.com` to `api-gateway`'s in-cluster
+Service (`http://api-gateway.platform.svc.cluster.local:8080`).
+
 ## Known simplifications in this first pass (flagged, not hidden)
+
+- **UAT (`platform-uat`) not deployed yet.** Everything above targets
+  `platform` (Prod) only. UAT needs the same 10 manifests duplicated with
+  `namespace: platform-uat`, database names suffixed `_uat` (or a separate
+  schema), and separate Kafka client identities/consumer groups - sharing
+  the SAME docker-compose Postgres/Kafka/MinIO/Redis instances as Prod
+  (see the design decision above) but logically separated. Not yet worth a
+  full Kustomize base/overlay refactor at 10 services; revisit if hand-
+  duplicating these files becomes painful.
+- **Image tags track `:latest`.** Fine for a single-developer project
+  learning the deploy loop; pin to `:sha-<shortsha>` or `:vX.Y.Z` tags once
+  ArgoCD/promotion-by-tag is set up (see the release/UAT/Prod promotion
+  design discussed separately).
+- **No resource-tier tuning yet.** CPU/memory requests and limits here are
+  reasonable starting points sized off each service's existing
+  `JAVA_TOOL_OPTIONS -Xmx` value, not measured under real load.
 
 - **One resource tier per language, not per-problem.** Pooled sandbox pods
   are all sized to `SANDBOX_MEMORY_MB`/`SANDBOX_CPU_QUOTA` (the platform
