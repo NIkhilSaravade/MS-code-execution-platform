@@ -14,6 +14,15 @@ RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 COPY requirnments.txt .
+# torch's default PyPI wheel for linux/arm64 pulls in the full CUDA
+# toolkit (cublas, cudnn, cusolver, nccl, triton, ...) - several GB of
+# packages meant for GPU inference. This service runs CPU-only on an
+# Oracle Ampere VM with no GPU, and that download+layer-export was
+# blowing past the GitHub Actions runner's disk. Installing the CPU-only
+# build from PyTorch's own index first means later requirements
+# (sentence-transformers depends on "torch") are already satisfied and
+# never pull the GPU variant.
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 RUN pip install --no-cache-dir -r requirnments.txt
 
 # -------- Stage 2: Runtime --------
