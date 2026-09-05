@@ -22,47 +22,27 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     ./cmd/worker
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
-# We need the Docker CLI installed so the worker can spawn sandbox containers.
-# Using docker:cli as the base image is the right call here — it provides a
-# minimal Alpine environment with the Docker CLI and no daemon overhead.
-#
-# The worker talks to the Docker daemon on the host via /var/run/docker.sock,
-# which is mounted at runtime (not baked into the image).
-#
-# Needs a CLI new enough to understand `--mount ...,volume-subpath=...`
-# (used in sandbox.go to mount a sub-directory of the shared worker-scratch
-# volume into each sandbox container) - docker:25-cli's bundled CLI predates
-# that flag's client-side parser support and rejects it before ever
-# contacting the daemon, regardless of how new the daemon itself is.
-FROM docker:27-cli AS runtime
-
-# Install CA certificates (needed for HTTPS calls to S3 and upstream services)
-# and su-exec (lets the entrypoint drop from root to the worker user after
-# fixing up the scratch volume's ownership - see docker/entrypoint.sh).
-RUN apk add --no-cache ca-certificates tzdata su-exec
+# No Docker CLI, no docker.sock, no su-exec/root-then-drop-privileges dance -
+# this worker no longer shells out to a Docker daemon at all. It talks to the
+# Kubernetes API (via its own mounted ServiceAccount token, in-cluster) to
+# create/exec/delete pooled sandbox Pods instead - see internal/sandbox.
+# distroless gives us CA certs (needed for TLS to S3/Kafka/the Kubernetes API
+# server) and a non-root default user with no shell, no package manager, and
+# no docker.sock permission games left to configure.
+FROM gcr.io/distroless/static-debian12:nonroot AS runtime
 
 # Copy the compiled binary from the build stage.
 COPY --from=builder /worker /usr/local/bin/worker
 
-# Copy the restrictive seccomp profile for sandbox containers.
-# This profile allows only the syscalls required by Python, Java, and C++ runtimes.
-COPY ./docker/seccomp/execution.json /etc/docker/seccomp/execution.json
-
-COPY ./docker/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-
-# The worker process itself runs as a non-root user (entrypoint.sh drops
-# privileges via su-exec after chown'ing the scratch volume as root - a
-# fresh named volume is always created owned by root:root). The sandbox
-# containers the worker spawns run as nobody:65534, same as before.
-RUN addgroup -S worker && adduser -S worker -G worker
-
-# Only inbound surface: the Kubernetes/local health endpoint (see
+# Only inbound surface: the Kubernetes health endpoint (see
 # cmd/worker/main.go's /healthz, /readyz) - the worker itself is still a
-# pure Kafka consumer/producer with no other inbound connections.
+# pure Kafka consumer/producer plus Kubernetes API client, with no other
+# inbound connections.
 EXPOSE 8091
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD wget -q -O /dev/null http://localhost:8091/healthz || exit 1
+# distroless has no shell, so HEALTHCHECK's CMD (which needs one) doesn't
+# apply here - Kubernetes' own livenessProbe/readinessProbe (see
+# infra/k8s/worker-deployment.yaml) hit /healthz and /readyz directly instead.
 
-ENTRYPOINT ["/entrypoint.sh"]
+USER nonroot:nonroot
+ENTRYPOINT ["/usr/local/bin/worker"]

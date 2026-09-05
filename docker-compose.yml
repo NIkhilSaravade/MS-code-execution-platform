@@ -517,58 +517,15 @@ services:
         condition: service_started
     restart: on-failure:5
 
-  worker-service-go:
-    build: ./worker-service-go
-    container_name: worker-service-go
-    ports:
-      # Kubernetes liveness/readiness probe target - see cmd/worker/main.go's
-      # /healthz, /readyz. This worker has no other HTTP surface at all.
-      # 8091, not 8090 - that's already kafka-ui's host port.
-      - "8091:8091"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ./infra/kafka/certs/ca.crt:/certs/ca.crt:ro
-      # Shared with the sibling execution containers this service launches
-      # via docker.sock - see the top-level worker-scratch volume comment.
-      - worker-scratch:/scratch
-    environment:
-      KAFKA_BROKERS: kafka:9093
-      KAFKA_TLS_CA_CERT_PATH: /certs/ca.crt
-      KAFKA_SASL_USERNAME: worker
-      KAFKA_SASL_PASSWORD: ${KAFKA_WORKER_PASSWORD:-worker-dev-secret}
-      # No SUBMISSION_SERVICE_URL/PROBLEM_SERVICE_URL/AUTH_SERVICE_URL/
-      # WORKER_CLIENT_ID/SECRET here anymore - this worker no longer calls
-      # either service directly. submission-service embeds test cases/limits
-      # into the Kafka event it consumes, and it reports results only to
-      # execution-result-topic (execution-result-service is the single
-      # ingestion point) - see the worker-overhead-at-scale redesign.
-      KAFKA_TOPIC_EXECUTION_RESULT: execution-result-topic
-      S3_ENDPOINT: http://minio:9000
-      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
-      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
-      SANDBOX_RUNTIME: runc  # gVisor (runsc) isn't installed on the host by default; see README
-      SCRATCH_CONTAINER_DIR: /scratch
-      SCRATCH_VOLUME_NAME: worker-scratch
-      # Registers with discovery-service (see internal/eureka) for dashboard
-      # visibility only now - nothing left to resolve through it.
-      EUREKA_SERVER_URL: http://discovery-service:8761/eureka
-      EUREKA_APP_NAME: WORKER-SERVICE-GO
-      # Was left at its localhost:4318 default before, which is wrong
-      # inside a container (that's this container's own loopback, not
-      # otel-collector's) - traces were exported into the void.
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
-    depends_on:
-      kafka-init:
-        condition: service_completed_successfully
-      minio:
-        condition: service_healthy
-      discovery-service:
-        condition: service_healthy
-      submission-service:
-        condition: service_started
-      otel-collector:
-        condition: service_started
-    restart: on-failure:5
+  # worker-service-go is INTENTIONALLY NOT DEFINED HERE ANYMORE. It no longer
+  # shells out to a Docker daemon (docker.sock, sibling containers,
+  # worker-scratch) to run untrusted code - it creates/execs/deletes Pods
+  # through the Kubernetes API instead (see internal/sandbox and the
+  # k3s-migration design note). That means it needs a real cluster to run
+  # against, which docker-compose can't provide: run it against a k3s cluster
+  # using infra/k8s/ (README there covers the RBAC, NetworkPolicy, seccomp
+  # provisioning, and CNI/kubelet prerequisites it depends on) instead of
+  # `docker-compose up`.
 
   ai-analysis-service:
     build: ./ai-analysis-service
@@ -626,12 +583,7 @@ volumes:
   # host level, not in this file.
   postgres-data:
   minio-data:
-  # Shared between worker-service-go and the sibling execution containers it
-  # launches via the mounted docker.sock (Docker-outside-of-Docker) - both
-  # sides reference this volume BY NAME, so worker-service-go's own bind-mount
-  # path doesn't need to match any host filesystem path. `name:` pins the
-  # actual Docker volume name so it doesn't get project-prefixed, since the
-  # sibling containers' --mount flag (built in sandbox.go) needs to know it
-  # exactly, and it doubles as SCRATCH_VOLUME_NAME's default.
-  worker-scratch:
-    name: worker-scratch
+  # worker-scratch (the old Docker-outside-of-Docker shared scratch volume)
+  # is gone along with the worker-service-go compose entry above - replaced
+  # by a per-pod emptyDir in the Kubernetes design, torn down automatically
+  # with the pod on submission completion.

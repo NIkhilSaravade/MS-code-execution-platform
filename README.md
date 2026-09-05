@@ -63,7 +63,7 @@ API Gateway (:8080)  ←── OAuth2 Resource Server (RS256 / JWKS)
 - **Role-based Access + Admin Provisioning** — idempotent admin seeding at startup, admin-only role promotion endpoint
 - **Problem Management** — Create and browse coding problems with test cases stored in MinIO/S3
 - **Generated Judging Harnesses** — Admins author a language-agnostic function signature once; `problem-service` auto-generates real, runnable boilerplate (stdin→typed args→call→JSON stdout) for every supported language, so users submit a plain `class Solution { ... }`/function instead of a full script
-- **7-Language Code Execution** — Python, Java, C++, C, JavaScript, TypeScript, and Go run in isolated, resource-capped, network-isolated Docker sandboxes (seccomp profile, non-root, cap-drop, `--pids-limit`)
+- **7-Language Code Execution** — Python, Java, C++, C, JavaScript, TypeScript, and Go run in isolated, resource-capped, network-isolated sandboxes: pooled Kubernetes Pods (seccomp profile, non-root, cap-drop, a default-deny `NetworkPolicy`), not Docker containers — see [Code Execution Flow](#code-execution-flow) below
 - **Run vs Submit** — "Run" judges only a problem's visible/sample test cases; "Submit" judges everything, hidden cases included — every test case is always evaluated and reported (no short-circuit on first failure)
 - **Async Verdict Pipeline** — Kafka-driven submission → execution → result flow, with TLS + SASL + ACLs on Kafka and a dead-letter queue on the Go worker; `execution-result-service` is the single source of truth for a judged result (output, per-test-case breakdown, runtime, memory)
 - **Deterministic Complexity Estimate** — `worker-service-go` statically analyzes the user's own submitted code (loop nesting, recursion, sort calls, sized allocations) to estimate time/space Big-O, independent of and always available regardless of the LLM
@@ -82,14 +82,16 @@ API Gateway (:8080)  ←── OAuth2 Resource Server (RS256 / JWKS)
 | `user-service` | Java | 8081 (+ gRPC 9090) | User CRUD, roles, admin bootstrap |
 | `problem-service` | Java | 8082 | Problem CRUD, test case storage (MinIO), per-language harness generation |
 | `submission-service` | Java | 8083 | Accepts submissions, applies the generated harness, fetches + embeds test cases/limits, publishes to Kafka; tracks only lifecycle/status (result detail lives in `execution-result-service`) |
-| `worker-service-go` | Go | 8091 (health only) | Docker/sandbox code executor, Kafka consumer + DLQ producer; computes its own static time/space complexity estimate and reports timing/memory |
+| `worker-service-go` | Go | 8091 (health only) | Kubernetes-sandboxed code executor (pooled Pods via the Kubernetes API, not Docker), Kafka consumer + DLQ producer; computes its own static time/space complexity estimate and reports timing/memory. **Not part of `docker-compose.yml`** — requires a Kubernetes cluster, see `infra/k8s/README.md` |
 | `execution-result-service` | Java | 8085 | Single source of truth for judged results (output, per-test-case breakdown, timing, memory, complexity estimate); notifies `submission-service` (status) and `ai-analysis-service` (auto-trigger) via Kafka |
 | `solution-service` | Java | 8087 | Per-problem written solutions + step-through visualizer HTML, backed by Postgres + MinIO/S3 |
 | `ai-analysis-service` | Python | 8000 | FastAPI — LLM code analysis with RAG; now also a Kafka consumer, auto-triggered per judged submission |
 | `api-gateway` | Java | 8080 | JWT resource server + reverse proxy |
 | `frontend` | React/Vite/TypeScript | 5173 (dev) | Landing page, practice list, Monaco-based solve page. Run separately, not in `docker-compose.yml`. |
 
-A legacy Java worker (`worker-service`) previously ran side by side with `worker-service-go` for a performance comparison. It had no sandbox resource limits or network isolation on submitted code and was removed rather than hardened, since `worker-service-go`'s sandbox (seccomp profile, `--network none`, `--cap-drop ALL`, non-root, `--pids-limit`) was already the production path.
+A legacy Java worker (`worker-service`) previously ran side by side with `worker-service-go` for a performance comparison. It had no sandbox resource limits or network isolation on submitted code and was removed rather than hardened, since `worker-service-go`'s sandbox was already the production path.
+
+`worker-service-go`'s sandbox mechanism was later migrated from Docker (shelling out to `docker run` for sibling containers) to Kubernetes: it pools pre-warmed, hardened Pods per language (seccomp profile, non-root, cap-drop `ALL`, read-only rootfs) via the Kubernetes API, execs into one per submission (compile once, then once per test case), and relies on a default-deny `NetworkPolicy` for network isolation instead of `--network none` — which requires a `NetworkPolicy`-enforcing CNI (k3s's default, Flannel, does **not** enforce these; see `infra/k8s/README.md`). This means `worker-service-go` is no longer in `docker-compose.yml` at all — it needs a real Kubernetes cluster to run against.
 
 ---
 
@@ -142,6 +144,7 @@ A legacy Java worker (`worker-service`) previously ran side by side with `worker
 - Docker Desktop running
 - Python 3.10+
 - A Groq API key (`ai-analysis-service` will not start without one)
+- **A Kubernetes cluster (k3s recommended) with Calico** — required to run `worker-service-go`/code execution at all; it's no longer part of `docker-compose.yml`. See `infra/k8s/README.md` for cluster setup (Flannel, k3s's default CNI, does **not** enforce the `NetworkPolicy` this depends on) and manifest apply order. Everything else in this README (steps 1, 3, 4 below) works fine without it — you just won't get judged submissions back.
 
 ### 1. Configure environment
 
@@ -153,13 +156,13 @@ Fill in the required secrets: Postgres per-service passwords, `MINIO_ROOT_USER`/
 
 ### 2. Build the TypeScript sandbox image (one-time)
 
-TypeScript submissions run in a locally-built image (no official Docker image ships both Node and `tsc`, and the sandbox can't `npm install` at request time since it runs with `--network none`):
+TypeScript submissions run in a locally-built image (no official Docker image ships both Node and `tsc`, and the sandbox can't `npm install` at request time since it runs with no network access):
 
 ```bash
 docker build -t platform/node-typescript:20 infra/sandbox-images/node-typescript
 ```
 
-Every other language's sandbox image (`python`, `eclipse-temurin`, `gcc`, `node`, `golang`) is pulled automatically from Docker Hub on first use — no other manual image step needed.
+Every other language's sandbox image (`python`, `eclipse-temurin`, `gcc`, `node`, `golang`) is pulled automatically on first use — no other manual image step needed. **If you're running `worker-service-go` against Kubernetes** (see step 3.5 below), these images need to land in the *cluster's* container runtime, not just Docker Desktop's — `platform/node-typescript:20` has no registry to pull from, so it must be imported explicitly (`docker save ... | ctr -n k8s.io images import -` for k3s); see `infra/k8s/README.md` for the full pre-pull list and why skipping it causes a misleading pod-startup timeout on a submission's first run.
 
 ### 3. Start the full backend stack
 
@@ -167,9 +170,13 @@ Every other language's sandbox image (`python`, `eclipse-temurin`, `gcc`, `node`
 docker-compose up -d
 ```
 
-This brings up: Postgres (TLS, per-service roles), MinIO, Redis, Zookeeper/Kafka (SASL_SSL + ACLs), Kafka UI, an OTel Collector + Jaeger, `discovery-service`, `auth-service`, `user-service`, `problem-service`, `submission-service`, `worker-service-go`, `execution-result-service`, `solution-service`, `ai-analysis-service`, and `api-gateway`.
+This brings up: Postgres (TLS, per-service roles), MinIO, Redis, Zookeeper/Kafka (SASL_SSL + ACLs), Kafka UI, an OTel Collector + Jaeger, `discovery-service`, `auth-service`, `user-service`, `problem-service`, `submission-service`, `execution-result-service`, `solution-service`, `ai-analysis-service`, and `api-gateway`.
 
 Databases, roles, Kafka topics/ACLs, and MinIO buckets are all provisioned automatically by one-shot init containers (`infra/postgres/init-multiple-databases.sh`, `kafka-init`, `minio-init`) — no manual `CREATE DATABASE` step required.
+
+### 3.5. Start `worker-service-go` on Kubernetes
+
+`worker-service-go` is **not** started by `docker-compose up -d` — it runs against a Kubernetes cluster instead (see [Code Execution Flow](#code-execution-flow) for why). Point it at a k3s (or any) cluster with Calico installed by applying the manifests in `infra/k8s/` in the order that directory's README lists (namespace → Calico → NetworkPolicy → RBAC → seccomp profile → Deployment). Without this step, submissions will queue in Kafka but never get judged.
 
 ### 4. Start the frontend
 
@@ -187,8 +194,9 @@ Open `http://localhost:5173`. It talks to the backend through the gateway at `ht
 # Java service
 cd <service-dir> && ./mvnw spring-boot:run
 
-# Go worker
-cd worker-service-go && go run ./cmd/worker
+# Go worker - needs K8S_IN_CLUSTER=false + KUBECONFIG_PATH pointed at a real
+# cluster (see infra/k8s/README.md); it has nothing to talk to otherwise
+cd worker-service-go && K8S_IN_CLUSTER=false KUBECONFIG_PATH=/path/to/kubeconfig go run ./cmd/worker
 
 # Python AI service
 cd ai-analysis-service
@@ -264,8 +272,8 @@ Routed through the gateway at `/ai/**`.
 
 1. Client POSTs to `/submissions` with `{ problemId, userId, code, language, includeHidden }`.
 2. `submission-service` saves the submission (`status: PENDING`), fetches the problem's generated harness for that language (if any) and glues it to the user's code, then also fetches the problem's test cases + judging limits (`InternalProblemClient`, one extra call to `problem-service`'s internal API) and embeds all of it, plus the user's *original* (pre-harness) code, into the Kafka event. Publishes to `submissions.created.v1`.
-3. `worker-service-go` consumes the message and runs the harness-glued code in an isolated sandbox, one test case at a time (filtered to visible-only if `includeHidden` was `false`). **It never calls `problem-service` itself** — everything it needs was already in the event.
-4. Each test case's output is compared against its expected output; every case is always run and reported (no short-circuit on first failure), producing per-case `PASSED`/`FAILED`/`TLE`/`MLE`/`RE`/`CE` results and an overall verdict. It also measures wall-time (and best-effort peak memory via `docker stats`) per test case, and runs a static complexity analysis on the user's original code (see below). Infra-level failures are also published to a dead-letter queue.
+3. `worker-service-go` consumes the message and checks out a pooled, hardened Kubernetes Pod for the submission's language (compile once if the language needs it, then exec into the same pod once per test case — filtered to visible-only if `includeHidden` was `false`), tearing the pod down afterward. **It never calls `problem-service` itself** — everything it needs was already in the event. (Migrated off Docker-outside-of-Docker `docker run` sibling containers to Kubernetes Pods + the `pods/exec` subresource — see `infra/k8s/README.md`.)
+4. Each test case's output is compared against its expected output; every case is always run and reported (no short-circuit on first failure), producing per-case `PASSED`/`FAILED`/`TLE`/`MLE`/`RE`/`CE` results and an overall verdict. It also measures wall-time and peak memory (read directly from the sandbox pod's own cgroup v2 `memory.current`, sampled over the exec stream — no `docker stats` involved anymore) per test case, and runs a static complexity analysis on the user's original code (see below). Infra-level failures are also published to a dead-letter queue.
 5. It publishes the result to `execution-result-topic` — the single ingestion point.
 6. `execution-result-service` consumes and persists the full result (output, per-test-case breakdown, timing/memory, complexity estimate). It then publishes two lightweight Kafka events: `submission-update-topic` (consumed by `submission-service`, which flips its own `status` column) and `analysis.trigger.v1` (consumed by `ai-analysis-service`, which runs its LLM analysis automatically).
 7. Client polls `GET /submissions/{id}` for status; once terminal, fetches `GET /api/results/{submissionId}` for the full detail, and separately/non-blockingly polls `GET /ai/analysis/{submissionId}` for the LLM verdict.
@@ -419,5 +427,7 @@ Browse buckets at [http://localhost:9001](http://localhost:9001).
 - Kafka admin credentials are hardcoded in `infra/kafka/kafka_server_jaas.conf` / `admin-client.properties`, not yet env-driven (planned: Vault or similar).
 - `ai-analysis-service`'s Groq model names (`LLM_MODEL`/`LLM_FALLBACK_MODEL` env vars, default `groq/openai/gpt-oss-20b`/`groq/openai/gpt-oss-120b`) are the account's actually-available models as of this writing, not a stable guarantee — Groq's catalog shifts, and a decommissioned/inaccessible model fails this pipeline completely and silently (retries exhaust, land in a DLQ, `GET /ai/analysis/{id}` just hangs at `PENDING` forever with no visible error). Worth an explicit health check or alert on this pipeline if it goes into any real use.
 - The frontend is not containerized/added to `docker-compose.yml` — run it separately with `npm run dev`.
-- `worker-service-go`'s peak-memory sampling (`docker stats`, streamed for the sandbox container's lifetime) is best-effort and unrelated to the (separate, always-on) static complexity estimate. **This is a hard limit, not a tuning problem**: `dockerd`'s own stats collector has roughly a 1-second minimum latency before its first sample is available, confirmed by testing a container with a 300ms lifetime (its stats stayed empty, `-- / --`, the whole time, regardless of polling strategy) — most sandboxed executions finish well under that, so `maxMemoryKb` reports `0` for anything reasonably fast. A real fix would mean reading the sandbox container's cgroup memory files directly off the host filesystem instead of going through `dockerd`'s stats loop at all — deliberately not done, since the exact cgroup path is host-dependent (v1 vs v2, cgroupfs vs systemd driver) and would need real per-environment verification.
+- `worker-service-go`'s peak-memory sampling now reads the sandbox pod's own `/sys/fs/cgroup/memory.current` directly (via a streamed exec session, one poll loop per test case), replacing the old Docker design's `docker stats`-based sampling — that approach was a hard limit, not a tuning problem: `dockerd`'s stats collector had roughly a 1-second minimum latency before its first sample, so most sandboxed executions (which finish well under that) reported `maxMemoryKb: 0`. Reading cgroup v2 directly has no such floor — confirmed on a real cluster reporting a nonzero peak for a 39ms execution. The pod's container filesystem exposes its own cgroup under the unified v2 hierarchy, so there's no host-path-dependent (v1 vs v2, cgroupfs vs systemd driver) guessing left to do, unlike the old note here.
+- Sandbox isolation is now scoped **per submission**, not per test case: all of one submission's test cases exec sequentially into the same pooled pod (compile once, run N times) rather than each getting a fresh pod, since a Kubernetes Pod launch (1-3s+) is far more expensive than the old `docker run` was per test case. A resource leak in test case 3 can affect test case 4's measurements within the *same* submission; it cannot affect another submission or another user's pod. See `infra/k8s/README.md`.
+- gVisor (`runsc`) is not configured on the Kubernetes sandbox — it ships on plain `runc` for now, matching what `docker-compose.yml` already ran in production before the Docker→Kubernetes migration. Turning it on needs a `RuntimeClass` plus verifying gVisor's platform mode (`ptrace` vs the faster `kvm`, which needs nested virtualization the target node may not expose) actually works acceptably on the real deployment target first.
 - The static complexity estimate (`internal/complexity`) is a heuristic over the user's source text (loop nesting, recursion, common library calls), not a formal analysis — it can be fooled by unusual code structure, and branching-recursion detection assumes no memoization/DP (always reports `O(2^n)` for 2+ self-calls, even if the user added a memo table).

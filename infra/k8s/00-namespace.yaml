@@ -1,0 +1,22 @@
+# Two namespaces, deliberately separate:
+#   - sandbox-execution: untrusted-code Pods only, wrapped in the deny-all
+#     NetworkPolicy below.
+#   - platform: worker-service-go's OWN Deployment. It must NOT live in
+#     sandbox-execution - that namespace's deny-all NetworkPolicy selects
+#     every pod in it (podSelector: {}), and the worker itself needs real
+#     egress to Kafka, S3/MinIO, and the Kubernetes API server. Putting the
+#     worker in the same namespace as the pods it's sandboxing would silently
+#     cut off its own network the moment the NetworkPolicy applied.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sandbox-execution
+  labels:
+    app.kubernetes.io/part-of: code-execution-platform
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: platform
+  labels:
+    app.kubernetes.io/part-of: code-execution-platform

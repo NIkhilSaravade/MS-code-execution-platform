@@ -213,6 +213,48 @@ func (e *Executor) executeAllTestCases(
 		SandboxRuntime:   e.cfg.SandboxRuntime,
 	}
 
+	// One Pod checked out for the whole submission - compiled languages
+	// compile ONCE here, then every test case execs into the same running
+	// pod, instead of the old per-test-case container (see the k3s-migration
+	// design note on why isolation is scoped per-submission, not per-test-case,
+	// and why compiling once per test case was no longer viable once a
+	// Kubernetes Pod launch replaced a near-instant `docker run`).
+	session, err := e.sandbox.NewSession(ctx, &sandbox.SessionRequest{
+		Language:      job.Language,
+		SourceCode:    sourceCode,
+		WallTimeout:   wallTimeout,
+		MemoryLimitMB: memoryLimitMB,
+		CPUQuota:      e.cfg.SandboxCPUQuota,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create sandbox session: %w", err)
+	}
+	defer session.Close()
+
+	if session.CompileError {
+		// Compilation is a single, one-time step now (not per test case) -
+		// every test case gets the same CE verdict without ever running.
+		for _, tc := range testCases {
+			tcResult := domain.TestCaseResult{
+				TestCaseID:     tc.ID,
+				Ordinal:        tc.Ordinal,
+				Passed:         false,
+				Verdict:        domain.VerdictCE,
+				Hidden:         !tc.IsSample,
+				InputSizeBytes: len(tc.Input),
+			}
+			if tc.IsSample {
+				tcResult.Input = string(tc.Input)
+				tcResult.Expected = string(tc.Expected)
+			}
+			result.TestCaseResults = append(result.TestCaseResults, tcResult)
+		}
+		result.Verdict = domain.VerdictCE
+		result.LastStdout = session.CompileOutput
+		result.CompletedAt = time.Now().UTC()
+		return result, nil
+	}
+
 	var maxWall, maxCPU, maxMem int64
 	// firstFailureVerdict becomes the submission's overall verdict once set -
 	// every test case still runs regardless (see the comment at the bottom
@@ -227,21 +269,12 @@ func (e *Executor) executeAllTestCases(
 			attribute.Int("ordinal", tc.Ordinal),
 		)
 
-		runReq := &sandbox.RunRequest{
-			Language:      job.Language,
-			SourceCode:    sourceCode,
-			Stdin:         tc.Input,
-			WallTimeout:   wallTimeout,
-			MemoryLimitMB: memoryLimitMB,
-			CPUQuota:      e.cfg.SandboxCPUQuota,
-		}
-
-		runResult, err := e.sandbox.Run(tcCtx, runReq)
+		runResult, err := session.RunTestCase(tcCtx, tc.Input, wallTimeout)
 		if err != nil {
 			tcSpan.RecordError(err)
 			tcSpan.SetStatus(codes.Error, err.Error())
 			tcSpan.End()
-			return nil, fmt.Errorf("sandbox.Run test case %s: %w", tc.ID, err)
+			return nil, fmt.Errorf("sandbox.RunTestCase test case %s: %w", tc.ID, err)
 		}
 
 		outputMatches := sandbox.OutputMatches(runResult.Stdout, tc.Expected)
@@ -268,15 +301,7 @@ func (e *Executor) executeAllTestCases(
 			tcResult.Actual = string(runResult.Stdout)
 		}
 		result.TestCaseResults = append(result.TestCaseResults, tcResult)
-		if runResult.CompileError {
-			// On CE, Stdout is always empty (the program never ran) - the
-			// actual error is the compiler's stderr, previously discarded
-			// entirely, leaving the user with a bare "CE" verdict and no way
-			// to know what was actually wrong with their code.
-			result.LastStdout = runResult.CompileOutput
-		} else {
-			result.LastStdout = runResult.Stdout
-		}
+		result.LastStdout = runResult.Stdout
 
 		if tcResult.Passed {
 			result.TestCasesPassed++

@@ -1,0 +1,20 @@
+# Equivalent of the old Docker design's `--network none`. A Pod always gets
+# pod networking - there's no per-Pod "no network" field - so isolation has
+# to come from a NetworkPolicy instead.
+#
+# ⚠️ REQUIRES a NetworkPolicy-enforcing CNI. k3s's DEFAULT CNI (Flannel) does
+# NOT enforce NetworkPolicy objects at all - this manifest would silently do
+# nothing on a stock k3s install. Swap Flannel for Calico at cluster bootstrap:
+#   k3s server --flannel-backend=none --disable-network-policy=false
+# then install Calico's own manifests. See infra/k8s/README.md.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-default-deny
+  namespace: sandbox-execution
+spec:
+  podSelector: {} # every pod in this namespace
+  policyTypes:
+    - Ingress
+    - Egress
+  # No ingress/egress rules at all = deny everything, both directions.

@@ -1,0 +1,40 @@
+# RBAC for worker-service-go's own ServiceAccount. The ServiceAccount lives in
+# the `platform` namespace (alongside the worker's own Deployment - see the
+# namespace-separation note in 00-namespace.yaml), but the Role/RoleBinding
+# grant it rights ONLY over Pods in `sandbox-execution` - nothing in its own
+# namespace, nothing cluster-wide. This replaces the old docker.sock
+# bind-mount (a full container-escape risk): a compromised worker process can
+# still create/delete/exec-into sandbox pods, but cannot reach the node's
+# container runtime, other namespaces, or any other Kubernetes resource.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: worker-service-go
+  namespace: platform
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: sandbox-pod-manager
+  namespace: sandbox-execution
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: worker-service-go-sandbox-pod-manager
+  namespace: sandbox-execution
+subjects:
+  - kind: ServiceAccount
+    name: worker-service-go
+    namespace: platform
+roleRef:
+  kind: Role
+  name: sandbox-pod-manager
+  apiGroup: rbac.authorization.k8s.io

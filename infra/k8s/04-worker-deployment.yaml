@@ -1,0 +1,54 @@
+# worker-service-go's own Deployment. Runs in `platform` (NOT
+# sandbox-execution - see 00-namespace.yaml), uses the ServiceAccount from
+# 02-worker-rbac.yaml, and needs no /var/run/docker.sock mount at all anymore.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker-service-go
+  namespace: platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker-service-go
+  template:
+    metadata:
+      labels:
+        app: worker-service-go
+    spec:
+      serviceAccountName: worker-service-go
+      containers:
+        - name: worker-service-go
+          image: platform/worker-service-go:latest # replace with your registry/tag
+          envFrom:
+            - configMapRef:
+                name: worker-service-go-config
+            - secretRef:
+                name: worker-service-go-secrets
+          env:
+            - name: K8S_IN_CLUSTER
+              value: "true"
+            - name: K8S_SANDBOX_NAMESPACE
+              value: "sandbox-execution"
+          ports:
+            - name: health
+              containerPort: 8091
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "512Mi"
