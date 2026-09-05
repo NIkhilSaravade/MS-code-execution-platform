@@ -204,6 +204,14 @@ kubectl create secret generic auth-service-secrets -n platform \
   --from-literal=DB_APP_PASSWORD='<AUTH_SERVICE_DB_APP_PASSWORD>' \
   --from-literal=DB_OWNER_PASSWORD='<AUTH_SERVICE_DB_OWNER_PASSWORD>'
 
+# auth-service's JWT signing key never lives in git or the Docker image -
+# it's loaded from this Secret at runtime (see JwtKeyConfig.java). Point
+# --from-file at wherever your actual jwt-private.pem is; it must match
+# the public key already committed at
+# auth-service/src/main/resources/keys/jwt-public.pem.
+kubectl create secret generic auth-service-jwt-key -n platform \
+  --from-file=jwt-private.pem=/path/to/your/jwt-private.pem
+
 kubectl create secret generic user-service-secrets -n platform \
   --from-literal=DB_APP_PASSWORD='<USER_SERVICE_DB_APP_PASSWORD>' \
   --from-literal=DB_OWNER_PASSWORD='<USER_SERVICE_DB_OWNER_PASSWORD>' \

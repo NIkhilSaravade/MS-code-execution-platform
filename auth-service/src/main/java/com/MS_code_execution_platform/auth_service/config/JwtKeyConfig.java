@@ -7,7 +7,9 @@ import com.nimbusds.jose.proc.SecurityContext;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.core.io.ClassPathResource;
+import org.springframework.core.io.DefaultResourceLoader;
+import org.springframework.core.io.Resource;
+import org.springframework.core.io.ResourceLoader;
 import org.springframework.security.oauth2.jwt.JwtEncoder;
 import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
 
@@ -26,6 +28,12 @@ import java.util.Base64;
  */
 @Configuration
 public class JwtKeyConfig {
+
+    // Resolves "keys/jwt-public.pem" (no prefix) against the classpath, same
+    // as before, but also honors an explicit "file:" prefix - lets the
+    // private key be mounted from a k8s Secret instead of baked into the
+    // jar, without changing anything for local/dev config.
+    private final ResourceLoader resourceLoader = new DefaultResourceLoader();
 
     @Value("${jwt.private-key-path}")
     private String privateKeyPath;
@@ -66,8 +74,8 @@ public class JwtKeyConfig {
         return (RSAPrivateKey) KeyFactory.getInstance("RSA").generatePrivate(spec);
     }
 
-    private String stripPemHeaders(String classpathLocation) throws Exception {
-        ClassPathResource resource = new ClassPathResource(classpathLocation);
+    private String stripPemHeaders(String location) throws Exception {
+        Resource resource = resourceLoader.getResource(location);
         String pem = new String(resource.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
         return pem.replaceAll("-----BEGIN (.*)-----", "")
                 .replaceAll("-----END (.*)-----", "")
