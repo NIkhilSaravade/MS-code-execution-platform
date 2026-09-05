@@ -13,6 +13,8 @@ spec:
       labels:
         app: execution-result-service
     spec:
+      imagePullSecrets:
+        - name: ghcr-pull-secret
       containers:
         - name: execution-result-service
           image: ghcr.io/nikhilsaravade/ms-code-execution-platform/execution-result-service:latest
