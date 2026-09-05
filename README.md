@@ -162,7 +162,7 @@ TypeScript submissions run in a locally-built image (no official Docker image sh
 docker build -t platform/node-typescript:20 infra/sandbox-images/node-typescript
 ```
 
-Every other language's sandbox image (`python`, `eclipse-temurin`, `gcc`, `node`, `golang`) is pulled automatically on first use — no other manual image step needed. **If you're running `worker-service-go` against Kubernetes** (see step 3.5 below), these images need to land in the *cluster's* container runtime, not just Docker Desktop's — `platform/node-typescript:20` has no registry to pull from, so it must be imported explicitly (`docker save ... | ctr -n k8s.io images import -` for k3s); see `infra/k8s/README.md` for the full pre-pull list and why skipping it causes a misleading pod-startup timeout on a submission's first run.
+Every other language's sandbox image (`python`, `eclipse-temurin`, `gcc`, `node`, `golang`) is pulled automatically on first use — no other manual image step needed. **If you're running `worker-service-go` against Kubernetes** (see step 3.5 below), these images need to land in the *cluster's* container runtime, not just Docker Desktop's — `platform/node-typescript:20` built locally has no registry to pull from, so it must be imported explicitly (`docker save ... | ctr -n k8s.io images import -` for k3s). `.github/workflows/docker-build-push.yml` now also builds and pushes this image to `ghcr.io` on every change, so the cluster can instead `ctr images pull` it directly like any other image; see `infra/k8s/README.md` for both options, the full pre-pull list, and why skipping it causes a misleading pod-startup timeout on a submission's first run.
 
 ### 3. Start the full backend stack
 
