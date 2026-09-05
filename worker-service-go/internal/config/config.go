@@ -51,27 +51,36 @@ type Config struct {
 	S3ForcePathStyle  bool
 
 	// Sandbox resource limits (enforced per execution, not per test case)
-	SandboxRuntime     string // "runsc" for gVisor, "runc" for plain Docker
+	//
+	// SandboxRuntime now names a Kubernetes RuntimeClass (e.g. "gvisor"), not
+	// a Docker --runtime value - empty means "no RuntimeClass", i.e. the
+	// node's default (runc). See the k3s-migration design note: gVisor is a
+	// deliberately deferred, config-gated follow-up, not part of this first
+	// pass, because OCI's ARM shapes likely lack the nested-virtualization
+	// support gVisor's fast KVM platform needs, forcing the much slower
+	// ptrace platform - exactly the same "ship on runc, matching what
+	// docker-compose.yml already does in production" posture as before.
+	SandboxRuntime     string
 	SandboxMemoryMB    int
 	SandboxCPUQuota    float64 // fractional CPUs, e.g. 1.0
-	SandboxPidsLimit   int
-	SandboxOutputCapKB int           // stdout+stderr combined cap
+	SandboxPidsLimit   int     // NOT enforced per-pod (see K8sPodPidsLimitNote) - kept only for documentation/logging parity with the old Docker config
+	SandboxOutputCapKB int     // stdout+stderr combined cap
 	SandboxWallTimeout time.Duration // enforced by worker, not the container
 
-	// Docker-outside-of-Docker scratch storage. This worker talks to the
-	// HOST's Docker daemon over the mounted /var/run/docker.sock to launch
-	// sibling execution containers - it does NOT run code inside its own
-	// container. That means a scratch directory created on this container's
-	// own filesystem (e.g. under /tmp) is invisible to the host daemon, so a
-	// plain --volume bind-mount of that path into a sibling container would
-	// silently mount nothing. Instead, both this container and its sibling
-	// containers mount the SAME named Docker volume: this container writes
-	// source files under ScratchContainerDir (its own mount point), and
-	// sandbox.go mounts the matching sub-path of ScratchVolumeName (a name
-	// the host daemon resolves directly, no host filesystem path needed)
-	// into each sibling container via `--mount ...,volume-subpath=...`.
-	ScratchContainerDir string
-	ScratchVolumeName   string
+	// Kubernetes sandbox execution. Replaces the old Docker-outside-of-Docker
+	// scratch-volume design entirely: sandbox.go now launches one pooled,
+	// pre-warmed Pod per language via the Kubernetes API, execs into it
+	// (compile once, then once per test case) via the pods/exec subresource,
+	// and deletes it after the submission finishes - see internal/sandbox.
+	K8sNamespace              string        // namespace sandbox pods are created in - MUST have a default-deny NetworkPolicy applied (see infra/k8s)
+	K8sInCluster              bool          // true in the real cluster (reads the Pod's mounted ServiceAccount token); false + K8sKubeconfigPath for local dev against a kubeconfig
+	K8sKubeconfigPath         string        // only used when K8sInCluster is false
+	SandboxRuntimeClassName   string        // Kubernetes RuntimeClass name, e.g. "gvisor" - empty means the node's default runtime (runc)
+	SandboxSeccompProfile     string        // path relative to the kubelet's seccomp root (/var/lib/kubelet/seccomp/<this>) - empty falls back to RuntimeDefault
+	SandboxPoolSize           int           // pre-warmed idle pods kept ready per language
+	SandboxPoolCheckoutTimeout time.Duration // how long to wait on an empty pool before falling back to an on-demand pod create (eating the 1-3s Pod-start latency for that one submission)
+	SandboxPodStartupTimeout  time.Duration // how long a freshly-created pod is given to reach Running
+	SandboxMemSamplePeriod    time.Duration // polling interval for the in-pod cgroup memory.current sampler
 
 	// Language → Docker image mapping (loaded from env like LANG_IMAGE_PYTHON)
 	LanguageImages map[string]string
@@ -126,14 +135,23 @@ func Load() (*Config, error) {
 	cfg.S3ForcePathStyle = getEnvBool("S3_FORCE_PATH_STYLE", true)
 
 	// Sandbox
-	cfg.SandboxRuntime = getEnvOrDefault("SANDBOX_RUNTIME", "runsc")
+	cfg.SandboxRuntime = getEnvOrDefault("SANDBOX_RUNTIME_CLASS", "")
 	cfg.SandboxMemoryMB = getEnvInt("SANDBOX_MEMORY_MB", 256, &errs)
 	cfg.SandboxCPUQuota = getEnvFloat("SANDBOX_CPU_QUOTA", 1.0, &errs)
 	cfg.SandboxPidsLimit = getEnvInt("SANDBOX_PIDS_LIMIT", 64, &errs)
 	cfg.SandboxOutputCapKB = getEnvInt("SANDBOX_OUTPUT_CAP_KB", 512, &errs)
 	cfg.SandboxWallTimeout = getEnvDuration("SANDBOX_WALL_TIMEOUT", 10*time.Second, &errs)
-	cfg.ScratchContainerDir = getEnvOrDefault("SCRATCH_CONTAINER_DIR", "/scratch")
-	cfg.ScratchVolumeName = getEnvOrDefault("SCRATCH_VOLUME_NAME", "worker-scratch")
+
+	// Kubernetes sandbox execution
+	cfg.K8sNamespace = getEnvOrDefault("K8S_SANDBOX_NAMESPACE", "sandbox-execution")
+	cfg.K8sInCluster = getEnvBool("K8S_IN_CLUSTER", true)
+	cfg.K8sKubeconfigPath = getEnvOrDefault("KUBECONFIG_PATH", "")
+	cfg.SandboxRuntimeClassName = cfg.SandboxRuntime
+	cfg.SandboxSeccompProfile = getEnvOrDefault("SANDBOX_SECCOMP_PROFILE", "profiles/execution.json")
+	cfg.SandboxPoolSize = getEnvInt("SANDBOX_POOL_SIZE", 3, &errs)
+	cfg.SandboxPoolCheckoutTimeout = getEnvDuration("SANDBOX_POOL_CHECKOUT_TIMEOUT", 5*time.Second, &errs)
+	cfg.SandboxPodStartupTimeout = getEnvDuration("SANDBOX_POD_STARTUP_TIMEOUT", 30*time.Second, &errs)
+	cfg.SandboxMemSamplePeriod = getEnvDuration("SANDBOX_MEM_SAMPLE_PERIOD", 20*time.Millisecond, &errs)
 
 	// Language → image mapping
 	cfg.LanguageImages = map[string]string{

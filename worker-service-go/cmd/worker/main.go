@@ -92,8 +92,17 @@ func main() {
 		log.Fatal().Err(err).Msg("failed to create kafka producer")
 	}
 
+	// cancelCtx is created here (earlier than before) so it can bound the
+	// sandbox's pool-replenishment goroutines too, not just the Kafka
+	// consumer - both need to stop on the same graceful-shutdown signal.
+	cancelCtx, cancel := context.WithCancel(ctx)
+
 	// ── Sandbox ───────────────────────────────────────────────────────────────
-	sb := sandbox.New(cfg)
+	sb, err := sandbox.New(cancelCtx, cfg)
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to create sandbox (kubernetes client)")
+	}
+	defer sb.Close()
 
 	// ── Executor (the kafka.Handler implementation) ────────────────────────────
 	exec := executor.New(cfg, sb, s3Client, producer)
@@ -136,9 +145,9 @@ func main() {
 	}()
 
 	// ── Run ───────────────────────────────────────────────────────────────────
-	// cancelCtx controls the consumer loop. On signal, we cancel it and give
-	// in-flight executions time to finish before exiting.
-	cancelCtx, cancel := context.WithCancel(ctx)
+	// cancelCtx (created above, alongside the sandbox) controls both the
+	// sandbox's pool goroutines and the consumer loop. On signal, we cancel
+	// it and give in-flight executions time to finish before exiting.
 
 	// Run the consumer in a goroutine; errors are fatal.
 	consumerErrCh := make(chan error, 1)

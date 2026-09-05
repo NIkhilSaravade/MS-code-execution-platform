@@ -1,0 +1,23 @@
+# Calico's Installation CR, pointed at k3s's default pod CIDR (10.42.0.0/16 -
+# we didn't override --cluster-cidr at install time, so this is it). Not
+# meant to be checked in as a permanent cluster manifest - this is scratch
+# infra for standing up the local k3s validation cluster, kept here only so
+# the exact CIDR/encapsulation choice used for testing is visible.
+apiVersion: operator.tigera.io/v1
+kind: Installation
+metadata:
+  name: default
+spec:
+  calicoNetwork:
+    ipPools:
+      - blockSize: 26
+        cidr: 10.42.0.0/16
+        encapsulation: VXLANCrossSubnet
+        natOutgoing: Enabled
+        nodeSelector: all()
+---
+apiVersion: operator.tigera.io/v1
+kind: APIServer
+metadata:
+  name: default
+spec: {}

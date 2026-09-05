@@ -1,0 +1,58 @@
+# Kubernetes' `securityContext.seccompProfile.localhostProfile` reads the
+# profile from a file that must already exist ON THE NODE, under the
+# kubelet's seccomp root (/var/lib/kubelet/seccomp/<localhostProfile>) - unlike
+# the old Docker design, which baked the profile into the worker's own image
+# at /etc/docker/seccomp/execution.json. There's no in-image path anymore, so
+# something has to place the file on every node before any sandbox pod that
+# references it can schedule.
+#
+# On this single-node k3s cluster this could just as easily be a one-time
+# manual `scp`. This DaemonSet is the more durable option (self-heals if the
+# node is rebuilt) - it copies the profile from a ConfigMap onto the host path
+# once, then sleeps forever. Delete/recreate it to pick up a changed profile.
+#
+# The ConfigMap it reads from is NOT defined here (a seccomp profile is a
+# generated/maintained artifact, not something to duplicate and let drift
+# inside a manifest) - create it directly from the real file before applying
+# this DaemonSet, see infra/k8s/README.md:
+#   kubectl create configmap sandbox-seccomp-profile -n platform \
+#     --from-file=execution.json=worker-service-go/docker/seccomp/execution.json
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: sandbox-seccomp-provisioner
+  namespace: platform
+spec:
+  selector:
+    matchLabels:
+      app: sandbox-seccomp-provisioner
+  template:
+    metadata:
+      labels:
+        app: sandbox-seccomp-provisioner
+    spec:
+      initContainers:
+        - name: install-profile
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              mkdir -p /host-seccomp/profiles
+              cp /config/execution.json /host-seccomp/profiles/execution.json
+          volumeMounts:
+            - name: profile-config
+              mountPath: /config
+            - name: kubelet-seccomp-root
+              mountPath: /host-seccomp
+      containers:
+        - name: pause
+          image: registry.k8s.io/pause:3.9
+      volumes:
+        - name: profile-config
+          configMap:
+            name: sandbox-seccomp-profile
+        - name: kubelet-seccomp-root
+          hostPath:
+            path: /var/lib/kubelet/seccomp
+            type: DirectoryOrCreate
