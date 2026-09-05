@@ -13,6 +13,8 @@ spec:
       labels:
         app: problem-service
     spec:
+      imagePullSecrets:
+        - name: ghcr-pull-secret
       containers:
         - name: problem-service
           image: ghcr.io/nikhilsaravade/ms-code-execution-platform/problem-service:latest

@@ -13,6 +13,8 @@ spec:
       labels:
         app: ai-analysis-service
     spec:
+      imagePullSecrets:
+        - name: ghcr-pull-secret
       containers:
         - name: ai-analysis-service
           image: ghcr.io/nikhilsaravade/ms-code-execution-platform/ai-analysis-service:latest
