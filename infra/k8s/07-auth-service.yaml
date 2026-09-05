@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-service
+  namespace: platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: auth-service
+  template:
+    metadata:
+      labels:
+        app: auth-service
+    spec:
+      containers:
+        - name: auth-service
+          image: ghcr.io/nikhilsaravade/ms-code-execution-platform/auth-service:latest
+          envFrom:
+            - configMapRef:
+                name: infra-endpoints
+          env:
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Xmx320m"
+            - name: EUREKA_CLIENT_SERVICEURL_DEFAULTZONE
+              value: "http://discovery-service:8761/eureka/"
+            - name: EUREKA_INSTANCE_PREFER_IP_ADDRESS
+              value: "true"
+            - name: SPRING_DATASOURCE_URL
+              value: "jdbc:postgresql://$(POSTGRES_HOST):$(POSTGRES_PORT)/auth_service?sslmode=verify-full&sslrootcert=/certs/postgres-ca.crt"
+            - name: SPRING_DATASOURCE_USERNAME
+              value: "auth_service_app"
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: auth-service-secrets
+                  key: DB_APP_PASSWORD
+            - name: SPRING_FLYWAY_URL
+              value: "jdbc:postgresql://$(POSTGRES_HOST):$(POSTGRES_PORT)/auth_service?sslmode=verify-full&sslrootcert=/certs/postgres-ca.crt"
+            - name: SPRING_FLYWAY_USER
+              value: "auth_service_owner"
+            - name: SPRING_FLYWAY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: auth-service-secrets
+                  key: DB_OWNER_PASSWORD
+          volumeMounts:
+            - name: postgres-ca-cert
+              mountPath: /certs/postgres-ca.crt
+              subPath: postgres-ca.crt
+              readOnly: true
+          ports:
+            - name: http
+              containerPort: 8086
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: "150m"
+              memory: "384Mi"
+            limits:
+              cpu: "750m"
+              memory: "512Mi"
+      volumes:
+        - name: postgres-ca-cert
+          configMap:
+            name: postgres-ca-cert
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth-service
+  namespace: platform
+spec:
+  selector:
+    app: auth-service
+  ports:
+    - name: http
+      port: 8086
+      targetPort: 8086

@@ -1,0 +1,64 @@
+# Eureka service registry. Every other Java service registers itself here
+# and looks up its peers here (e.g. submission-service finding
+# problem-service by app name, not a hardcoded address) - this has to exist
+# and be reachable before any other Java service can start cleanly.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: discovery-service
+  namespace: platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: discovery-service
+  template:
+    metadata:
+      labels:
+        app: discovery-service
+    spec:
+      containers:
+        - name: discovery-service
+          image: ghcr.io/nikhilsaravade/ms-code-execution-platform/discovery-service:latest
+          env:
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Xmx256m"
+          ports:
+            - name: http
+              containerPort: 8761
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "300Mi"
+            limits:
+              cpu: "500m"
+              memory: "400Mi"
+---
+# Named "discovery-service" to match the hostname already hardcoded into
+# every other service's EUREKA_CLIENT_SERVICEURL_DEFAULTZONE
+# (http://discovery-service:8761/eureka/) - no code/config changes needed
+# anywhere else, Kubernetes Service DNS just resolves the same name.
+apiVersion: v1
+kind: Service
+metadata:
+  name: discovery-service
+  namespace: platform
+spec:
+  selector:
+    app: discovery-service
+  ports:
+    - name: http
+      port: 8761
+      targetPort: 8761

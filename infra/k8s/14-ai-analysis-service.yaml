@@ -1,0 +1,113 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-analysis-service
+  namespace: platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ai-analysis-service
+  template:
+    metadata:
+      labels:
+        app: ai-analysis-service
+    spec:
+      containers:
+        - name: ai-analysis-service
+          image: ghcr.io/nikhilsaravade/ms-code-execution-platform/ai-analysis-service:latest
+          envFrom:
+            - configMapRef:
+                name: infra-endpoints
+          env:
+            - name: PORT
+              value: "8000"
+            - name: EUREKA_SERVER_URL
+              value: "http://discovery-service:8761/eureka"
+            - name: AUTH_SERVICE_JWKS_URL
+              value: "http://auth-service:8086/.well-known/jwks.json"
+            - name: JWT_ISSUER
+              value: "https://auth-service"
+            - name: JWT_AUDIENCE
+              value: "ms-code-execution"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ai-analysis-service-secrets
+                  key: DATABASE_URL
+            - name: GROQ_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ai-analysis-service-secrets
+                  key: GROQ_API_KEY
+            - name: KAFKA_TLS_CA_CERT_PATH
+              value: "/certs/ca.crt"
+            - name: KAFKA_SASL_USERNAME
+              value: "ai_analysis_service"
+            - name: KAFKA_AI_ANALYSIS_SERVICE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ai-analysis-service-secrets
+                  key: KAFKA_PASSWORD
+            - name: KAFKA_TOPIC_ANALYSIS_TRIGGER
+              value: "analysis.trigger.v1"
+            - name: KAFKA_CONSUMER_GROUP_ID
+              value: "ai-analysis-group"
+            - name: AI_ANALYSIS_SERVICE_CLIENT_ID
+              value: "ai-analysis-service"
+            - name: AI_ANALYSIS_SERVICE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: ai-analysis-service-secrets
+                  key: CLIENT_SECRET
+          volumeMounts:
+            - name: postgres-ca-cert
+              mountPath: /certs/postgres-ca.crt
+              subPath: postgres-ca.crt
+              readOnly: true
+            - name: kafka-ca-cert
+              mountPath: /certs/ca.crt
+              subPath: ca.crt
+              readOnly: true
+          ports:
+            - name: http
+              containerPort: 8000
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: "150m"
+              memory: "300Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+      volumes:
+        - name: postgres-ca-cert
+          configMap:
+            name: postgres-ca-cert
+        - name: kafka-ca-cert
+          configMap:
+            name: kafka-ca-cert
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-analysis-service
+  namespace: platform
+spec:
+  selector:
+    app: ai-analysis-service
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
