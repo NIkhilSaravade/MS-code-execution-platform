@@ -98,7 +98,12 @@ jobs:
           ]'
 
           if [ "$FORCE_ALL" = "true" ]; then
-            MATRIX="$FULL"
+            # $FULL is pretty-printed across multiple lines for readability -
+            # must be compacted to one line before writing to $GITHUB_OUTPUT,
+            # which parses each line as its own key=value pair and chokes on
+            # anything else. The non-FORCE_ALL branch below never hit this
+            # because jq -c already compacts its own output to one line.
+            MATRIX=$(echo "$FULL" | jq -c .)
           else
             MATRIX=$(echo "$FULL" | jq -c --argjson changed "$CHANGED" \
               '[.[] | select(.name as $n | $changed | index($n))]')
