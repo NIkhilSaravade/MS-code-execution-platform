@@ -115,10 +115,31 @@ the throwaway tool used to check this; rerun it after any change to the
 pool/exec/security-context code before trusting it again.
 
 `04-worker-deployment.yaml` references a `worker-service-go-config` ConfigMap
-and `worker-service-go-secrets` Secret that aren't included here (Kafka
-brokers/credentials, S3 endpoint/keys, OTLP endpoint, etc. - same values as
-the service's existing `.env`/docker-compose environment) - create those the
-same way you would for any other service's move to this cluster.
+and `worker-service-go-secrets` Secret that aren't included here. It also
+needs the `kafka-ca-cert` ConfigMap (same one the other services use) already
+present. Create them from the VM, reusing whatever's already in `.env`:
+
+```bash
+set -a; source .env; set +a
+
+kubectl create configmap worker-service-go-config -n platform \
+  --from-literal=KAFKA_BROKERS=10.0.0.14:9093 \
+  --from-literal=EUREKA_SERVER_URL=http://discovery-service:8761/eureka \
+  --from-literal=S3_ENDPOINT=http://10.0.0.14:9000 \
+  --from-literal=S3_BUCKET_ARTIFACTS=platform-artifacts \
+  --from-literal=S3_BUCKET_TEST_CASES=platform-test-cases \
+  --from-literal=OTEL_EXPORTER_OTLP_ENDPOINT=http://10.0.0.14:4318 \
+  --from-literal=KAFKA_SASL_USERNAME=worker \
+  --from-literal=KAFKA_TLS_CA_CERT_PATH=/certs/ca.crt
+
+kubectl create secret generic worker-service-go-secrets -n platform \
+  --from-literal=KAFKA_SASL_PASSWORD="$KAFKA_WORKER_PASSWORD" \
+  --from-literal=S3_ACCESS_KEY="$MINIO_ROOT_USER" \
+  --from-literal=S3_SECRET_KEY="$MINIO_ROOT_PASSWORD"
+```
+
+(Swap `10.0.0.14` for the VM's actual private IP if it ever changes - same
+value already used throughout `05-configmap-infra-endpoints.yaml`.)
 
 ## Prerequisites this depends on - do these BEFORE applying the above
 
