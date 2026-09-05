@@ -63,3 +63,5 @@ docker-compose.override.yml
 infra/kafka/certs/*.key
 infra/postgres/certs/*.key
 infra/kafka/certs/broker-keystore.pem
+infra/kafka/certs/*.srl
+infra/postgres/certs/*.srl
