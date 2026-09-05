@@ -37,6 +37,12 @@ spec:
               value: "https://auth-service"
             - name: SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_AUDIENCES
               value: "ms-code-execution"
+            # SecurityConfig's default (http://localhost:*) is dev-only -
+            # the deployed frontend origin(s) need to be allowed explicitly,
+            # or the browser rejects every request as a CORS failure before
+            # it ever reaches this service.
+            - name: CORS_ALLOWED_ORIGIN_PATTERNS
+              value: "https://app.nikhilsaravade.com,https://*.nikhilsaravade.com,https://*.pages.dev"
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
