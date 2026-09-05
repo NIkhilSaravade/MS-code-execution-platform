@@ -23,7 +23,12 @@ openssl req -x509 -new -nodes -key "$POSTGRES_DIR/ca.key" -sha256 -days 3650 \
   -out "$POSTGRES_DIR/ca.crt"
 
 openssl genrsa -out "$POSTGRES_DIR/server.key" 2048
-chmod 600 "$POSTGRES_DIR/server.key"
+# 644, not 600: this file is read via a bind mount by postgres's container
+# user, whose UID doesn't necessarily match the host user that owns it.
+# Postgres's own security requirement (reject a world-readable key) is
+# enforced on the COPY configure-ssl.sh makes inside $PGDATA, not on this
+# host-side file - see infra/postgres/configure-ssl.sh's chmod 600 there.
+chmod 644 "$POSTGRES_DIR/server.key"
 openssl req -new -key "$POSTGRES_DIR/server.key" -subj "/CN=postgres" -out "$POSTGRES_DIR/server.csr"
 openssl x509 -req -in "$POSTGRES_DIR/server.csr" \
   -CA "$POSTGRES_DIR/ca.crt" -CAkey "$POSTGRES_DIR/ca.key" -CAcreateserial \
@@ -51,7 +56,9 @@ rm -f "$KAFKA_DIR/broker.csr"
 openssl pkcs8 -topk8 -nocrypt -in "$KAFKA_DIR/broker.key" -out "$KAFKA_DIR/broker.key.pk8"
 cat "$KAFKA_DIR/broker.crt" "$KAFKA_DIR/broker.key.pk8" > "$KAFKA_DIR/broker-keystore.pem"
 rm -f "$KAFKA_DIR/broker.key.pk8"
-chmod 600 "$KAFKA_DIR/broker-keystore.pem" "$KAFKA_DIR/broker.key"
+# 644, not 600: read directly at runtime via a bind mount by Kafka's
+# container user, whose UID doesn't necessarily match the host owner.
+chmod 644 "$KAFKA_DIR/broker-keystore.pem" "$KAFKA_DIR/broker.key"
 
 echo ""
 echo "Done. New CA certs are at:"
