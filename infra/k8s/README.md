@@ -278,9 +278,27 @@ it's up.
 
 ### Exposing api-gateway
 
-Not done here - see the Cloudflare Tunnel setup (separate step). Once that's
-configured, it routes `api.nikhilsaravade.com` to `api-gateway`'s in-cluster
-Service (`http://api-gateway.platform.svc.cluster.local:8080`).
+Via a Cloudflare Tunnel, run as its own Deployment (`15-cloudflared.yaml`)
+inside the `platform` namespace rather than as a docker-compose container -
+running it in-cluster lets it resolve `api-gateway` over the cluster's own
+DNS with no NodePort or host networking needed.
+
+1. In the Cloudflare Zero Trust dashboard (Networks -> Tunnels), create a
+   tunnel and copy its token (shown in the install command for any OS/Docker
+   - only the token value after `--token`/`service install` is needed, the
+   command itself is never run).
+2. Under that tunnel's Public Hostname settings, add:
+   `api.nikhilsaravade.com` -> HTTP ->
+   `api-gateway.platform.svc.cluster.local:8080`.
+3. Create the Secret and apply the manifest:
+   ```bash
+   kubectl create secret generic cloudflared-token -n platform \
+     --from-literal=token='<TUNNEL_TOKEN>'
+   kubectl apply -f 15-cloudflared.yaml
+   ```
+4. Confirm it connected: `kubectl logs -n platform deployment/cloudflared`
+   should show `Registered tunnel connection`, and the tunnel should show
+   `HEALTHY` in the dashboard.
 
 ## Known simplifications in this first pass (flagged, not hidden)
 
