@@ -1,0 +1,33 @@
+name: Sync release/* into release
+
+# Keeps the long-lived, protected `release` branch pointed at whichever
+# release/x.y.z candidate branch was just pushed, so anything watching
+# `release` (Cloudflare Pages UAT project, ArgoCD's UAT Application) always
+# reflects "whatever is currently being validated in UAT" without needing
+# to be reconfigured every time a new version branch is created.
+#
+# This is a fast-forward-or-force push of the release/* commit onto
+# `release` - it does not merge or rebase anything, it just moves the
+# `release` ref to match. `release` itself stays protected (no direct
+# commits) - this workflow's push is the only thing allowed to move it,
+# via the GITHUB_TOKEN's contents:write permission below.
+
+on:
+  push:
+    branches:
+      - 'release/**'
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fast-forward release to this commit
+        run: |
+          git push origin HEAD:refs/heads/release
