@@ -1,0 +1,159 @@
+name: Build and Push Docker Images
+
+# CI half of the platform's CI/CD: builds every service's image and pushes it
+# to ghcr.io. Deploying those images onto the k3s cluster (infra/k8s/) is a
+# separate, deliberately manual step for now - see infra/k8s/README.md.
+#
+# Only services whose directory actually changed are built, using
+# dorny/paths-filter to diff against the previous commit (push) or the PR
+# base (pull_request). Use the "Run workflow" button's build_all input, or
+# push a `v*` tag, to force every image to rebuild regardless of what changed
+# (useful for the very first run, or after a base-image/workflow change that
+# nothing's paths-filter would catch).
+#
+# Images build for linux/arm64 only: the one real deployment target today is
+# the k3s VM (Ubuntu on ARM) described in infra/k8s/README.md. docker-compose
+# builds every service locally from source and never pulls these images, so
+# local dev on any host arch is unaffected. Add linux/amd64 back to the
+# `platforms` matrix value below if an x86 node ever joins the cluster.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      build_all:
+        description: Build and push every image regardless of changed paths
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.build-matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            ai-analysis-service:
+              - 'ai-analysis-service/**'
+            api-gateway:
+              - 'api-gateway/**'
+            auth-service:
+              - 'auth-service/**'
+            discovery-service:
+              - 'discovery-service/**'
+            execution-result-service:
+              - 'execution-result-service/**'
+            problem-service:
+              - 'problem-service/**'
+            solution-service:
+              - 'solution-service/**'
+            submission-service:
+              - 'submission-service/**'
+            user-service:
+              - 'user-service/**'
+            worker-service-go:
+              - 'worker-service-go/**'
+            node-typescript-sandbox:
+              - 'infra/sandbox-images/node-typescript/**'
+
+      - name: Build image matrix
+        id: build-matrix
+        env:
+          CHANGED: ${{ steps.filter.outputs.changes }}
+          FORCE_ALL: ${{ github.event.inputs.build_all == 'true' || startsWith(github.ref, 'refs/tags/') }}
+        run: |
+          FULL='[
+            {"name":"ai-analysis-service",      "context":"./ai-analysis-service",                          "dockerfile":"./ai-analysis-service/Dockerfile"},
+            {"name":"api-gateway",              "context":"./api-gateway",                                  "dockerfile":"./api-gateway/Dockerfile"},
+            {"name":"auth-service",             "context":"./auth-service",                                 "dockerfile":"./auth-service/Dockerfile"},
+            {"name":"discovery-service",        "context":"./discovery-service",                            "dockerfile":"./discovery-service/Dockerfile"},
+            {"name":"execution-result-service", "context":"./execution-result-service",                     "dockerfile":"./execution-result-service/Dockerfile"},
+            {"name":"problem-service",          "context":"./problem-service",                               "dockerfile":"./problem-service/Dockerfile"},
+            {"name":"solution-service",         "context":"./solution-service",                             "dockerfile":"./solution-service/Dockerfile"},
+            {"name":"submission-service",       "context":"./submission-service",                           "dockerfile":"./submission-service/Dockerfile"},
+            {"name":"user-service",             "context":"./user-service",                                 "dockerfile":"./user-service/Dockerfile"},
+            {"name":"worker-service-go",        "context":"./worker-service-go",                            "dockerfile":"./worker-service-go/Dockerfile"},
+            {"name":"node-typescript-sandbox",  "context":"./infra/sandbox-images/node-typescript",         "dockerfile":"./infra/sandbox-images/node-typescript/Dockerfile"}
+          ]'
+
+          if [ "$FORCE_ALL" = "true" ]; then
+            MATRIX="$FULL"
+          else
+            MATRIX=$(echo "$FULL" | jq -c --argjson changed "$CHANGED" \
+              '[.[] | select(.name as $n | $changed | index($n))]')
+          fi
+
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "Resolved matrix: $MATRIX"
+
+  build:
+    needs: changes
+    if: needs.changes.outputs.matrix != '[]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.changes.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image name
+        id: image
+        run: |
+          OWNER_REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          echo "name=ghcr.io/${OWNER_REPO}/${{ matrix.name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=sha,format=short
+            type=semver,pattern={{version}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}

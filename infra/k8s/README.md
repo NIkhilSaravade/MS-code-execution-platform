@@ -43,9 +43,50 @@ context deadline exceeded" even though nothing is actually broken:
 for img in python:3.12-slim eclipse-temurin:21-jdk-alpine gcc:14 node:20-slim golang:1.22-alpine; do
   ctr -n k8s.io images pull docker.io/library/$img
 done
-# platform/node-typescript:20 has no registry - import it directly:
-docker save platform/node-typescript:20 | ctr -n k8s.io images import -
+# node-typescript is now built and pushed to ghcr.io by
+# .github/workflows/docker-build-push.yml (see "Container registry access"
+# below for the pull secret this needs) - pull it like any other image
+# instead of the old local `docker build` + `docker save | ctr import` dance:
+ctr -n k8s.io images pull --hosts-dir /etc/containerd/certs.d \
+  ghcr.io/nikhilsaravade/ms-code-execution-platform/node-typescript-sandbox:latest
 ```
+`LANG_IMAGE_TYPESCRIPT` (`worker-service-go`'s `internal/config/config.go`)
+needs to point at this new ghcr.io tag instead of the old local
+`platform/node-typescript:20` tag.
+
+### Container registry access
+
+Every image referenced above (`worker-service-go` itself in
+`04-worker-deployment.yaml`, and `node-typescript-sandbox`) is built and
+pushed to `ghcr.io` by `.github/workflows/docker-build-push.yml` on every
+push to `main` that touches that service's directory. `ghcr.io` packages
+default to private, so both `containerd` (for the sandbox image pre-pull
+above) and the cluster (for `worker-service-go`'s own Deployment) need
+credentials to pull them:
+
+```bash
+# A classic PAT with read:packages scope, or a fine-grained token scoped to
+# this repo's packages - not the GITHUB_TOKEN the workflow itself uses,
+# that's only valid for the duration of that workflow run.
+kubectl create secret docker-registry ghcr-pull-secret \
+  -n platform \
+  --docker-server=ghcr.io \
+  --docker-username=<your-github-username> \
+  --docker-password=<PAT with read:packages> \
+  --docker-email=<your-email>
+```
+`04-worker-deployment.yaml` already references this secret via
+`imagePullSecrets`. For `containerd`'s own pulls (the sandbox image
+pre-pull step), configure the same credentials in
+`/etc/containerd/certs.d/ghcr.io/hosts.toml` (k3s's registry-auth config
+path) on every node - or simplest for a single-node dev cluster, make the
+`node-typescript-sandbox` package public in its GitHub package settings and
+skip registry auth for that one pull entirely.
+
+Alternatively, skip ghcr.io for the sandbox image entirely and keep
+building+importing it locally exactly as before (`docker build` +
+`docker save | ctr import`) - the workflow only replaces the old manual
+step if you want it to.
 
 ### Validated
 

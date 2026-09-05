@@ -1,6 +1,14 @@
 # ── Build stage ──────────────────────────────────────────────────────────────
-# Use the official Go image on Alpine for a minimal build environment.
-FROM golang:1.22-alpine AS builder
+# --platform=$BUILDPLATFORM pins this stage to the *build host's* native arch
+# (set automatically by buildx) so cross-compiling for a different target
+# arch - e.g. the arm64 deploy VM, built from an amd64 GitHub Actions runner -
+# doesn't need QEMU emulation for the Go toolchain itself: `go build` already
+# cross-compiles natively via GOOS/GOARCH. TARGETOS/TARGETARCH are populated
+# by buildx to match whatever --platform the overall image build was invoked
+# with; the previous hardcoded GOARCH=amd64 here silently produced an amd64
+# binary even when asked to build for linux/arm64, which fails to run at all
+# on an arm64 node.
+FROM --platform=$BUILDPLATFORM golang:1.22-alpine AS builder
 
 # Install git (needed by go mod download for private modules if any).
 RUN apk add --no-cache git ca-certificates
@@ -14,9 +22,12 @@ RUN go mod download
 
 COPY . .
 
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+
 # Build a statically linked binary. CGO_ENABLED=0 ensures no libc dependency
 # so the binary runs in a scratch or distroless image.
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
     -ldflags="-w -s -X main.version=${VERSION:-dev}" \
     -o /worker \
     ./cmd/worker

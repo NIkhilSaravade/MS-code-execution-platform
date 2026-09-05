@@ -17,9 +17,18 @@ spec:
         app: worker-service-go
     spec:
       serviceAccountName: worker-service-go
+      # ghcr.io packages default to private, so pulling this image needs a
+      # pull secret even though the cluster node has no other credentials -
+      # see infra/k8s/README.md's "Container registry access" section for
+      # how to create ghcr-pull-secret.
+      imagePullSecrets:
+        - name: ghcr-pull-secret
       containers:
         - name: worker-service-go
-          image: platform/worker-service-go:latest # replace with your registry/tag
+          # Built and pushed by .github/workflows/docker-build-push.yml.
+          # :latest tracks main; pin to a :sha-<short-sha> or :vX.Y.Z tag
+          # instead for anything beyond a dev cluster.
+          image: ghcr.io/nikhilsaravade/ms-code-execution-platform/worker-service-go:latest
           envFrom:
             - configMapRef:
                 name: worker-service-go-config
