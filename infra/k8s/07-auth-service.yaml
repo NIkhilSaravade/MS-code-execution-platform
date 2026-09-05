@@ -46,10 +46,19 @@ spec:
                 secretKeyRef:
                   name: auth-service-secrets
                   key: DB_OWNER_PASSWORD
+            # Overrides application.properties' classpath-relative default
+            # (keys/jwt-private.pem, baked into the jar) - the private key
+            # never goes into the image or git, only into this Secret.
+            - name: JWT_PRIVATE_KEY_PATH
+              value: "file:/etc/auth-keys/jwt-private.pem"
           volumeMounts:
             - name: postgres-ca-cert
               mountPath: /certs/postgres-ca.crt
               subPath: postgres-ca.crt
+              readOnly: true
+            - name: jwt-private-key
+              mountPath: /etc/auth-keys/jwt-private.pem
+              subPath: jwt-private.pem
               readOnly: true
           ports:
             - name: http
@@ -77,6 +86,9 @@ spec:
         - name: postgres-ca-cert
           configMap:
             name: postgres-ca-cert
+        - name: jwt-private-key
+          secret:
+            secretName: auth-service-jwt-key
 ---
 apiVersion: v1
 kind: Service
