@@ -26,8 +26,15 @@ ARG TARGETOS=linux
 ARG TARGETARCH=amd64
 
 # Build a statically linked binary. CGO_ENABLED=0 ensures no libc dependency
-# so the binary runs in a scratch or distroless image.
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
+# so the binary runs in a scratch or distroless image. The echo isn't just
+# noise - a prior build produced a real arm64-labeled image whose binary was
+# actually amd64 (GHA's type=gha cache reused a stale layer from before this
+# file's TARGETARCH fix, under the same cache scope, without erroring or
+# warning anywhere), so logging what this build actually resolved to makes
+# that class of bug visible in the Actions log instead of only surfacing as
+# "exec format error" at runtime on the node.
+RUN echo "Building worker for GOOS=$TARGETOS GOARCH=$TARGETARCH" && \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
     -ldflags="-w -s -X main.version=${VERSION:-dev}" \
     -o /worker \
     ./cmd/worker
