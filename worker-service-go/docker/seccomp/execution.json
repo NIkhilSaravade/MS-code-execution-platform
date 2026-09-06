@@ -27,7 +27,7 @@
         "getpgid", "getsid", "capget", "capset", "rt_sigsuspend",
         "sigaltstack", "uname", "statfs", "fstatfs", "getpriority",
         "setpriority", "prctl", "arch_prctl", "gettid", "futex",
-        "sched_getaffinity", "set_thread_area", "get_thread_area",
+        "sched_getaffinity", "getcpu", "set_thread_area", "get_thread_area",
         "set_tid_address", "restart_syscall", "exit_group", "epoll_wait",
         "epoll_ctl", "tgkill", "utimes", "waitid", "openat", "mkdirat",
         "fstatat64", "statx", "unlinkat", "renameat", "linkat", "readlinkat",
