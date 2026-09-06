@@ -238,6 +238,15 @@ type Session struct {
 	CompileOutput []byte
 }
 
+// isPodGoneErr reports whether err looks like "the pod no longer exists".
+// The exec subresource surfaces this as a plain "pods \"x\" not found"
+// message during the SPDY upgrade handshake rather than as a typed API
+// error the normal REST response decoder would produce, so a string check
+// is the reliable signal available here.
+func isPodGoneErr(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "not found")
+}
+
 // NewSession checks out a pod from the language's pool (or creates one
 // on-demand if the pool is empty), writes the source file into it, and runs
 // the compile step if the language needs one.
@@ -259,13 +268,34 @@ func (s *Sandbox) NewSession(ctx context.Context, req *SessionRequest) (*Session
 		return nil, fmt.Errorf("checkout sandbox pod: %w", err)
 	}
 
-	sess := &Session{sandbox: s, lang: req.Language, desc: desc, podName: podName}
-
 	srcPath := "/sandbox/" + desc.SourceFilename
 	if err := writeFileToPod(ctx, s.restCfg, s.clientset, s.cfg.K8sNamespace, podName, sandboxContainerName, srcPath, req.SourceCode); err != nil {
-		sess.Close()
-		return nil, fmt.Errorf("write source into sandbox pod: %w", err)
+		if !isPodGoneErr(err) {
+			_ = s.deletePod(context.Background(), podName)
+			return nil, fmt.Errorf("write source into sandbox pod: %w", err)
+		}
+		// checkout() already confirms a pod is Running before handing it
+		// back (see pool.go), but it can still die in the narrow window
+		// between that check and this write - eviction, OOM-kill, or a
+		// manual `kubectl delete pods --all -n sandbox-execution` (this is
+		// exactly the SYSTEM_ERROR users saw: "pods ... not found"). One
+		// retry against a guaranteed-fresh, on-demand pod turns that race
+		// into a slightly slower submission instead of a failed one.
+		log.Warn().Str("language", string(req.Language)).Str("pod", podName).Err(err).
+			Msg("sandbox: pod died before source could be written, retrying with a fresh pod")
+		podName, err = s.createPod(ctx, desc, req.Language)
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			return nil, fmt.Errorf("checkout sandbox pod: %w", err)
+		}
+		if err := writeFileToPod(ctx, s.restCfg, s.clientset, s.cfg.K8sNamespace, podName, sandboxContainerName, srcPath, req.SourceCode); err != nil {
+			_ = s.deletePod(context.Background(), podName)
+			return nil, fmt.Errorf("write source into sandbox pod: %w", err)
+		}
 	}
+
+	sess := &Session{sandbox: s, lang: req.Language, desc: desc, podName: podName}
 
 	if desc.CompileCmd != nil {
 		compileTimeout := max(req.WallTimeout*compilationTimeoutMultiplier, minCompileTimeout)

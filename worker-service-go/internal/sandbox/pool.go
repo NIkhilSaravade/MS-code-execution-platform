@@ -89,18 +89,34 @@ func (p *pool) replenish(ctx context.Context) {
 // than SandboxPoolCheckoutTimeout (a burst that's outpaced replenishment),
 // falls back to creating a pod on demand for this one submission - eating
 // the 1-3s Pod-start latency rather than blocking indefinitely.
+//
+// A pod sitting in the channel can die after replenish() queued it and
+// before a submission claims it - evicted, OOM-killed, or removed out of
+// band (e.g. `kubectl delete pods --all -n sandbox-execution`, which does
+// not touch this in-memory channel or restart this process). Handing back a
+// dead name used to surface as a raw "pod ... not found" SYSTEM_ERROR on
+// whatever submission happened to draw it - checked here instead, so a dead
+// pod is discarded and checkout keeps trying rather than failing the user's
+// submission outright.
 func (p *pool) checkout(ctx context.Context) (string, error) {
 	checkoutCtx, cancel := context.WithTimeout(ctx, p.sandbox.cfg.SandboxPoolCheckoutTimeout)
 	defer cancel()
-	select {
-	case name := <-p.ch:
-		return name, nil
-	case <-checkoutCtx.Done():
-		if ctx.Err() != nil {
-			return "", ctx.Err()
+	for {
+		select {
+		case name := <-p.ch:
+			if !p.sandbox.podIsRunning(checkoutCtx, name) {
+				log.Warn().Str("language", string(p.lang)).Str("pod", name).
+					Msg("sandbox pool: discarding dead pod from pool, retrying checkout")
+				continue
+			}
+			return name, nil
+		case <-checkoutCtx.Done():
+			if ctx.Err() != nil {
+				return "", ctx.Err()
+			}
+			log.Warn().Str("language", string(p.lang)).Msg("sandbox pool exhausted, falling back to on-demand pod creation")
+			return p.sandbox.createPod(ctx, p.desc, p.lang)
 		}
-		log.Warn().Str("language", string(p.lang)).Msg("sandbox pool exhausted, falling back to on-demand pod creation")
-		return p.sandbox.createPod(ctx, p.desc, p.lang)
 	}
 }
 
@@ -130,6 +146,17 @@ func (s *Sandbox) waitForRunning(ctx context.Context, name string) error {
 		}
 		return pod.Status.Phase == corev1.PodRunning, nil
 	})
+}
+
+// podIsRunning reports whether name still exists and is Running. Used to
+// validate a pod pulled off the pool before handing it to a submission - see
+// checkout's doc comment for why a queued pod can't be trusted blindly.
+func (s *Sandbox) podIsRunning(ctx context.Context, name string) bool {
+	pod, err := s.clientset.CoreV1().Pods(s.cfg.K8sNamespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return false
+	}
+	return pod.Status.Phase == corev1.PodRunning
 }
 
 func (s *Sandbox) deletePod(ctx context.Context, name string) error {
