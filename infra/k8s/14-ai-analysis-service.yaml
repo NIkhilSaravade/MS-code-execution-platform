@@ -13,6 +13,15 @@ spec:
       labels:
         app: ai-analysis-service
     spec:
+      # See 04-worker-deployment.yaml's hostAliases comment: Kafka advertises
+      # itself as "kafka:9093" (docker-compose's KAFKA_ADVERTISED_LISTENERS),
+      # which this service's Kafka consumer also needs to resolve for its
+      # consumer group coordinator connections - without this it fails with
+      # an unresolvable host error, same as worker-service-go/submission-service.
+      hostAliases:
+        - ip: "10.0.0.14"
+          hostnames:
+            - "kafka"
       imagePullSecrets:
         - name: ghcr-pull-secret
       containers:
