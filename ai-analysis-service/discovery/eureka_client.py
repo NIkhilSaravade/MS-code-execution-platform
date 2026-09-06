@@ -16,6 +16,15 @@ async def register_with_eureka():
         app_name="AI-ANALYSIS-SERVICE",
         instance_port=port,
         instance_ip=ip_address,
+        # instance_host defaults to the pod's own hostname when unset, which
+        # becomes the registered Eureka "hostName" field - the one other
+        # services' client-side load balancers actually build request URLs
+        # from. Left unset, api-gateway tries to DNS-resolve the raw pod
+        # hostname (unresolvable in-cluster) instead of using instance_ip,
+        # the same problem the Java services avoid via
+        # EUREKA_INSTANCE_PREFER_IP_ADDRESS=true - setting it to the same IP
+        # here is this client's equivalent.
+        instance_host=ip_address,
         instance_id=f"AI-ANALYSIS-SERVICE-{hostname}-{port}",
         renewal_interval_in_secs=30
     )
