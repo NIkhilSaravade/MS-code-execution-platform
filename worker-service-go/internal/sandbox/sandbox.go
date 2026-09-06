@@ -103,7 +103,17 @@ func buildLangDescriptors(images map[string]string) map[domain.Language]*langDes
 			CompileCmd:     []string{"go", "build", "-o", "/sandbox/solution", "/sandbox/solution.go"},
 			ExecCmd:        []string{"/sandbox/solution"},
 			SourceFilename: "solution.go",
-			Env:            []string{"GOCACHE=/tmp/gocache", "HOME=/tmp", "GOMAXPROCS=1", "GOFLAGS=-p=1"},
+			// GOCACHE/GOTMPDIR/HOME must NOT point at /tmp: that volume is a
+			// tiny 64Mi memory-backed, noexec tmpfs (see podspec.go) sized for
+			// languages that barely touch it, not for Go's build cache - and
+			// since sandbox pods are pooled and reused across many
+			// submissions, GOCACHE only grows, eventually exhausting it
+			// ("no space left on device", surfaced as an empty-reason CE
+			// because that failure prints to go build's stdout, which the
+			// compile step doesn't capture - see Session.NewSession).
+			// /sandbox (the "scratch" emptyDir) has no size limit and is
+			// backed by the node's overlay disk, so it's the correct place.
+			Env: []string{"GOCACHE=/sandbox/.gocache", "GOTMPDIR=/sandbox/.gotmp", "HOME=/sandbox", "GOMAXPROCS=1", "GOFLAGS=-p=1"},
 		},
 	}
 }
@@ -268,7 +278,19 @@ func (s *Sandbox) NewSession(ctx context.Context, req *SessionRequest) (*Session
 		}
 		if timedOut || exitCode != 0 {
 			sess.CompileError = true
-			sess.CompileOutput = stderrBuf.Bytes()
+			// Combine both streams: most compilers report diagnostics on
+			// stderr, but some toolchain-level failures (e.g. `go build`
+			// reporting "no space left on device" while copying the linked
+			// binary into place) print to stdout instead - a stderr-only
+			// capture silently drops those, surfacing as an empty-reason CE
+			// with no way to diagnose it short of live pod reproduction.
+			var combined []byte
+			combined = append(combined, stdoutBuf.Bytes()...)
+			if len(combined) > 0 && stderrBuf.buf.Len() > 0 {
+				combined = append(combined, '\n')
+			}
+			combined = append(combined, stderrBuf.Bytes()...)
+			sess.CompileOutput = combined
 		}
 	}
 
