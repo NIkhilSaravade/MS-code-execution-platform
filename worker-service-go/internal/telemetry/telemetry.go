@@ -26,8 +26,11 @@ func (p *Provider) Shutdown(ctx context.Context) error {
 // Init configures the global tracer and propagator.
 // The endpoint should be the OTLP HTTP collector (e.g. http://otel-collector:4318).
 func Init(ctx context.Context, serviceName, serviceVersion, otlpEndpoint string) (*Provider, error) {
+	// WithEndpointURL (not WithEndpoint, which takes a bare host:port and
+	// would double up the scheme) since otlpEndpoint is a full URL like
+	// "http://otel-collector:4318".
 	exp, err := otlptracehttp.New(ctx,
-		otlptracehttp.WithEndpoint(otlpEndpoint),
+		otlptracehttp.WithEndpointURL(otlpEndpoint),
 		otlptracehttp.WithInsecure(), // TLS is handled at the service mesh layer in production
 	)
 	if err != nil {
