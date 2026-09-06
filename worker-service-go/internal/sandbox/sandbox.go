@@ -72,12 +72,14 @@ func buildLangDescriptors(cfg *config.Config, images map[string]string) map[doma
 			Image:          images["python"],
 			ExecCmd:        []string{"python3", "/sandbox/solution.py"},
 			SourceFilename: "solution.py",
+			CPUQuota:       cfg.SandboxCPUQuotaPython,
 		},
 		domain.LangJava: {
 			Image:          images["java"],
 			CompileCmd:     []string{"javac", "/sandbox/Main.java"},
 			ExecCmd:        []string{"java", "-cp", "/sandbox", "Main"},
 			SourceFilename: "Main.java",
+			CPUQuota:       cfg.SandboxCPUQuotaJava,
 		},
 		domain.LangCPP: {
 			Image:          images["cpp"],
@@ -95,11 +97,13 @@ func buildLangDescriptors(cfg *config.Config, images map[string]string) map[doma
 			Image:          images["javascript"],
 			ExecCmd:        []string{"node", "/sandbox/solution.js"},
 			SourceFilename: "solution.js",
+			CPUQuota:       cfg.SandboxCPUQuotaJavaScript,
 		},
 		domain.LangTypeScript: {
 			Image:          images["typescript"],
 			CompileCmd:     []string{"tsc", "--target", "es2016", "--module", "commonjs", "/sandbox/solution.ts"},
 			ExecCmd:        []string{"node", "/sandbox/solution.js"},
+			CPUQuota:       cfg.SandboxCPUQuotaTypeScript,
 			SourceFilename: "solution.ts",
 		},
 		domain.LangGo: {

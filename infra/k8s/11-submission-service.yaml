@@ -117,7 +117,7 @@ spec:
               cpu: "75m"
               memory: "450Mi"
             limits:
-              cpu: "750m"
+              cpu: "500m"
               memory: "576Mi"
       volumes:
         - name: postgres-ca-cert

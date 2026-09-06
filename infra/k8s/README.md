@@ -170,6 +170,32 @@ pod's worth of extra headroom, not a multiple of it. No ConfigMap change is
 needed to pick this up - the default already applies unless you explicitly
 set `SANDBOX_CPU_QUOTA_GO` to something else.
 
+**Every other language now has its own tier too, not just Go** -
+`SANDBOX_CPU_QUOTA_PYTHON`/`SANDBOX_CPU_QUOTA_JAVASCRIPT` default to `0.15`
+(pure interpretation, no compile step, needs meaningfully less than the
+0.3 platform default), and `SANDBOX_CPU_QUOTA_JAVA`/`SANDBOX_CPU_QUOTA_TYPESCRIPT`
+default to `0.5` (both have a real compile step - `javac`/`tsc` - and were
+sitting at the same 0.3 quota that silently broke Go under load; neither
+has shown that failure live, but a modest margin here is cheap insurance
+against finding out from a production incident instead of ahead of one).
+C/C++ stay on the 0.3 platform default - small single-file native compiles
+are cheap enough that no override was needed. None of these need a
+ConfigMap change either - the defaults above already apply.
+
+**Platform-namespace CPU *limits* were trimmed** (auth-service, api-gateway,
+submission-service, problem-service: 750m→500m; ai-analysis-service,
+execution-result-service: 500m→400m; user-service, solution-service:
+500m→350m; discovery-service and worker-service-go left unchanged - the
+former is the single most mesh-critical process, the latter genuinely
+needs its full core under real submission load). This doesn't change what
+gets scheduled (that's governed by `requests`, untouched here) - it caps
+how far the *combined* platform namespace can burst at once, which is what
+was driving the cascading CFS-throttling behind the intermittent
+Eureka/DNS flakiness and "works, then randomly doesn't" reports:
+platform-wide limits dropped from 6700m to 5200m (down from 167% to 130%
+of this node's 4000m capacity, on top of whatever the sandbox pool is
+using at the time).
+
 ## Prerequisites this depends on - do these BEFORE applying the above
 
 1. **CNI swap: Flannel → Calico.** k3s's default CNI (Flannel) does not
