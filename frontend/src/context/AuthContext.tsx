@@ -109,16 +109,38 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const payload = decodeJwtPayload(accessToken);
     if (!payload?.exp) return;
 
-    const msUntilExpiry = payload.exp * 1000 - Date.now();
-    if (msUntilExpiry <= REFRESH_BUFFER_MS) {
-      refreshAccessToken().catch(() => {});
-      return;
+    let cancelled = false;
+    // refreshAccessToken() already retries transient network/5xx failures a
+    // few times internally (see tokenStore.ts) and only clears the session
+    // on a genuine rejection from auth-service. If it still fails after
+    // those retries, accessToken hasn't changed, so this effect won't
+    // re-run on its own - fall back to trying again shortly, rather than
+    // silently giving up until the token hard-expires.
+    const RETRY_ON_FAILURE_MS = 10_000;
+    function attempt() {
+      refreshAccessToken().catch(() => {
+        if (!cancelled) {
+          retryTimer = setTimeout(attempt, RETRY_ON_FAILURE_MS);
+        }
+      });
     }
 
-    const timer = setTimeout(() => {
-      refreshAccessToken().catch(() => {});
-    }, msUntilExpiry - REFRESH_BUFFER_MS);
-    return () => clearTimeout(timer);
+    const msUntilExpiry = payload.exp * 1000 - Date.now();
+    let retryTimer: ReturnType<typeof setTimeout>;
+    if (msUntilExpiry <= REFRESH_BUFFER_MS) {
+      attempt();
+      return () => {
+        cancelled = true;
+        clearTimeout(retryTimer);
+      };
+    }
+
+    const timer = setTimeout(attempt, msUntilExpiry - REFRESH_BUFFER_MS);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      clearTimeout(retryTimer);
+    };
   }, [accessToken]);
 
   async function login(email: string, password: string) {
