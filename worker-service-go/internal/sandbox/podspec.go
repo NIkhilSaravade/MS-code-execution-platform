@@ -29,7 +29,11 @@ import (
 // flag to set; there is nothing to configure here.
 func buildPodSpec(cfg *config.Config, desc *langDescriptor, lang domain.Language) *corev1.Pod {
 	memQty := resource.MustParse(fmt.Sprintf("%dMi", cfg.SandboxMemoryMB))
-	cpuQty := resource.MustParse(strconv.FormatFloat(cfg.SandboxCPUQuota, 'f', -1, 64))
+	cpuQuota := cfg.SandboxCPUQuota
+	if desc.CPUQuota > 0 {
+		cpuQuota = desc.CPUQuota
+	}
+	cpuQty := resource.MustParse(strconv.FormatFloat(cpuQuota, 'f', -1, 64))
 	tmpSize := resource.MustParse("64Mi")
 
 	runAsUser := int64(65534) // "nobody" on most distros, same UID the old Docker containers ran as
