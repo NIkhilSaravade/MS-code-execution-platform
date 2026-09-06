@@ -130,7 +130,9 @@ kubectl create configmap worker-service-go-config -n platform \
   --from-literal=S3_BUCKET_TEST_CASES=platform-test-cases \
   --from-literal=OTEL_EXPORTER_OTLP_ENDPOINT=http://10.0.0.14:4318 \
   --from-literal=KAFKA_SASL_USERNAME=worker \
-  --from-literal=KAFKA_TLS_CA_CERT_PATH=/certs/ca.crt
+  --from-literal=KAFKA_TLS_CA_CERT_PATH=/certs/ca.crt \
+  --from-literal=SANDBOX_CPU_QUOTA=0.3 \
+  --from-literal=SANDBOX_POOL_SIZE=2
 
 kubectl create secret generic worker-service-go-secrets -n platform \
   --from-literal=KAFKA_SASL_PASSWORD="$KAFKA_WORKER_PASSWORD" \
@@ -140,6 +142,19 @@ kubectl create secret generic worker-service-go-secrets -n platform \
 
 (Swap `10.0.0.14` for the VM's actual private IP if it ever changes - same
 value already used throughout `05-configmap-infra-endpoints.yaml`.)
+
+⚠️ **`SANDBOX_CPU_QUOTA`/`SANDBOX_POOL_SIZE` overrides above are required on
+this size of node, not optional.** The code's own defaults
+(`SANDBOX_CPU_QUOTA=1.0`, i.e. one full CPU per sandbox pod, and
+`SANDBOX_POOL_SIZE=3` idle pods kept warm *per language*) assume a node with
+real headroom. On this 4-vCPU VM, with ~10 platform services also holding
+their own CPU requests, the default quota let only 2-3 sandbox pods schedule
+at all before the node ran out of allocatable CPU - every language after
+that sat `Pending` forever and every submission needing it timed out after
+`SANDBOX_POD_STARTUP_TIMEOUT` (30s default), surfacing to the frontend as
+"Timed out waiting for a judging result." `0.3`/`2` lets several languages'
+pools coexist; tune both down further (or up, on a bigger node) based on
+`kubectl describe node`'s Allocated resources section.
 
 ## Prerequisites this depends on - do these BEFORE applying the above
 
