@@ -99,8 +99,13 @@ func buildLangDescriptors(images map[string]string) map[domain.Language]*langDes
 			SourceFilename: "solution.ts",
 		},
 		domain.LangGo: {
-			Image:          images["go"],
-			CompileCmd:     []string{"go", "build", "-o", "/sandbox/solution", "/sandbox/solution.go"},
+			Image: images["go"],
+			// GOTMPDIR must already exist as a directory - unlike GOCACHE,
+			// Go's toolchain does not create it, it only stats it
+			// ("go: creating work dir: stat /sandbox/.gotmp: no such file or
+			// directory"). Routing the compile through a shell lets us
+			// mkdir -p both dirs before go build ever runs.
+			CompileCmd:     []string{"sh", "-c", "mkdir -p /sandbox/.gocache /sandbox/.gotmp && go build -o /sandbox/solution /sandbox/solution.go"},
 			ExecCmd:        []string{"/sandbox/solution"},
 			SourceFilename: "solution.go",
 			// GOCACHE/GOTMPDIR/HOME must NOT point at /tmp: that volume is a
