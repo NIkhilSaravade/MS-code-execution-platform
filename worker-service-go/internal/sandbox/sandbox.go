@@ -118,7 +118,20 @@ func buildLangDescriptors(images map[string]string) map[domain.Language]*langDes
 			// compile step doesn't capture - see Session.NewSession).
 			// /sandbox (the "scratch" emptyDir) has no size limit and is
 			// backed by the node's overlay disk, so it's the correct place.
-			Env: []string{"GOCACHE=/sandbox/.gocache", "GOTMPDIR=/sandbox/.gotmp", "HOME=/sandbox", "GOMAXPROCS=1", "GOFLAGS=-p=1"},
+			//
+			// GOPROXY/GOSUMDB default to proxy.golang.org/sum.golang.org,
+			// which need network access Go assumes is there even for a
+			// dependency-free single file - the sandbox pod has none (by
+			// design, see the NetworkPolicy note atop podspec.go), so every
+			// build wasted 20-30s on doomed DNS lookups (multiplied by
+			// Kubernetes' DNS search-domain suffixes) before falling through
+			// to actually compiling. That routinely blew past the compile
+			// step's own timeout, killing `go build` before it printed
+			// anything - an empty-output CE with no diagnostic to go on,
+			// confirmed live: 34.68s with these unset vs. 0.61s with them
+			// off. Since nothing here ever has real dependencies to fetch,
+			// disabling both outright is correct, not just a workaround.
+			Env: []string{"GOCACHE=/sandbox/.gocache", "GOTMPDIR=/sandbox/.gotmp", "HOME=/sandbox", "GOMAXPROCS=1", "GOFLAGS=-p=1", "GOPROXY=off", "GOSUMDB=off"},
 		},
 	}
 }
