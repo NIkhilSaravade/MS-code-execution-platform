@@ -156,6 +156,20 @@ that sat `Pending` forever and every submission needing it timed out after
 pools coexist; tune both down further (or up, on a bigger node) based on
 `kubectl describe node`'s Allocated resources section.
 
+⚠️ **Go is the one language that needs more than `SANDBOX_CPU_QUOTA`
+gives it, even after the tuning above.** Its toolchain burns several real
+CPU-seconds compiling even a trivial, dependency-free program - under a
+0.3-CPU quota that gets CFS-throttled into 30+ seconds of wall-clock time,
+blowing past the compile step's own timeout and killing `go build` before
+it prints anything (an empty, undiagnosable CE). `SANDBOX_CPU_QUOTA_GO`
+(defaults to `1.0`, i.e. a full CPU, independent of `SANDBOX_CPU_QUOTA`)
+overrides the quota for Go's pool only - every other language either
+doesn't compile or compiles fast enough that the platform-wide quota is
+fine. Pool size is 1 per language on this node, so this only costs one
+pod's worth of extra headroom, not a multiple of it. No ConfigMap change is
+needed to pick this up - the default already applies unless you explicitly
+set `SANDBOX_CPU_QUOTA_GO` to something else.
+
 ## Prerequisites this depends on - do these BEFORE applying the above
 
 1. **CNI swap: Flannel → Calico.** k3s's default CNI (Flannel) does not

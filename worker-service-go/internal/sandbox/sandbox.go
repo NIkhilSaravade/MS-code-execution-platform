@@ -60,9 +60,13 @@ type langDescriptor struct {
 	// Env holds extra "KEY=VALUE" environment variables for this language's
 	// pod. Only Go currently needs this (GOCACHE/HOME/GOMAXPROCS/GOFLAGS).
 	Env []string
+	// CPUQuota overrides cfg.SandboxCPUQuota for this language's pool only.
+	// Zero means "use the platform-wide default" - see cfg.SandboxCPUQuotaGo
+	// for why Go alone needs a higher tier.
+	CPUQuota float64
 }
 
-func buildLangDescriptors(images map[string]string) map[domain.Language]*langDescriptor {
+func buildLangDescriptors(cfg *config.Config, images map[string]string) map[domain.Language]*langDescriptor {
 	return map[domain.Language]*langDescriptor{
 		domain.LangPython: {
 			Image:          images["python"],
@@ -131,7 +135,8 @@ func buildLangDescriptors(images map[string]string) map[domain.Language]*langDes
 			// confirmed live: 34.68s with these unset vs. 0.61s with them
 			// off. Since nothing here ever has real dependencies to fetch,
 			// disabling both outright is correct, not just a workaround.
-			Env: []string{"GOCACHE=/sandbox/.gocache", "GOTMPDIR=/sandbox/.gotmp", "HOME=/sandbox", "GOMAXPROCS=1", "GOFLAGS=-p=1", "GOPROXY=off", "GOSUMDB=off"},
+			Env:      []string{"GOCACHE=/sandbox/.gocache", "GOTMPDIR=/sandbox/.gotmp", "HOME=/sandbox", "GOMAXPROCS=1", "GOFLAGS=-p=1", "GOPROXY=off", "GOSUMDB=off"},
+			CPUQuota: cfg.SandboxCPUQuotaGo,
 		},
 	}
 }
@@ -199,7 +204,7 @@ func New(bgCtx context.Context, cfg *config.Config) (*Sandbox, error) {
 	ctx, cancel := context.WithCancel(bgCtx)
 	return &Sandbox{
 		cfg:            cfg,
-		langs:          buildLangDescriptors(cfg.LanguageImages),
+		langs:          buildLangDescriptors(cfg, cfg.LanguageImages),
 		restCfg:        restCfg,
 		clientset:      clientset,
 		pools:          make(map[domain.Language]*pool),

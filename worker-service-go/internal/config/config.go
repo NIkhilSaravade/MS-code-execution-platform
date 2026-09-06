@@ -63,6 +63,18 @@ type Config struct {
 	SandboxRuntime     string
 	SandboxMemoryMB    int
 	SandboxCPUQuota    float64 // fractional CPUs, e.g. 1.0
+	// SandboxCPUQuotaGo overrides SandboxCPUQuota for Go's pool only. Go's
+	// toolchain needs several real CPU-seconds even to compile a trivial,
+	// dependency-free program (measured ~10s user+sys for a Two Sum-sized
+	// solution) - under the platform-wide quota (0.3 on the current 4-vCPU
+	// node, see infra/k8s/README.md), CFS throttling stretched that into
+	// ~34s of wall-clock time, blowing past the compile step's own timeout
+	// and killing `go build` before it ever produced output (an empty CE
+	// with nothing to diagnose). Every other language either doesn't
+	// compile at all or compiles fast enough that the platform-wide quota
+	// is fine - only Go needs its own tier. Pool size is 1 per language, so
+	// this only costs one pod's worth of extra headroom, not a multiple of it.
+	SandboxCPUQuotaGo  float64
 	SandboxPidsLimit   int     // NOT enforced per-pod (see K8sPodPidsLimitNote) - kept only for documentation/logging parity with the old Docker config
 	SandboxOutputCapKB int     // stdout+stderr combined cap
 	SandboxWallTimeout time.Duration // enforced by worker, not the container
@@ -138,6 +150,7 @@ func Load() (*Config, error) {
 	cfg.SandboxRuntime = getEnvOrDefault("SANDBOX_RUNTIME_CLASS", "")
 	cfg.SandboxMemoryMB = getEnvInt("SANDBOX_MEMORY_MB", 256, &errs)
 	cfg.SandboxCPUQuota = getEnvFloat("SANDBOX_CPU_QUOTA", 1.0, &errs)
+	cfg.SandboxCPUQuotaGo = getEnvFloat("SANDBOX_CPU_QUOTA_GO", 1.0, &errs)
 	cfg.SandboxPidsLimit = getEnvInt("SANDBOX_PIDS_LIMIT", 64, &errs)
 	cfg.SandboxOutputCapKB = getEnvInt("SANDBOX_OUTPUT_CAP_KB", 512, &errs)
 	cfg.SandboxWallTimeout = getEnvDuration("SANDBOX_WALL_TIMEOUT", 10*time.Second, &errs)
