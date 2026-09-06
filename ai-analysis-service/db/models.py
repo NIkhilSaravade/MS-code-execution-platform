@@ -5,9 +5,12 @@ from db.database import Base
 
 class AnalysisCache(Base):
     """Content-addressed cache: one row per distinct (problem_id, normalized
-    code) pair, regardless of how many submissions share that exact code -
-    see services/analysis_pipeline.py's _cache_key. cache_key is
-    sha256(problem_id + normalized_code)."""
+    code, verdict status) triple, regardless of how many submissions share
+    that exact code+verdict - see services/analysis_pipeline.py's
+    _cache_key. cache_key is sha256(problem_id + normalized_code + status).
+    status is part of the key so a stale FAILED-verdict analysis can never
+    be served back for the same code once it's resubmitted and PASSES (or
+    vice versa)."""
 
     __tablename__ = "analysis_cache"
 

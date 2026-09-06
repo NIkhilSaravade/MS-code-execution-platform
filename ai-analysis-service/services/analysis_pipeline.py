@@ -23,9 +23,14 @@ def _normalize_code(code: str) -> str:
     return "\n".join(line.rstrip() for line in code.strip().splitlines())
 
 
-def _cache_key(problem_id: int, code: str) -> str:
+def _cache_key(problem_id: int, code: str, status: str) -> str:
+    # status is part of the key so a CE/FAILED-verdict analysis cached for
+    # this exact code can never be served back once the same code is
+    # resubmitted and actually PASSES (or vice versa) - those are different
+    # analyses (different prompt template, different schema) even though
+    # the code text is identical.
     normalized = _normalize_code(code)
-    return hashlib.sha256(f"{problem_id}:{normalized}".encode("utf-8")).hexdigest()
+    return hashlib.sha256(f"{problem_id}:{normalized}:{status}".encode("utf-8")).hexdigest()
 
 
 def _parse_raw_response(raw_response: str):
@@ -69,7 +74,7 @@ def run_analysis(submission_id: int, submission: dict, problem: dict) -> dict:
 
     problem_id = submission["problemId"]
     user_id = submission["userId"]
-    cache_key = _cache_key(problem_id, submission["code"])
+    cache_key = _cache_key(problem_id, submission["code"], submission["status"])
 
     db = SessionLocal()
     try:
