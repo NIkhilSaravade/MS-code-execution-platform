@@ -13,6 +13,16 @@ spec:
       labels:
         app: submission-service
     spec:
+      # See 04-worker-deployment.yaml's hostAliases comment: Kafka advertises
+      # itself as "kafka:9093" (docker-compose's KAFKA_ADVERTISED_LISTENERS),
+      # which this Spring Kafka client also needs to resolve for both
+      # producer and consumer group coordinator connections - without this,
+      # publishing SubmissionCreatedEvent fails with UnknownHostException
+      # and eventually times out.
+      hostAliases:
+        - ip: "10.0.0.14"
+          hostnames:
+            - "kafka"
       imagePullSecrets:
         - name: ghcr-pull-secret
       containers:
