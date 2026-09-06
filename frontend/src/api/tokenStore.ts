@@ -57,6 +57,66 @@ export function clearTokens() {
 // caller during a refresh shares this one in-flight request instead.
 let refreshInFlight: Promise<string> | null = null;
 
+// The platform's single node routinely has brief network hiccups (Eureka/
+// DNS cache-refresh failures, a stale pod IP after a reschedule, a 5xx from
+// the gateway while the mesh reconverges) that have nothing to do with
+// whether the refresh token itself is still valid. Retrying a couple of
+// times, with a short pause, absorbs those instead of treating every one
+// as "your session is dead."
+const MAX_REFRESH_ATTEMPTS = 3;
+const RETRY_DELAY_MS = 1500;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function attemptRefresh(refreshToken: string, attemptsLeft: number): Promise<string> {
+  let response: Response;
+  try {
+    // Plain fetch, not apiFetch: apiFetch's own 401 handling calls back into
+    // refreshAccessToken(), so routing the refresh call itself through
+    // apiFetch would recurse the moment a refresh token was ever rejected.
+    response = await fetch(`${API_BASE_URL}/auth/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refreshToken }),
+    });
+  } catch (networkErr) {
+    // fetch() itself threw - DNS resolution failure, connection refused/
+    // reset, etc. The backend never got a chance to weigh in on the token,
+    // so this can't be treated as rejection. Retry before giving up, and
+    // even then, don't wipe the session (see the catch below).
+    if (attemptsLeft > 1) {
+      await delay(RETRY_DELAY_MS);
+      return attemptRefresh(refreshToken, attemptsLeft - 1);
+    }
+    throw networkErr;
+  }
+
+  if (response.status === 401 || response.status === 403) {
+    // auth-service actually looked at the token and rejected it - expired,
+    // already used, or revoked (e.g. the reuse-detection case above tripped
+    // elsewhere). There's no session left to salvage.
+    clearTokens();
+    throw new Error('Refresh token rejected');
+  }
+
+  if (!response.ok) {
+    // Any other non-2xx (5xx from the gateway, a 502/504 while a downstream
+    // pod's IP is stale, etc.) is an infra failure, not a verdict on the
+    // token - retry the same way as a network-level failure above.
+    if (attemptsLeft > 1) {
+      await delay(RETRY_DELAY_MS);
+      return attemptRefresh(refreshToken, attemptsLeft - 1);
+    }
+    throw new Error(`Refresh failed with status ${response.status}`);
+  }
+
+  const tokens = (await response.json()) as AuthTokens;
+  setTokens(tokens);
+  return tokens.accessToken;
+}
+
 export function refreshAccessToken(): Promise<string> {
   if (refreshInFlight) return refreshInFlight;
 
@@ -66,31 +126,9 @@ export function refreshAccessToken(): Promise<string> {
     return Promise.reject(new Error('No refresh token available'));
   }
 
-  // Plain fetch, not apiFetch: apiFetch's own 401 handling calls back into
-  // refreshAccessToken(), so routing the refresh call itself through
-  // apiFetch would recurse the moment a refresh token was ever rejected.
-  refreshInFlight = fetch(`${API_BASE_URL}/auth/refresh`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ refreshToken }),
-  })
-    .then(async (response) => {
-      if (!response.ok) {
-        throw new Error('Refresh token rejected');
-      }
-      const tokens = (await response.json()) as AuthTokens;
-      setTokens(tokens);
-      return tokens.accessToken;
-    })
-    .catch((err) => {
-      // Expired, already used, or revoked (e.g. the reuse-detection case
-      // above tripped elsewhere) - there's no session left to salvage.
-      clearTokens();
-      throw err;
-    })
-    .finally(() => {
-      refreshInFlight = null;
-    });
+  refreshInFlight = attemptRefresh(refreshToken, MAX_REFRESH_ATTEMPTS).finally(() => {
+    refreshInFlight = null;
+  });
 
   return refreshInFlight;
 }
