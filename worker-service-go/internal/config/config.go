@@ -75,6 +75,21 @@ type Config struct {
 	// is fine - only Go needs its own tier. Pool size is 1 per language, so
 	// this only costs one pod's worth of extra headroom, not a multiple of it.
 	SandboxCPUQuotaGo  float64
+	// SandboxCPUQuotaPython/JavaScript override SandboxCPUQuota down for the
+	// two languages that never compile at all (pure interpretation) - they
+	// need meaningfully less than the 0.3 platform default, freeing a little
+	// more headroom for languages that do need it (Go, and the two below).
+	SandboxCPUQuotaPython     float64
+	SandboxCPUQuotaJavaScript float64
+	// SandboxCPUQuotaJava/TypeScript override SandboxCPUQuota up for the two
+	// remaining languages with a real compile step (javac, tsc). Neither
+	// showed Go's specific failure live, but both do genuine CPU work to
+	// compile even a trivial program, and both were sitting at the same 0.3
+	// quota that just caused Go to silently fail under load - a modest
+	// margin here is cheap insurance against hitting the same class of bug
+	// under real traffic instead of finding out from another live incident.
+	SandboxCPUQuotaJava       float64
+	SandboxCPUQuotaTypeScript float64
 	SandboxPidsLimit   int     // NOT enforced per-pod (see K8sPodPidsLimitNote) - kept only for documentation/logging parity with the old Docker config
 	SandboxOutputCapKB int     // stdout+stderr combined cap
 	SandboxWallTimeout time.Duration // enforced by worker, not the container
@@ -151,6 +166,10 @@ func Load() (*Config, error) {
 	cfg.SandboxMemoryMB = getEnvInt("SANDBOX_MEMORY_MB", 256, &errs)
 	cfg.SandboxCPUQuota = getEnvFloat("SANDBOX_CPU_QUOTA", 1.0, &errs)
 	cfg.SandboxCPUQuotaGo = getEnvFloat("SANDBOX_CPU_QUOTA_GO", 1.0, &errs)
+	cfg.SandboxCPUQuotaPython = getEnvFloat("SANDBOX_CPU_QUOTA_PYTHON", 0.15, &errs)
+	cfg.SandboxCPUQuotaJavaScript = getEnvFloat("SANDBOX_CPU_QUOTA_JAVASCRIPT", 0.15, &errs)
+	cfg.SandboxCPUQuotaJava = getEnvFloat("SANDBOX_CPU_QUOTA_JAVA", 0.5, &errs)
+	cfg.SandboxCPUQuotaTypeScript = getEnvFloat("SANDBOX_CPU_QUOTA_TYPESCRIPT", 0.5, &errs)
 	cfg.SandboxPidsLimit = getEnvInt("SANDBOX_PIDS_LIMIT", 64, &errs)
 	cfg.SandboxOutputCapKB = getEnvInt("SANDBOX_OUTPUT_CAP_KB", 512, &errs)
 	cfg.SandboxWallTimeout = getEnvDuration("SANDBOX_WALL_TIMEOUT", 10*time.Second, &errs)
