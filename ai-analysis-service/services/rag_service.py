@@ -44,3 +44,18 @@ class RAGService:
 
     def retrieve(self, query):
         return self.vector_store.similarity_search(query, k=3)
+
+
+# Lazy singleton - RAGService.__init__ eagerly connects to Postgres/pgvector
+# and loads the HuggingFaceEmbeddings model, which used to happen at import
+# time (both here and, previously, again in services/analysis_service.py's
+# module scope) and made importing that module require live infra. Nothing
+# but get_rag_service() should construct a RAGService now.
+_rag_service_singleton: "RAGService | None" = None
+
+
+def get_rag_service() -> "RAGService":
+    global _rag_service_singleton
+    if _rag_service_singleton is None:
+        _rag_service_singleton = RAGService()
+    return _rag_service_singleton

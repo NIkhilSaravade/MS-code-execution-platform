@@ -18,3 +18,7 @@ opentelemetry-api
 opentelemetry-sdk
 opentelemetry-instrumentation-fastapi
 opentelemetry-exporter-otlp-proto-http
+ruff
+bandit
+pytest
+pytest-asyncio
