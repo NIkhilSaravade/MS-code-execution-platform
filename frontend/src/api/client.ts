@@ -14,6 +14,22 @@ import { refreshAccessToken } from './tokenStore';
 // visualizer endpoint - see api/solutions.ts) can build one themselves.
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080';
 
+// A plain Error carries only a message - not enough for a caller to tell
+// "this failed because of a 429 rate limit, show a specific retry message"
+// apart from any other failure. ApiError is still `instanceof Error` (it
+// extends it), so every existing `catch (err) { err instanceof Error ? ... }`
+// call site across the app keeps working unchanged; only callers that
+// specifically care about the status code (see api/submissions.ts's
+// isRateLimitError) need to know this subclass exists at all.
+export class ApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
 function send(path: string, init?: RequestInit): Promise<Response> {
   return fetch(`${API_BASE_URL}${path}`, {
     ...init,
@@ -87,7 +103,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
       // Response body wasn't JSON (or was empty) — fall back to the
       // generic message above instead of letting this parse error escape.
     }
-    throw new Error(message);
+    throw new ApiError(message, response.status);
   }
 
   // DELETE endpoints (and any other void-returning call) come back 200/204
