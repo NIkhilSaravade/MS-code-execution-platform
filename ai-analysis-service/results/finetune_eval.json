@@ -1,0 +1,78 @@
+{
+  "base": {
+    "label": "base",
+    "catchRate": 0.6,
+    "falsePositiveRate": 0.0,
+    "jsonParseFailures": 1,
+    "perCase": [
+      {
+        "id": "two_sum",
+        "bugClass": "comparator_flip",
+        "caught": false,
+        "falsePositive": false
+      },
+      {
+        "id": "valid_parentheses",
+        "bugClass": "missing_none_check",
+        "caught": true,
+        "falsePositive": false
+      },
+      {
+        "id": "max_subarray",
+        "bugClass": "off_by_one",
+        "caught": true,
+        "falsePositive": false
+      },
+      {
+        "id": "is_palindrome",
+        "bugClass": "resource_leak",
+        "caught": true,
+        "falsePositive": false
+      },
+      {
+        "id": "fibonacci_memo",
+        "bugClass": "mutable_default_argument",
+        "caught": false,
+        "falsePositive": false
+      }
+    ]
+  },
+  "finetuned": {
+    "label": "finetuned",
+    "catchRate": 0.4,
+    "falsePositiveRate": 0.0,
+    "jsonParseFailures": 0,
+    "perCase": [
+      {
+        "id": "two_sum",
+        "bugClass": "comparator_flip",
+        "caught": true,
+        "falsePositive": false
+      },
+      {
+        "id": "valid_parentheses",
+        "bugClass": "missing_none_check",
+        "caught": true,
+        "falsePositive": false
+      },
+      {
+        "id": "max_subarray",
+        "bugClass": "off_by_one",
+        "caught": false,
+        "falsePositive": false
+      },
+      {
+        "id": "is_palindrome",
+        "bugClass": "resource_leak",
+        "caught": false,
+        "falsePositive": false
+      },
+      {
+        "id": "fibonacci_memo",
+        "bugClass": "mutable_default_argument",
+        "caught": false,
+        "falsePositive": false
+      }
+    ]
+  }
+}

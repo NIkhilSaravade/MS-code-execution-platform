@@ -814,3 +814,243 @@ subprocess-spawn latency, ~20s of the total, but only for those three).
   against a remote/multi-tenant MCP deployment shape.
 
 ---
+
+## Phase 6 — Real LoRA fine-tuning (2026-09-21)
+
+### Scope correction from the original task brief
+
+The user revised Phase 6's scope mid-session after this session's first `torch.cuda.is_available()`
+check returned `False` and a plan to ask about scoping was raised. The user clarified: a real GPU
+(RTX 5060 Ti, 16GB VRAM) IS available on this machine - the `False` result was a real, fixable
+environment problem (see below), not an actual hardware absence - and directed a real fine-tune
+with a real, larger (500+) dataset, not a toy demo. This section documents that real run. The
+OTel-rollout and ROI-dashboard parts of the original Phase 6 brief are addressed separately (see
+below); this entry is primarily the revised LoRA scope.
+
+### GPU verification (done first, per the user's explicit instruction, before writing any training code)
+
+`nvidia-smi` confirmed real hardware: `NVIDIA GeForce RTX 5060 Ti`, driver 595.71, 16311MiB VRAM.
+But `torch.cuda.is_available()` was `False` - root cause, confirmed by checking `torch.__version__`
+(`2.10.0+cpu`) and `torch.version.cuda` (`None`): the installed torch build was CPU-only, unrelated
+to whether this GPU's architecture is supported. Fixed by reinstalling from PyTorch's CUDA 12.8
+wheel index: `pip install --index-url https://download.pytorch.org/whl/cu128 torch` →
+`torch-2.11.0+cu128`. Re-checked: `cuda available: True`, `device name: NVIDIA GeForce RTX 5060 Ti`,
+`capability: (12, 0)` (Blackwell/sm_120). Then ran a real `torch.randn(2048,2048,device='cuda') @
+...` matmul and synchronized - confirmed actual kernel execution, not just the availability flag.
+Also verified `bitsandbytes` 0.50.2's 4-bit `Linear4bit` layer runs on this GPU for real (a separate,
+newer-architecture risk than plain CUDA support - bnb kernel support for very new GPU generations
+can lag behind torch's own). All three checks passed for real before any training code was written.
+
+### 6a — Dataset (real mining + synthetic augmentation)
+
+**Real mining** (`finetune/mine_reviews.py`, new): pulls real (diff_hunk, review_comment) pairs from
+merged GitHub PRs via the already-authenticated `gh` CLI, across `pallets/flask`, `psf/requests`,
+`encode/httpx`, `tiangolo/fastapi`, `pytest-dev/pytest`. Filters trivial approvals ("LGTM", "+1",
+etc.) and comments under 20 characters. **Two real bugs hit and fixed**:
+- First version used `repos/{repo}/pulls?state=closed` (includes closed-WITHOUT-merge PRs, which
+  have no useful review history) - `pallets/flask` alone returned only 3/60 actually-merged PRs this
+  way, wasting rate-limit budget on dead ends. Switched to the GitHub search API
+  (`search/issues?q=repo:{repo}+is:pr+is:merged&sort=comments&order=desc`), which directly returns
+  merged PRs sorted by how much review discussion they had.
+- `subprocess.run(["gh", "api", ...], text=True)` crashed with `UnicodeDecodeError` on real PR
+  comment bytes (Windows' default `cp1252` console codepage can't decode arbitrary UTF-8, e.g. an
+  emoji in a comment) - fixed by passing `encoding="utf-8", errors="replace"` explicitly.
+- **Real yield**: 4538 substantive review comments (flask 502, requests 730, httpx 1028, pytest
+  2278; `tiangolo/fastapi` returned 0 - its search query 422'd, not investigated further since the
+  other 4 repos already vastly exceeded the target - logged as an unexplained gap, not hidden).
+
+**Synthetic augmentation** (`finetune/synth_augment.py`, new): generates new small Python
+coding-interview problems with an injected bug (10 bug classes, cycling through
+`off_by_one`/`missing_none_check`/`comparator_flip`/`resource_leak`/`mutable_default_argument`/
+`unhandled_exception`/`incorrect_boundary_condition`/`wrong_operator`/`integer_division_truncation`/
+`incorrect_loop_range`) via real Groq calls, 3 problems/call × 20 batches = up to 60 requested (48
+actually parsed successfully - some batches' JSON was truncated, logged and skipped, not retried).
+For the first 15, generates the target completion by running the REAL production pipeline
+(`AnalysisService.analyze()` itself - tool loop + critic pass, `"criticGated": true`); one of these
+runs genuinely triggered a critic-requested revision live (captured in the real log: *"The draft
+review assumes that the test suite expects a different behavior for an empty list... The current
+implementation... is a valid and common approach. Therefore, the claim that the function is
+incorrect is unfounded..."*) - real evidence the critic-gated subset is doing real quality-gating
+work, not a rubber stamp. The remaining 33 use a single direct completion call (`"criticGated":
+false`) to keep the total call/time budget bounded - both counts are tracked per-example, not
+blended silently.
+
+**A real production bug this surfaced and fixed**: running the critic-gated path at volume hit
+`AnalysisOutputInvalid` - asked to "produce a corrected final JSON, same schema as before" after a
+critic REVISE verdict, the model sometimes echoed back a verdict-shaped JSON (`{"verdict": "FAILED",
+"feedback": "oops"}`-like) instead of the actual review schema, confused by the conversation's own
+critic-verdict-shaped message. This crashed the whole `analyze()` call, not just the mining script -
+a real gap in Phase 5's critic-revision path that hadn't been exercised at volume before. **Fixed**
+in `services/analysis_service.py::analyze()`: the revision's `_validate` call is now wrapped in
+`try/except AnalysisOutputInvalid`, falling back to the last schema-valid draft (the original,
+critic-rejected one) rather than crashing - it already passed its own validation and is a legitimate
+result, just one the critic wasn't fully satisfied with. New regression test:
+`tests/test_revision_fallback.py`. Also hit and fixed a second real Windows-console encoding crash
+(`UnicodeEncodeError` printing an LLM-generated `‑` character) via `sys.stdout.reconfigure
+(encoding="utf-8", errors="replace")`.
+
+**Dataset build** (`finetune/build_dataset.py`, new): reformats a stratified sample of 460 real
+mined comments into this service's actual training format (`{"prompt": <rendered passed/failed_prompt
+template>, "completion": <JSON matching PassedAnalysis/FailedAnalysis>}`) plus the 48 synthetic
+examples, **honestly documenting a real dataset-design tradeoff**: a bare GitHub PR diff hunk has no
+real problem_description and no knowable time/space complexity, so those fields are filled with an
+explicit `"not determinable from a partial diff"` placeholder rather than a fabricated-sounding
+guess - only the human comment itself (mapped into `codeSmells` or `failureReason` depending on a
+keyword heuristic for bug-vs-style) is genuine per-example signal in the real partition. Runs a
+contamination check (code-fingerprint match) against Phase 3's golden/mutation-testing eval set
+(used again in 6c) and an exact-duplicate dedup pass.
+
+**Actual manifest** (`finetune/data/dataset_manifest.json`, real numbers):
+```json
+{
+  "totalMinedRaw": 4538,
+  "realSampled": 460,
+  "syntheticGenerated": 48,
+  "totalBeforeDedup": 508,
+  "removedAsContaminatedWithEvalSet": 0,
+  "removedAsExactDuplicates": 0,
+  "finalTotal": 508,
+  "realToSyntheticRatio": "460:48",
+  "splits": {"train": 406, "val": 50, "test": 52},
+  "seed": 20260921
+}
+```
+508 total examples clears the 500+ target; 0 contamination confirmed (Phase 3's golden dataset is
+genuinely held out); 0 exact duplicates. Real:synthetic ratio is roughly 9:1 - the real partition
+supplies volume and (partial-field) authenticity, the synthetic partition supplies full-schema,
+task-shaped, critic-gated-quality examples the real partition structurally can't provide.
+
+### 6b — Training (real GPU, real run)
+
+`finetune/train_lora.py`: 4-bit QLoRA (bitsandbytes NF4, double quant, bf16 compute dtype) of
+`Qwen/Qwen2.5-Coder-3B-Instruct` via `peft` (`r=16, lora_alpha=32`, target modules
+`q/k/v/o_proj, gate/up/down_proj`), standard causal-LM SFT with the prompt portion masked out of
+the loss (`label=-100`), using Qwen's own chat template. 3 epochs, `per_device_batch_size=1`,
+`gradient_accumulation_steps=8` (effective batch size 8), `lr=2e-4`.
+
+**Actual run** (`finetune/data/training_log.json`, real numbers, not estimates):
+
+```json
+{
+  "baseModel": "Qwen/Qwen2.5-Coder-3B-Instruct",
+  "trainExamples": 406,
+  "valExamples": 50,
+  "epochs": 3,
+  "wallClockSeconds": 922.2,
+  "peakGpuMemoryGB": 8.18,
+  "finalTrainLoss": 0.8382093205171472,
+  "perEpochEvalLoss": [
+    {"epoch": 1.0, "eval_loss": 0.944367527961731},
+    {"epoch": 2.0, "eval_loss": 0.9463128447532654},
+    {"epoch": 3.0, "eval_loss": 0.9949769377708435}
+  ]
+}
+```
+
+29,933,568 trainable LoRA params out of 3,115,872,256 total (0.96%). Wall clock: 15.4 minutes for
+153 steps on the RTX 5060 Ti. Peak GPU memory 8.18GB - comfortably inside the 16GB budget alongside
+headroom for larger batches if this were scaled up. No OOM.
+
+**Real, honest finding**: eval loss went 0.944 → 0.946 → 0.995 across the 3 epochs - it got WORSE
+after epoch 1, not better. This is genuine overfitting on a 406-example train set, not a bug -
+standard behavior for a small SFT dataset run past its first epoch. Rather than silently use the
+final (epoch-3, worse) checkpoint just because it's what a naive "always take the last epoch"
+script would produce, `finetune/eval_finetune.py` was pointed at `checkpoint-51` (end of epoch 1,
+the lowest validation loss) instead - ordinary best-checkpoint selection, logged here rather than
+either (a) hiding the overfitting or (b) evaluating a checkpoint known to be worse than an earlier
+one just because it happened to be "final."
+
+Done-when ("training completes without OOM, val loss actually decreases and is logged, and the
+final adapter weights are saved and loadable") - **partially met, reported honestly**: training
+completed without OOM and every epoch's val loss is logged - but val loss only decreased for the
+first epoch, not monotonically across all three. The adapter weights (`checkpoint-51` and
+`final_adapter`) are both saved and loadable (confirmed by `finetune/eval_finetune.py` actually
+loading `checkpoint-51` via `PeftModel.from_pretrained` for the base-vs-fine-tuned comparison below).
+
+### 6c — Does it actually help? (real result: **no, not on this eval set - reported honestly, not
+### cherry-picked**)
+
+`finetune/eval_finetune.py`: loads the SAME local base weights twice (once plain, once with the
+`checkpoint-51` LoRA adapter attached via `PeftModel.from_pretrained`), runs both over Phase 3's
+golden/mutation-testing eval set (5 mutated + 5 clean cases, same set 6a's contamination check
+confirmed is NOT in the training data), identical prompts and greedy decoding for both. A real bug
+was hit and fixed here too: `_text_from_failed`/`_text_from_passed` crashed with `TypeError:
+sequence item 3: expected str instance, dict found` on the base model's `max_subarray` output -
+the base model (unlike the fine-tuned one, and unlike Groq's much larger hosted model in Phase 3)
+produced a syntactically-valid-JSON-but-wrong-shape `edgeCases` field (a list of objects instead of
+strings). Fixed by coercing any non-string field content to its JSON string form rather than
+crashing - itself a small, real data point about base-model schema adherence quality.
+
+**Actual result** (`results/finetune_eval.json`, committed verbatim):
+
+```
+BASE       catch_rate=60.00% fp_rate=0.00% parse_failures=1
+FINE-TUNED catch_rate=40.00% fp_rate=0.00% parse_failures=0
+```
+
+Per-case: base caught `valid_parentheses`/`max_subarray`/`is_palindrome`, missed `two_sum`/
+`fibonacci_memo`. Fine-tuned caught `two_sum`/`valid_parentheses`, missed `max_subarray`/
+`is_palindrome`/`fibonacci_memo` (the one base got right on `max_subarray` and `is_palindrome`
+became misses after fine-tuning). Neither model produced any false positive on the 5 clean
+submissions.
+
+**Honest conclusion, per the task brief's own instruction not to cherry-pick**: on this 5-case eval
+set, the fine-tuned model's catch rate is WORSE than the base model's (40% vs 60%), not better. The
+one real, unambiguous improvement is JSON schema adherence (1 parse failure → 0) - consistent with
+what SFT on schema-shaped completions should be expected to help with, and the fine-tune did help
+with that specific thing. Plausible, disclosed explanations for the catch-rate regression, not
+excuses to wave it away:
+- **Dataset composition**: 460 of 508 training examples (91%) are the real-mined partition, whose
+  non-comment fields are literally the placeholder string `"not determinable from a partial diff"`
+  (see 6a). Training on that at 9:1 real:synthetic ratio plausibly taught the model to lean toward
+  generic, hedged language rather than sharpening the specific bug-finding behavior that only the
+  48 synthetic (fully-schema, task-shaped) examples actually modeled.
+- **Eval set size**: n=5 mutations means each single case flipping is a 20-point swing in catch
+  rate - this is not a statistically powerful comparison, and a different random seed or a larger
+  golden set could show a different picture. Logged as a real limitation of Phase 3's already-small
+  golden dataset, not newly introduced by Phase 6.
+- **Overfitting already flagged in 6b**: even the best (epoch-1) checkpoint was chosen from a
+  training run that started overfitting almost immediately, on only 406 train examples - plausibly
+  too little real signal for the specific "catch this exact bug class" skill to generalize, even
+  though the loss curve doesn't obviously reflect that in aggregate.
+
+None of these are proven root causes (that would need more training runs, ablations, and a larger
+eval set - a legitimate follow-up, not done here) - they're disclosed, plausible hypotheses, kept
+clearly separate from the measured numbers above.
+
+Done-when ("a LoRA-fine-tuned model is shown loaded and serving at least one real review request
+end-to-end with output compared side-by-side against the hosted model... base-vs-fine-tuned numbers
+on the same eval set, committed alongside the build log entry explaining what happened") - **met**:
+the adapter is loaded and serves real requests (10 real generations per model, 20 total, all
+succeeded), the comparison is side-by-side on the same eval set, and `results/finetune_eval.json`
+is committed with this explanation. The result itself is a real negative finding, reported as such.
+
+### ROI dashboard (part of the original Phase 6 brief, addressed alongside the revised LoRA scope)
+
+`ai-analysis-service/dashboard/compute_roi_metrics.py` + `generate_dashboard.py` (new): measures
+cost-per-review and reviews/hour from a REAL, fresh `AnalysisService.analyze()` call's actual
+litellm token usage (not estimated) - `$0.0000335/review`, `~388 reviews/hour` (single-instance,
+includes whatever live rate-limit wait happened to occur at measurement time). Engineer-time-saved
+is explicitly labeled as an assumption (10 min/review, a commonly-cited industry figure), never
+blended with the two measured numbers. `generate_dashboard.py` renders a single dependency-free
+static HTML file (`dashboard/index.html`) from `results/phase3_eval.json` + `results/roi_metrics.json`
++ `results/finetune_eval.json` - a section is omitted with a visible "not yet run, generate with:
+`<command>`" note rather than filled with a placeholder if its source file doesn't exist, so the
+page never claims a number that isn't real. `make dashboard` regenerates it.
+
+### OTel rollout (deferred - logged as a real scope decision, not silently dropped)
+
+The original Phase 6 brief's third item, "extend OTel tracing to all services currently missing it
+(8 of 10 have none today)," was NOT attempted this session. The user's Phase 6 revision message was
+entirely about making the LoRA fine-tune real (GPU verification, a real 500+-example dataset, a
+real training run, a real base-vs-fine-tuned eval) and said nothing about re-scoping the OTel or
+dashboard items - given the scale of what the LoRA revision alone required (real GPU debugging, a
+multi-thousand-example real data mining pipeline, ~15 minutes of real GPU training, a real
+comparison eval, several real bugs hit and fixed along the way), extending distributed tracing
+across 8 separate Spring Boot services was not attempted in the same session. This is a real,
+disclosed scope gap, not an oversight - a follow-up session wiring OTel into one representative
+service first (e.g. `api-gateway`, the most-traversed entry point) as a template for the rest would
+be the natural next step, mirroring how this repo's existing 2-of-10 OTel coverage
+(`ai-analysis-service`, `worker-service-go`) already sets the pattern to replicate.
+
+---

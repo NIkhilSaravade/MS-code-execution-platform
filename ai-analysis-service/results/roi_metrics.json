@@ -1,0 +1,15 @@
+{
+  "measured": {
+    "costPerReviewUsd": 3.351e-05,
+    "sampleInputTokens": 387,
+    "sampleOutputTokens": 177,
+    "sampleWallClockSeconds": 9.29,
+    "reviewsPerHour": 387.5,
+    "measuredAt": "2026-09-21T07:24:01Z"
+  },
+  "estimated": {
+    "assumedHumanReviewMinutes": 10,
+    "assumptionSource": "Commonly cited industry figure for a focused review of a small diff (5-15 min range); not measured in this codebase.",
+    "engineerMinutesSavedPerReview": 10
+  }
+}

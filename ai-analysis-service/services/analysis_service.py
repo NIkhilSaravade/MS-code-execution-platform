@@ -144,9 +144,24 @@ class AnalysisService:
                 input_tokens=getattr(revision_usage, "prompt_tokens", 0) or 0,
                 output_tokens=getattr(revision_usage, "completion_tokens", 0) or 0,
             )
-            parsed = AnalysisService._validate(submission, raw_text)
-            parsed_dict = parsed.model_dump()
-            revised = True
+            try:
+                parsed = AnalysisService._validate(submission, raw_text)
+                parsed_dict = parsed.model_dump()
+                revised = True
+            except AnalysisOutputInvalid as exc:
+                # Real failure mode hit while running Phase 6's synthetic
+                # data generation against live Groq: asked to "produce a
+                # corrected final JSON, same schema as before," the model
+                # sometimes instead echoes a verdict-shaped JSON (mimicking
+                # the critic's own {"verdict": ..., "feedback": ...} shape
+                # from the conversation history) rather than the actual
+                # review schema. Rather than let a confused revision attempt
+                # crash an otherwise-valid analysis, fall back to the
+                # original (pre-revision) draft - it already passed its own
+                # schema validation and is a legitimate result, just one the
+                # critic wasn't fully satisfied with.
+                log.warning("analyze.revision_output_invalid", submission_id=submission_id, error=str(exc))
+                raw_text = json.dumps(parsed_dict)  # fall back to the last schema-valid draft
 
         return {
             "analysisType": parsed_dict.get("analysisType"),

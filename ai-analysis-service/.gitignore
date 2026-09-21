@@ -14,3 +14,13 @@ __pycache__/
 .idea/
 .vscode/
 .vendor/
+
+# Phase 6 fine-tuning: model weights/optimizer state don't belong in git
+# (checkpoint-51 alone is ~344MB including optimizer.pt; a real deployment
+# would push finetune/checkpoints/*/adapter_model.safetensors to an
+# artifact store/model registry instead - out of this phase's scope).
+# Datasets and results (small JSON/JSONL) ARE committed - see
+# finetune/data/*.jsonl, finetune/data/dataset_manifest.json,
+# finetune/data/training_log.json, results/finetune_eval.json.
+finetune/checkpoints/
+finetune/*.log
