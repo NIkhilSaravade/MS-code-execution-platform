@@ -8,8 +8,11 @@ prompt, the assertions on the final parsedAnalysis content would fail."""
 import json
 
 from services.analysis_service import AnalysisService
+from services.critic_agent import CriticVerdict
 from services.llm_provider import LLMProvider
 from tests.fakes import completion_response, tool_call
+
+_APPROVE = CriticVerdict(verdict="APPROVE", feedback="")
 
 VULNERABLE_CODE = "def run(user_input):\n    return eval(user_input)\n"
 SUBMISSION = {
@@ -31,6 +34,10 @@ def _tool_result_from_messages(messages) -> dict:
 def test_tool_call_result_changes_final_analysis(monkeypatch):
     monkeypatch.setattr("services.analysis_service.get_rag_service", lambda: _NullRag())
     monkeypatch.setattr("services.analysis_service.record_usage", lambda **kwargs: None)
+    # This test is about Phase 1's tool loop, not Phase 5's critic pass -
+    # force APPROVE so it isn't coupled to critic behavior (see
+    # tests/test_critic_agent.py for that).
+    monkeypatch.setattr("services.analysis_service.critique", lambda *a, **k: _APPROVE)
 
     calls = {"n": 0}
 
@@ -76,6 +83,7 @@ def test_no_tool_call_still_produces_valid_analysis(monkeypatch):
     one - the final answer comes straight from the first call."""
     monkeypatch.setattr("services.analysis_service.get_rag_service", lambda: _NullRag())
     monkeypatch.setattr("services.analysis_service.record_usage", lambda **kwargs: None)
+    monkeypatch.setattr("services.analysis_service.critique", lambda *a, **k: _APPROVE)
 
     def fake_complete_with_tools(messages, tools=None):
         payload = {

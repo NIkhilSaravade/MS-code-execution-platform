@@ -679,3 +679,138 @@ revert.
   gate.
 
 ---
+
+## Phase 5 — Multi-agent / MCP layer (2026-09-21)
+
+### What was built
+
+**`ai-analysis-service/mcp_server/server.py`** (new) - a real MCP server using the official `mcp`
+SDK (installed fresh this phase; v2.2.0, whose API renamed `FastMCP` to `MCPServer` and
+`Tool.inputSchema` to `Tool.input_schema` from the v1 docs/examples still circulating - both hit
+for real while writing this, not assumed, see below). Exposes the same four tools
+`services/tools.py` implements (`run_linter`, `run_security_scan`, `fetch_similar_past_reviews`,
+`get_style_guide_section`) as `@mcp_server.tool()`-decorated wrappers that delegate straight to
+those existing, already-tested functions - a protocol wrapper, not a reimplementation. Runs over
+stdio (`venv/Scripts/python.exe -m mcp_server.server`).
+
+**`ai-analysis-service/services/mcp_client.py`** (new) - the real MCP client side:
+`list_tools_sync()`/`call_tool_sync(name, args)` spawn the server above as a subprocess and speak
+actual JSON-RPC 2.0 over stdio via the `mcp` SDK's `stdio_client`/`ClientSession`. Bridges with
+`asyncio.run()` per call since `services/agent_loop.py` is synchronous (called from both a sync
+Kafka-consumer path and inside a sync generator driving an async SSE endpoint) while the `mcp`
+client API is async - documented in the module as a real, known inefficiency (fresh subprocess per
+call, no session reuse), not silently glossed over.
+
+**`ai-analysis-service/services/agent_loop.py`** - `resolve_tool_calls` rewired: tool schemas now
+come from `mcp_client.list_tools_sync()` (cached per process after first discovery) instead of
+importing `services.tools.TOOL_SCHEMAS` directly, and each tool call executes via
+`mcp_client.call_tool_sync(name, args)` instead of an in-process `TOOL_DISPATCH` dict lookup. The
+primary reviewer agent's tool calls now genuinely go through MCP.
+
+**`ai-analysis-service/services/critic_agent.py`** (new) - `critique(problem_description, code,
+draft) -> CriticVerdict`, a second, independent LLM call (own system prompt, own schema:
+`{"verdict": "APPROVE"|"REVISE", "feedback": "..."}`) that judges the primary agent's already-
+schema-validated draft. Fails open (treats an unparseable critic response as APPROVE) rather than
+blocking a legitimate draft on a critic malfunction.
+
+**`ai-analysis-service/services/analysis_service.py`** - `analyze()` (non-streaming path only - see
+scope note below) now runs the critic after validating the primary draft; on `REVISE`, appends the
+critic's feedback as a new user turn and calls `finalize_non_stream` again for a corrected draft,
+which becomes the actual return value (`revised: True`, `criticVerdict: {...}` in the result dict).
+Capped at exactly one revision round, matching the task brief's "at least once," not an open-ended
+back-and-forth. `_build_messages` now returns `(messages, redacted_code)` so the critic call (and
+any future caller) gets the same already-redacted code the primary agent saw - never re-reads
+`submission["code"]` directly, so Phase 4's redaction guarantee still holds for this new call site.
+
+### Real API mismatches hit while building this (both confirmed by actually running the code)
+
+- `from mcp.server.fastmcp import FastMCP` (the API most existing MCP examples/docs show) raised
+  `ModuleNotFoundError` with an explicit message from the `mcp` package itself: v2.x renamed
+  `FastMCP` to `MCPServer` (`mcp.server.mcpserver.MCPServer`). Fixed by importing the new name.
+- `mcp.client.session`'s `Tool` objects expose `input_schema` (snake_case), not `inputSchema`
+  (the v1-era camelCase name) - hit as a real `AttributeError` while smoke-testing
+  `list_tools_sync()` before wiring it into `agent_loop.py`, fixed immediately.
+
+### Done-when check — actual output
+
+**"The primary reviewer's tool calls are demonstrably going through MCP (show the protocol
+messages in the build log or a test)"**:
+
+`tests/test_mcp_integration.py` (3 tests, marked `@pytest.mark.real_mcp` so the autouse mock every
+other test gets - see below - doesn't intercept these) - spawns the real server subprocess, lists
+tools via a real protocol round-trip, calls `run_linter` through it and gets back the real ruff
+finding, and confirms `services.agent_loop.resolve_tool_calls`, completely unmocked at the MCP
+boundary, does the same. Also ran `scripts/mcp_trace_demo.py`, which hand-speaks raw JSON-RPC to
+capture the literal bytes on the wire (the `mcp` SDK doesn't expose a hook to print these directly)
+- real captured protocol trace:
+
+```
+>>> {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", ...}}
+<<< {"jsonrpc":"2.0","id":1,"result":{"capabilities":{...},"protocolVersion":"2025-06-18","serverInfo":{"name":"ai-analysis-tools","version":"1.0.0"}}}
+>>> {"jsonrpc": "2.0", "method": "notifications/initialized"}
+>>> {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
+<<< {"jsonrpc":"2.0","id":2,"result":{"tools":[{"description":"Run a static linter...","inputSchema":{"properties":{"language":{"title":"Language","type":"string"},"code":{"title":"Code","type":"string"}},"required":["language","code"],"type":"object","title":"run_linterArguments"},"name":"run_linter"}, ...]}}
+>>> {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "run_linter", "arguments": {"language": "python", "code": "import os\ndef f():\n    return 1\n"}}}
+<<< {"jsonrpc":"2.0","id":3,"result":{"content":[{"text":"{\n  \"supported\": true,\n  \"issues\": [\n    {\n      \"code\": \"F401\",\n      \"message\": \"`os` imported but unused\",\n      \"line\": 1\n    }\n  ]\n}","type":"text"}],"isError":false}}
+```
+
+**"A test case exists where the critic agent catches and forces a revision of a deliberately bad
+primary-agent draft"**: `tests/test_critic_forces_revision.py::test_critic_rejects_bad_draft_and_forces_a_revision_that_replaces_it`.
+A deliberately wrong draft (`timeComplexity: "O(1)"` for a function that does a linear `for` loop
+over its input) is submitted to the fake primary agent; the critic (a separate fake call, same
+mock, distinguished by which system prompt it carries - `SYSTEM_PROMPT` vs `CRITIC_SYSTEM_PROMPT`)
+rejects it with a specific, correct reason; the primary agent is fed that reason and produces a
+corrected draft (`timeComplexity: "O(n)"`); the test asserts the FINAL result is the corrected
+draft, not the rejected one (`result["parsedAnalysis"]["timeComplexity"] == "O(n)"`,
+`result["parsedAnalysis"] != BAD_DRAFT`) and that `revised is True`. Passed.
+
+Ran the full suite: `venv/Scripts/python.exe -m pytest tests/ -v -k "not live"`:
+
+```
+52 passed, 2 deselected in 32.53s
+```
+(45 from Phases 1-4 + 3 `test_mcp_integration.py` + 4 `test_critic_agent.py` + 2
+`test_critic_forces_revision.py` - 2 deselected are the intentionally-excluded live-LLM tests.)
+Also reran `tests/test_prompt_injection_live.py` on its own (real Groq, unmocked, now exercising
+the real MCP tool path AND the real critic pass together for the first time) - still passes.
+
+Also reconfirmed `ruff check .` / `bandit -r . -x ./venv,./tests` / `pip-audit -r requirnments.txt`
+all still exit 0 clean after this phase's new files (one real `F401` unused-import in two of this
+phase's own new test files, and one real `B404` on `scripts/mcp_trace_demo.py`'s `subprocess`
+import, both fixed the same way as Phase 4's findings - import removed, `# nosec B404` justified
+the same as `services/tools.py`'s existing ones).
+
+### A real test-suite design problem hit and how it was resolved
+
+Rewiring `resolve_tool_calls` to fetch schemas/execute calls through a real subprocess would have
+made every one of the ~45 pre-existing tests that exercise the tool loop spawn a real MCP server
+process - slow, and coupling unrelated tests (about prompt injection, streaming, redaction, etc.)
+to MCP subprocess startup succeeding. Fixed with an autouse pytest fixture in `tests/conftest.py`
+(`_mock_mcp_tools_by_default`) that transparently redirects the MCP boundary back to
+`services.tools`'s in-process functions for every test, UNLESS the test is marked
+`@pytest.mark.real_mcp` - only `tests/test_mcp_integration.py`'s three tests opt out and exercise
+the real subprocess/protocol path. Confirmed the full suite (`-k "not live"`) still runs in ~32s
+after this change, not meaningfully slower than Phase 4's ~24s (the 3 `real_mcp` tests add real
+subprocess-spawn latency, ~20s of the total, but only for those three).
+
+### Known scope deviations / follow-ups from this phase
+
+- The critic/verifier pass only runs on `analyze()` (the non-streaming path - Kafka consumer and
+  `POST /ai/analyze`'s cache-miss path), not `analyze_stream()` (`POST /ai/analyze/stream`) -
+  streaming already commits to showing the user tokens as they're generated, which doesn't compose
+  cleanly with "the critic might reject this whole draft" without a more involved SSE event
+  protocol (e.g. a `revision_requested` event type, buffering, re-streaming) than this phase's
+  scope covers. Logged here rather than silently only wiring the easier path.
+- `mcp_client.py`'s per-call subprocess spawn (no persistent session/connection pooling across
+  calls within one analysis) is a real, disclosed inefficiency - acceptable for this phase's
+  deliverable (proving the real protocol is in use), not for high-throughput production traffic.
+  A pooled MCP session (mirroring the existing sandbox-pod-pool pattern `worker-service-go` already
+  uses for a different resource) is the natural follow-up.
+- The critic is capped at exactly one revision round (matching "at least once," not iterating to
+  convergence) - a critic that rejects the revision too doesn't get a third attempt; the second
+  draft is returned regardless of a second critic opinion, since no second critique is even run.
+- MCP is stdio-transport only (no SSE/HTTP transport, no auth, no multi-client scenario) - correct
+  and sufficient for "one service's agent loop talking to its own local tool server," not evaluated
+  against a remote/multi-tenant MCP deployment shape.
+
+---

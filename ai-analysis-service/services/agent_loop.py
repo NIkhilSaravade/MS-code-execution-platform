@@ -23,12 +23,29 @@ Two phases, always run in this order:
 import json
 
 from logging_config import get_logger
+from services import mcp_client
 from services.llm_provider import LLMProvider
-from services.tools import TOOL_DISPATCH, TOOL_SCHEMAS
 
 log = get_logger(__name__)
 
 MAX_TOOL_STEPS = 4
+
+# Phase 5: tool schemas are discovered live from the real MCP server
+# (services/mcp_client.py spawns mcp_server/server.py and speaks the actual
+# Model Context Protocol over stdio) instead of importing the hardcoded
+# TOOL_SCHEMAS list services/tools.py still defines for the server's own
+# use. Cached after the first successful discovery per process - the MCP
+# server subprocess is spawned fresh per call (see mcp_client.py's
+# docstring on why), so this avoids paying that cost on every single tool
+# step, only once per process lifetime.
+_tool_schemas_cache: list[dict] | None = None
+
+
+def _get_tool_schemas() -> list[dict]:
+    global _tool_schemas_cache
+    if _tool_schemas_cache is None:
+        _tool_schemas_cache = mcp_client.list_tools_sync()
+    return _tool_schemas_cache
 
 SYSTEM_PROMPT = (
     "You are a senior software engineer reviewing a competitive-programming "
@@ -64,7 +81,7 @@ def resolve_tool_calls(messages: list[dict]) -> list[dict]:
 
     for step in range(MAX_TOOL_STEPS):
         try:
-            response = LLMProvider.complete_with_tools(messages, TOOL_SCHEMAS)
+            response = LLMProvider.complete_with_tools(messages, _get_tool_schemas())
         except Exception as exc:
             # Real failure mode hit while running Phase 3's eval harness
             # against live Groq: with tools still bound, the model
@@ -107,8 +124,9 @@ def resolve_tool_calls(messages: list[dict]) -> list[dict]:
                 made_new_call = True
             seen_calls.add(call_signature)
 
-            handler = TOOL_DISPATCH.get(name)
-            result = handler(args) if handler else {"error": f"unknown tool '{name}'"}
+            # Real MCP round-trip (JSON-RPC over stdio to mcp_server/server.py),
+            # not an in-process dict lookup - see mcp_client.py.
+            result = mcp_client.call_tool_sync(name, args)
             transcript.append({"step": step, "tool": name, "args": args, "result": result})
             log.info("agent_loop.tool_call", step=step, tool=name, args=args)
 
