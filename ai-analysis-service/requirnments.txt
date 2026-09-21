@@ -23,3 +23,4 @@ bandit
 pytest
 pytest-asyncio
 rank_bm25
+pip-audit

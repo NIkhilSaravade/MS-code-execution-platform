@@ -7,6 +7,7 @@ from logging_config import get_logger
 from services.agent_loop import SYSTEM_PROMPT, finalize_non_stream, finalize_stream, resolve_tool_calls
 from services.exceptions import AnalysisOutputInvalid
 from services.rag_service import get_rag_service
+from services.redaction import redact_secrets
 from services.schemas import FailedAnalysis, PassedAnalysis
 from services.usage_tracker import record_usage
 from prompts.passed_prompt import passed_prompt
@@ -36,18 +37,32 @@ class AnalysisService:
 
     @staticmethod
     def _build_messages(submission: dict, problem: dict) -> list[dict]:
+        # Redact before anything else touches this code - before it goes
+        # into the prompt, before any tool call built from the prompt can
+        # see it, before it's logged anywhere. This is the one choke point
+        # every path (Kafka-triggered and POST /ai/analyze[/stream]) goes
+        # through, so a secret in submitted code never reaches Groq no
+        # matter which entry point triggered the analysis.
+        code, redacted_patterns = redact_secrets(submission["code"])
+        if redacted_patterns:
+            log.warning(
+                "analyze.code_redacted",
+                submissionId=submission.get("problemId"),
+                patterns=sorted(set(redacted_patterns)),
+            )
+
         context_docs = get_rag_service().retrieve(problem["description"])
         context_text = "\n".join(doc.page_content for doc in context_docs)
 
         if submission["status"] == "PASSED":
             prompt_text = passed_prompt.format(
                 problem=problem["description"] + "\n\nContext:\n" + context_text,
-                code=submission["code"],
+                code=code,
             )
         else:
             prompt_text = failed_prompt.format(
                 problem=problem["description"] + "\n\nContext:\n" + context_text,
-                code=submission["code"],
+                code=code,
                 error=submission.get("errorMessage", "Unknown error"),
             )
 

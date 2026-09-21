@@ -11,6 +11,7 @@ from logging_config import get_logger
 from services import analysis_pipeline
 from services.circuit_breaker import CircuitOpenError, get_breaker
 from services.exceptions import AnalysisOutputInvalid
+from services.rate_limiter import get_analysis_rate_limiter
 from db.database import engine
 from db.init_db import create_tables
 from discovery.eureka_client import deregister_from_eureka, register_with_eureka
@@ -114,6 +115,9 @@ async def analyze_code(
     authorization: str = Header(None),
     claims: dict = Depends(get_current_claims),
 ):
+    if not get_analysis_rate_limiter().allow(claims.get("sub", "unknown")):
+        raise HTTPException(status_code=429, detail="Too many analysis requests - try again shortly.")
+
     cached = analysis_pipeline.get_cached(request.submissionId)
     if cached:
         log.info("analyze.cache_hit", submission_id=request.submissionId)
@@ -144,6 +148,9 @@ async def analyze_code_stream(
     Auth/ownership/circuit-breaker behavior is identical to POST /ai/analyze;
     the only difference is the response is streamed as it's generated
     instead of returned as one blocking JSON body."""
+    if not get_analysis_rate_limiter().allow(claims.get("sub", "unknown")):
+        raise HTTPException(status_code=429, detail="Too many analysis requests - try again shortly.")
+
     try:
         submission, problem = await _fetch_submission_and_problem(request.submissionId, authorization)
     except CircuitOpenError as exc:

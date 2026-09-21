@@ -18,7 +18,10 @@ log rather than silently claimed as done.
 """
 
 import json
-import subprocess
+# All subprocess.run() calls below use a fixed argv list (never shell=True)
+# against a tempfile this module created itself - see the nosec B603
+# annotations at each call site.
+import subprocess  # nosec B404
 import sys
 import tempfile
 from pathlib import Path
@@ -53,7 +56,7 @@ def run_linter(language: str, code: str) -> dict:
         src_path = Path(tmp_dir) / "submission.py"
         src_path.write_text(code, encoding="utf-8")
         try:
-            proc = subprocess.run(
+            proc = subprocess.run(  # nosec B603
                 [sys.executable, "-m", "ruff", "check", "--output-format=json", str(src_path)],
                 capture_output=True,
                 text=True,
@@ -89,7 +92,7 @@ def run_security_scan(language: str, code: str) -> dict:
         src_path = Path(tmp_dir) / "submission.py"
         src_path.write_text(code, encoding="utf-8")
         try:
-            proc = subprocess.run(
+            proc = subprocess.run(  # nosec B603
                 [sys.executable, "-m", "bandit", "-f", "json", "-q", str(src_path)],
                 capture_output=True,
                 text=True,
