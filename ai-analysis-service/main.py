@@ -121,7 +121,13 @@ async def analyze_code(
     cached = analysis_pipeline.get_cached(request.submissionId)
     if cached:
         log.info("analyze.cache_hit", submission_id=request.submissionId)
-        return {"analysis": cached["analysis"], "source": cached["source"]}
+        return {
+            "analysis": cached["analysis"],
+            "source": cached["source"],
+            "toolCalls": cached.get("toolCalls", []),
+            "criticVerdict": cached.get("criticVerdict"),
+            "revised": cached.get("revised", False),
+        }
 
     log.info("analyze.cache_miss", submission_id=request.submissionId)
 
@@ -181,4 +187,11 @@ async def get_analysis(submission_id: int, claims: dict = Depends(get_current_cl
         return {"status": "PENDING"}
     if cached.get("userId") != claims.get("sub"):
         return {"status": "PENDING"}
-    return {"status": "READY", "analysis": cached["analysis"], "source": cached["source"]}
+    return {
+        "status": "READY",
+        "analysis": cached["analysis"],
+        "source": cached["source"],
+        "toolCalls": cached.get("toolCalls", []),
+        "criticVerdict": cached.get("criticVerdict"),
+        "revised": cached.get("revised", False),
+    }

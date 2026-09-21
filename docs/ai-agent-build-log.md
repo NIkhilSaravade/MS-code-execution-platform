@@ -1038,6 +1038,36 @@ static HTML file (`dashboard/index.html`) from `results/phase3_eval.json` + `res
 `<command>`" note rather than filled with a placeholder if its source file doesn't exist, so the
 page never claims a number that isn't real. `make dashboard` regenerates it.
 
+### Post-Phase-6 — frontend SSE integration (2026-09-21)
+
+User-requested follow-up: the frontend (`frontend/src/api/submissions.ts`, `SolvePage.tsx`) still
+only polled `GET /ai/analysis/{id}` and had never been touched across all 6 phases. Closed, with
+real backend and frontend changes together:
+
+- **Backend**: the type audit requested (diff the frontend's response shape against the current
+  backend) surfaced a real gap - `GET /ai/analysis/{id}` and `POST /ai/analyze`'s cache-hit path
+  never returned `toolCalls`/`criticVerdict`/`revised` at all, because `AnalysisCache` only ever
+  persisted the raw LLM text. Added `AnalysisCache.metadata_json` (`db/models.py`), wired through
+  `analysis_pipeline.py`'s read/write paths (`_metadata_json`/`_parse_metadata`) and both `main.py`
+  response sites. New tests: `tests/test_analysis_pipeline_metadata.py` (real SQLite round-trip,
+  not a mock - proves the data survives write-then-read) and `tests/test_main_analysis_metadata.py`
+  (endpoint-level). 58 passed, 2 deselected (live), clean `ruff`/`bandit` after.
+- **Frontend**: `api/client.ts` now throws `ApiError` (an `Error` subclass carrying the HTTP status
+  - every existing `catch (err) { err instanceof Error }` call site keeps working unchanged).
+  `api/submissions.ts` adds `streamAiAnalysis` (hand-rolled SSE parsing over `fetch()` +
+  `ReadableStream` - `EventSource` can't POST a body/Bearer token) and `isRateLimitError`.
+  `SolvePage.tsx`'s Run/Submit flow now streams a live review instead of polling, and shows tool-
+  call badges, RAG citation chips, and a critic-verified/not-yet-verified badge (driven by
+  `criticVerdict === null`, which is unambiguous - the critic never returns `null` for something it
+  actually checked).
+- **Verified**: `tsc --noEmit` clean, `oxlint` clean, `npm run build` succeeds, dev server boots and
+  serves. **Not verified**: click-through in an actual browser against the live backend - Docker
+  Desktop wasn't running in this environment and standing up the full stack (8 Java services +
+  Postgres + Kafka + MinIO + this Python service) was out of scope for this pass. Disclosed as a
+  real gap in `docs/ai-code-review-known-limitations.md`, not silently skipped.
+- Full detail (including the disclosed migration gap on `metadata_json`'s rollout to an
+  already-deployed DB) is in `docs/ai-code-review-known-limitations.md`'s updated item #6.
+
 ### OTel rollout (deferred - logged as a real scope decision, not silently dropped)
 
 The original Phase 6 brief's third item, "extend OTel tracing to all services currently missing it

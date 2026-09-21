@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { Link, Navigate, useParams } from 'react-router-dom';
 import Editor from '@monaco-editor/react';
 // @monaco-editor/react wraps the Monaco Editor (the actual code-editing
@@ -17,11 +17,14 @@ import {
   createSubmission,
   getExecutionResult,
   getSubmissionsForProblem,
+  isRateLimitError,
   pollAiAnalysis,
   pollSubmissionResult,
+  streamAiAnalysis,
   type AiAnalysisResponse,
   type Submission,
   type TestCaseResult,
+  type ToolCall,
 } from '../api/submissions';
 import { getSolutionForProblem, getNote, saveNote, type Solution as SolutionData } from '../api/solutions';
 // This is the busiest page in the app: it reads the URL, fetches the real
@@ -70,6 +73,119 @@ function getStoredLanguage(): Language {
     // convenience feature.
   }
   return 'javascript';
+}
+
+// Turns backend sophistication (Phases 1/2/5 of the ai-analysis-service
+// agentic upgrade - see docs/ai-agent-build-log.md) into something a user
+// can actually see, rather than a review that looks identical whether it
+// came from one blind LLM call or a tool-calling, RAG-backed, critic-
+// verified agent. Deliberately small/inline pill-style badges rather than
+// a wall of debug text - the sophistication is in what happened, not in
+// how much space this takes up.
+
+const BADGE_STYLE: CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 4,
+  padding: '2px 8px',
+  borderRadius: 999,
+  fontSize: 11,
+  fontFamily: "'JetBrains Mono',monospace",
+  marginRight: 6,
+  marginBottom: 6,
+};
+
+// fetch_similar_past_reviews' real result shape is
+// {"results": [{"source": str, "title": str, "text": str}]} - see
+// ai-analysis-service's services/tools.py. Narrowed here with a runtime
+// check (not just a type assertion) since this is untrusted-shape JSON
+// crossing a network boundary, not something TypeScript actually verified.
+interface RagCitation {
+  source: string;
+  title: string;
+  text: string;
+}
+
+function extractRagCitations(toolCalls: ToolCall[]): RagCitation[] {
+  const call = toolCalls.find((tc) => tc.tool === 'fetch_similar_past_reviews');
+  if (!call) return [];
+  const result = call.result as { results?: unknown[] } | undefined;
+  if (!Array.isArray(result?.results)) return [];
+  return result.results.filter((r): r is RagCitation => {
+    const candidate = r as Partial<RagCitation>;
+    return typeof candidate?.source === 'string' && typeof candidate?.title === 'string';
+  });
+}
+
+// Badges for every OTHER tool called (fetch_similar_past_reviews gets its
+// own "Referenced" citation chips instead - see renderTrustSignals).
+function renderToolCallBadges(toolCalls: ToolCall[]) {
+  const otherTools = Array.from(
+    new Set(toolCalls.filter((tc) => tc.tool !== 'fetch_similar_past_reviews').map((tc) => tc.tool)),
+  );
+  if (otherTools.length === 0) return null;
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <span style={{ ...BADGE_STYLE, background: '#1c2436', color: '#8fb8ff', marginRight: 4 }}>
+        checked with:
+      </span>
+      {otherTools.map((tool) => (
+        <span key={tool} style={{ ...BADGE_STYLE, background: '#1c2436', color: '#8fb8ff' }}>
+          {tool}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+// The trust-signal header shown above a READY review's detail: which tools
+// actually fed into it, whether a second AI pass (the critic - see
+// ai-analysis-service's services/critic_agent.py) verified or revised it,
+// and which knowledge-base snippets were cited (RAG - see
+// services/hybrid_search.py/reranker.py). `criticVerdict === null`
+// unambiguously means "never critic-checked" (true for every review that
+// came from the streaming endpoint - Phase 5 only wired the critic into
+// the non-streaming path, see docs/ai-code-review-architecture.md) - it is
+// NEVER null for a review the critic did check, even a plain approval.
+function renderTrustSignals(analysis: Extract<AiAnalysisResponse, { status: 'READY' }>) {
+  const toolCalls = analysis.toolCalls ?? [];
+  const citations = extractRagCitations(toolCalls);
+  const criticVerdict = analysis.criticVerdict;
+
+  return (
+    <div style={{ marginBottom: 12 }}>
+      {renderToolCallBadges(toolCalls)}
+      <div style={{ marginBottom: citations.length > 0 ? 8 : 0 }}>
+        {criticVerdict == null ? (
+          <span style={{ ...BADGE_STYLE, background: '#332a1a', color: '#e0b463' }}>
+            ⓘ not yet verified by a second AI pass
+          </span>
+        ) : analysis.revised ? (
+          <span style={{ ...BADGE_STYLE, background: '#173322', color: '#7ee0a0' }}>
+            ✓ verified — a second AI pass requested and applied a revision
+          </span>
+        ) : (
+          <span style={{ ...BADGE_STYLE, background: '#173322', color: '#7ee0a0' }}>
+            ✓ verified by a second AI pass
+          </span>
+        )}
+      </div>
+      {citations.length > 0 && (
+        <div>
+          <span style={{ color: '#6b7392', fontSize: 11.5 }}>Referenced: </span>
+          {citations.map((c, i) => (
+            <span
+              key={`${c.source}-${i}`}
+              title={c.text.slice(0, 240)}
+              style={{ ...BADGE_STYLE, background: '#241c33', color: '#c9a9ff', cursor: 'help' }}
+            >
+              {c.source} — {c.title}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // The shape of a real result, once the submission reaches a terminal status.
@@ -138,6 +254,15 @@ export default function SolvePage() {
   // or unreachable ai-analysis-service must never delay or block showing
   // the deterministic judged result above.
   const [aiAnalysis, setAiAnalysis] = useState<AiAnalysisResponse | null>(null);
+  // Live state for POST /ai/analyze/stream's SSE body (see api/submissions.ts's
+  // streamAiAnalysis) - only populated while a *fresh* Run/Submit's review is
+  // actively streaming in. A re-opened past submission (loadSubmission)
+  // never streams; it just reads whatever's already cached, so these three
+  // stay at their idle defaults in that path.
+  const [aiStreamPhase, setAiStreamPhase] = useState<'idle' | 'streaming' | 'error'>('idle');
+  const [aiStreamPreview, setAiStreamPreview] = useState('');
+  const [aiStreamError, setAiStreamError] = useState<string | null>(null);
+  const [aiToolCalls, setAiToolCalls] = useState<ToolCall[]>([]);
   // Which top-level panel is showing on the left, alongside Description and
   // Solutions - mirrors LeetCode's own layout, where Submissions lives next
   // to the problem statement rather than buried in the bottom console.
@@ -344,6 +469,10 @@ export default function SolvePage() {
     setRunStatus('running'); // detail fetch is async now - see getExecutionResult
     setResult(null);
     setAiAnalysis(null);
+    setAiStreamPhase('idle');
+    setAiStreamPreview('');
+    setAiStreamError(null);
+    setAiToolCalls([]);
     setRunError(null);
 
     if (!accessToken) return;
@@ -368,6 +497,60 @@ export default function SolvePage() {
     }
   }
 
+  // Triggers a FRESH AI review via the real-time SSE endpoint
+  // (POST /ai/analyze/stream - see api/submissions.ts's streamAiAnalysis)
+  // instead of silently polling for the Kafka-auto-triggered one, so the
+  // user sees the review's raw JSON build up token-by-token rather than
+  // waiting on a blind poll loop, then a fully-formed result.
+  //
+  // Caveat surfaced in the UI (see the ai-analysis tab's render below, not
+  // here): the critic/verifier pass (Phase 5) only runs on the
+  // non-streaming path, so `event.result.criticVerdict` here is always
+  // `null` - this specific review has not been double-checked by the
+  // critic agent, only generated. That's an accurate reflection of the
+  // backend's current behavior, not a bug in this function.
+  async function runAiAnalysisStream(submissionId: number) {
+    if (!accessToken) return;
+
+    setAiAnalysis(null);
+    setAiStreamPreview('');
+    setAiToolCalls([]);
+    setAiStreamError(null);
+    setAiStreamPhase('streaming');
+
+    try {
+      for await (const event of streamAiAnalysis(accessToken, submissionId)) {
+        if (event.type === 'tool_call') {
+          setAiToolCalls((prev) => [...prev, event]);
+        } else if (event.type === 'token') {
+          setAiStreamPreview((prev) => prev + event.content);
+        } else if (event.type === 'done') {
+          setAiAnalysis({
+            status: 'READY',
+            analysis: event.result.parsedAnalysis,
+            source: 'AI',
+            toolCalls: event.result.toolCalls,
+            criticVerdict: event.result.criticVerdict,
+            revised: event.result.revised,
+          });
+          setAiStreamPhase('idle');
+        } else if (event.type === 'error') {
+          setAiStreamError(event.message);
+          setAiStreamPhase('error');
+        }
+      }
+    } catch (err) {
+      setAiStreamError(
+        isRateLimitError(err)
+          ? 'Too many AI review requests right now - try again in a moment.'
+          : err instanceof Error
+            ? err.message
+            : 'Failed to stream the AI review.',
+      );
+      setAiStreamPhase('error');
+    }
+  }
+
   // Calls the real backend judge: POST /submissions, then poll
   // GET /submissions/{id} until it reaches a terminal status. "Run" only
   // judges the visible/sample test cases; "Submit" judges everything,
@@ -379,6 +562,10 @@ export default function SolvePage() {
     setRunStatus('running');
     setResult(null);
     setAiAnalysis(null);
+    setAiStreamPhase('idle');
+    setAiStreamPreview('');
+    setAiStreamError(null);
+    setAiToolCalls([]);
     setRunError(null);
     setSelectedSubmissionId(null); // this run is fresh code, not a re-loaded past submission
 
@@ -406,9 +593,11 @@ export default function SolvePage() {
       });
       refreshPastSubmissions(); // pick up the submission that just finished
 
-      // Independent, non-blocking poll for the AI verdict - see aiAnalysis
-      // state's comment for why this must never delay the result above.
-      pollAiAnalysis(accessToken, submissionId).then(setAiAnalysis);
+      // Independent, non-blocking stream of the AI review - see
+      // runAiAnalysisStream's own comment for why this must never delay
+      // the result above (same "two independent layers" reasoning
+      // pollAiAnalysis used to rely on, just streamed instead of polled).
+      void runAiAnalysisStream(submissionId);
     } catch (err) {
       setRunError(err instanceof Error ? err.message : 'Failed to judge submission.');
     } finally {
@@ -1255,12 +1444,34 @@ export default function SolvePage() {
                   {/* AI-analysis-service's LLM-derived verdict - independent
                       of, and slower than, the deterministic Result tab (see
                       aiAnalysis state's comment). Gated on `result` (a judged
-                      submission exists) rather than runStatus, since polling
-                      for this only starts once the deterministic result is in. */}
+                      submission exists) rather than runStatus, since the
+                      stream/poll for this only starts once the deterministic
+                      result is in. */}
                   {!result ? (
                     <span style={{ color: '#6b7392' }}>
                       Run or Submit your code to see the AI's analysis here.
                     </span>
+                  ) : aiStreamPhase === 'streaming' ? (
+                    <div>
+                      {renderToolCallBadges(aiToolCalls)}
+                      <div
+                        style={{
+                          fontFamily: "'JetBrains Mono',monospace",
+                          fontSize: 12,
+                          lineHeight: 1.6,
+                          color: '#9aa2b8',
+                          whiteSpace: 'pre-wrap',
+                          wordBreak: 'break-word',
+                          maxHeight: 260,
+                          overflowY: 'auto',
+                        }}
+                      >
+                        {aiStreamPreview || 'Generating review…'}
+                        <span style={{ opacity: 0.6 }}>▌</span>
+                      </div>
+                    </div>
+                  ) : aiStreamPhase === 'error' ? (
+                    <span style={{ color: '#e5717a' }}>{aiStreamError}</span>
                   ) : !aiAnalysis || aiAnalysis.status === 'PENDING' ? (
                     <span
                       style={{
@@ -1270,47 +1481,52 @@ export default function SolvePage() {
                     >
                       Still analyzing… (this never blocks the Result tab)
                     </span>
-                  ) : aiAnalysis.analysis.analysisType === 'PASSED' ? (
-                    <div
-                      style={{
-                        fontFamily: "'JetBrains Mono',monospace",
-                        fontSize: 12.5,
-                        lineHeight: 1.8,
-                        color: '#b3bacb',
-                      }}
-                    >
-                      <div style={{ color: '#6b7392' }}>Time complexity</div>
-                      <div style={{ marginBottom: 12 }}>{aiAnalysis.analysis.timeComplexity}</div>
-                      <div style={{ color: '#6b7392' }}>Space complexity</div>
-                      <div style={{ marginBottom: 12 }}>{aiAnalysis.analysis.spaceComplexity}</div>
-                      <div style={{ color: '#6b7392' }}>Optimization suggestions</div>
-                      <div style={{ marginBottom: 12 }}>{aiAnalysis.analysis.optimizationSuggestions}</div>
-                      <div style={{ color: '#6b7392' }}>Code smells</div>
-                      <div style={{ marginBottom: 12 }}>{aiAnalysis.analysis.codeSmells}</div>
-                      <div style={{ color: '#6b7392' }}>Alternative approach</div>
-                      <div>{aiAnalysis.analysis.alternativeApproach}</div>
-                    </div>
                   ) : (
-                    <div
-                      style={{
-                        fontFamily: "'JetBrains Mono',monospace",
-                        fontSize: 12.5,
-                        lineHeight: 1.8,
-                        color: '#b3bacb',
-                      }}
-                    >
-                      <div style={{ color: '#6b7392' }}>Likely cause</div>
-                      <div style={{ marginBottom: 12 }}>{aiAnalysis.analysis.failureReason}</div>
-                      <div style={{ color: '#6b7392' }}>Debugging suggestion</div>
-                      <div style={{ marginBottom: 12 }}>{aiAnalysis.analysis.debuggingSuggestion}</div>
-                      <div style={{ color: '#6b7392' }}>Edge cases to check</div>
-                      <div style={{ marginBottom: 12 }}>
-                        {aiAnalysis.analysis.edgeCases?.length
-                          ? aiAnalysis.analysis.edgeCases.join(', ')
-                          : '—'}
-                      </div>
-                      <div style={{ color: '#6b7392' }}>Hints</div>
-                      <div>{aiAnalysis.analysis.hints}</div>
+                    <div>
+                      {renderTrustSignals(aiAnalysis)}
+                      {aiAnalysis.analysis.analysisType === 'PASSED' ? (
+                        <div
+                          style={{
+                            fontFamily: "'JetBrains Mono',monospace",
+                            fontSize: 12.5,
+                            lineHeight: 1.8,
+                            color: '#b3bacb',
+                          }}
+                        >
+                          <div style={{ color: '#6b7392' }}>Time complexity</div>
+                          <div style={{ marginBottom: 12 }}>{aiAnalysis.analysis.timeComplexity}</div>
+                          <div style={{ color: '#6b7392' }}>Space complexity</div>
+                          <div style={{ marginBottom: 12 }}>{aiAnalysis.analysis.spaceComplexity}</div>
+                          <div style={{ color: '#6b7392' }}>Optimization suggestions</div>
+                          <div style={{ marginBottom: 12 }}>{aiAnalysis.analysis.optimizationSuggestions}</div>
+                          <div style={{ color: '#6b7392' }}>Code smells</div>
+                          <div style={{ marginBottom: 12 }}>{aiAnalysis.analysis.codeSmells}</div>
+                          <div style={{ color: '#6b7392' }}>Alternative approach</div>
+                          <div>{aiAnalysis.analysis.alternativeApproach}</div>
+                        </div>
+                      ) : (
+                        <div
+                          style={{
+                            fontFamily: "'JetBrains Mono',monospace",
+                            fontSize: 12.5,
+                            lineHeight: 1.8,
+                            color: '#b3bacb',
+                          }}
+                        >
+                          <div style={{ color: '#6b7392' }}>Likely cause</div>
+                          <div style={{ marginBottom: 12 }}>{aiAnalysis.analysis.failureReason}</div>
+                          <div style={{ color: '#6b7392' }}>Debugging suggestion</div>
+                          <div style={{ marginBottom: 12 }}>{aiAnalysis.analysis.debuggingSuggestion}</div>
+                          <div style={{ color: '#6b7392' }}>Edge cases to check</div>
+                          <div style={{ marginBottom: 12 }}>
+                            {aiAnalysis.analysis.edgeCases?.length
+                              ? aiAnalysis.analysis.edgeCases.join(', ')
+                              : '—'}
+                          </div>
+                          <div style={{ color: '#6b7392' }}>Hints</div>
+                          <div>{aiAnalysis.analysis.hints}</div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

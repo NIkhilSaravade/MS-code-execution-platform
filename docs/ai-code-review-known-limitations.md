@@ -86,22 +86,47 @@ writing the new image tag into that branch's manifests after a successful push.
 this should become the first limitation in this document to move to a "resolved" note rather than
 staying open.
 
-## 6. Frontend: not yet consuming the upgraded backend
+## 6. Frontend: now consuming the upgraded backend (closed, with real caveats)
 
-Confirmed directly in `frontend/src/api/submissions.ts`: it still polls `GET /ai/analysis/{id}` in
-a loop for a static PENDING/READY result. It does not call the new `POST /ai/analyze/stream` SSE
-endpoint (Phase 1), has no handling for the `429` rate-limit responses Phase 4 added, and does not
-surface any of the new backend capabilities to the user — which tool findings (linter/security
-scan) fed into a review, whether a critic pass requested a revision, or which knowledge-base
-snippets were retrieved. The backend got substantially more capable across six phases; the frontend
-has not changed at all.
+Was: confirmed directly in `frontend/src/api/submissions.ts` that it only polled
+`GET /ai/analysis/{id}` in a loop for a static PENDING/READY result, never called
+`POST /ai/analyze/stream`, had no `429` handling, and surfaced none of the new backend
+capabilities.
 
-One backend-side constraint that will carry into whatever the frontend eventually does with
-streaming: the critic/verifier pass (Phase 5) only runs on the non-streaming path today (see
-`docs/ai-code-review-architecture.md`) — a live-streamed review has not been critic-checked, only
-the cached/final version has.
+**Closed**: `api/submissions.ts` now has `streamAiAnalysis` (a hand-rolled SSE reader over
+`fetch()` + `ReadableStream` — `EventSource` can't POST a body/Bearer token, so it isn't usable
+here) and `isRateLimitError`; `api/client.ts` now throws a real `ApiError` subclass (still
+`instanceof Error`, so every existing catch block keeps working) carrying the HTTP status, which
+is what makes 429 detectable at all. `SolvePage.tsx`'s Run/Submit flow now streams a fresh review
+live (`runAiAnalysisStream`) instead of polling for the Kafka-auto-triggered one, and the
+AI-analysis tab shows: the raw JSON building up token-by-token while streaming, badges for which
+tools fed the review (`run_linter`/`run_security_scan`/etc.), "Referenced: ..." citation chips for
+any `fetch_similar_past_reviews` knowledge-base hits, and a verified/not-yet-verified badge driven
+by `criticVerdict === null` (unambiguous — the critic never returns `null` for an analysis it
+actually checked, even a plain approval).
 
-**Status:** in progress as of this doc.
+**The type audit this item asked for**: done, by re-reading `services/analysis_pipeline.py` and
+`main.py` directly rather than guessing. It found something worth fixing on the backend, not just
+the frontend — `GET /ai/analysis/{id}` and `POST /ai/analyze`'s cache-hit path were NOT returning
+`toolCalls`/`criticVerdict`/`revised` at all, because `AnalysisCache` only ever persisted the raw
+LLM response text, not that metadata. Added an `AnalysisCache.metadata_json` column
+(`db/models.py`) and wired it through `analysis_pipeline.py`'s read/write paths and both `main.py`
+endpoints, with a real SQLite round-trip test (`tests/test_analysis_pipeline_metadata.py`) proving
+the data survives a write-then-read cycle, not just a mocked call. One disclosed migration gap:
+`Base.metadata.create_all` only creates missing tables, not missing columns on an existing one -
+an already-deployed `ai_analysis_db` needs a manual `ALTER TABLE` to pick this column up.
+
+**Real caveat carried over, now visible in the UI rather than just in this doc**: the critic pass
+(Phase 5) still only runs on the non-streaming path — a live-streamed review shows the
+"not yet verified by a second AI pass" badge, honestly, rather than claiming a verification that
+didn't happen.
+
+**Not done, disclosed rather than glossed over**: this was verified via `tsc --noEmit` (clean),
+`oxlint` (clean), a full production build (`npm run build`, succeeds), and a dev-server boot check
+- NOT against a live backend in an actual browser session, since Docker Desktop wasn't running in
+this environment and standing up the full stack (8 Java services + Postgres + Kafka + MinIO + this
+Python service) was out of scope for this pass. Click-through verification against the real running
+app is a real gap, not a formality — do that before treating this as fully proven.
 
 ## 7. Streaming + critic composition
 
@@ -110,7 +135,9 @@ with the critic's "throw the draft away and redo it" revision model without a bi
 change (e.g., a revision would need to retract already-streamed tokens on the client, which SSE
 doesn't support natively). Logged as a real, disclosed follow-up in Phase 5, not silently skipped.
 
-**What closing this looks like:** either extend the SSE protocol with an explicit
-"discard-and-restart" event type the frontend knows how to handle, or accept that streaming and
-critic-verification are a deliberate tradeoff (fast-but-unverified vs. slow-but-verified) and
-expose that choice to the user rather than silently picking one.
+**Partially closed**: the frontend now takes the second option above rather than the SSE-protocol
+option - it accepts the tradeoff and exposes it, showing a "not yet verified by a second AI pass"
+badge on every streamed review (see item 6) instead of pretending the critic ran. What's still
+open: there's no user-facing way to ask for the slower, critic-verified path instead (e.g. a
+"verify this" button that calls `POST /ai/analyze` after the stream finishes) - today the tradeoff
+is fixed, not actually a choice the user gets to make.

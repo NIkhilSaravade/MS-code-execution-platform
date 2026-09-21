@@ -18,6 +18,17 @@ class AnalysisCache(Base):
     problem_id = Column(Integer, index=True, nullable=False)
     analysis_type = Column(String(16), nullable=False)
     raw_response = Column(Text, nullable=False)
+    # JSON-encoded {"toolCalls": [...], "criticVerdict": {...} | null,
+    # "revised": bool} - added for the frontend's Phase 1/5 trust-signal
+    # surface (which tools fed a review, whether the critic forced a
+    # revision). Nullable because Base.metadata.create_all (db/init_db.py)
+    # only creates missing TABLES, not missing COLUMNS on an
+    # already-existing one - an already-deployed ai_analysis_db needs a
+    # manual `ALTER TABLE analysis_cache ADD COLUMN metadata_json TEXT` to
+    # pick this up; a fresh database gets it automatically. See
+    # services/analysis_pipeline.py's _parse_metadata for the read-side
+    # fallback when this is NULL (pre-existing rows).
+    metadata_json = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

@@ -40,6 +40,27 @@ def _parse_raw_response(raw_response: str):
         return raw_response
 
 
+def _metadata_json(result: dict) -> str:
+    return json.dumps({
+        "toolCalls": result.get("toolCalls", []),
+        "criticVerdict": result.get("criticVerdict"),
+        "revised": result.get("revised", False),
+    })
+
+
+def _parse_metadata(cache_row: AnalysisCache) -> dict:
+    if not cache_row.metadata_json:
+        # Pre-existing row from before this field was added, or a stream-
+        # cached row (run_analysis_stream doesn't run the critic pass - see
+        # services/analysis_service.py's analyze_stream docstring) - either
+        # way, "we don't know" is the honest answer, not a fabricated one.
+        return {"toolCalls": [], "criticVerdict": None, "revised": False}
+    try:
+        return json.loads(cache_row.metadata_json)
+    except json.JSONDecodeError:
+        return {"toolCalls": [], "criticVerdict": None, "revised": False}
+
+
 def get_cached(submission_id: int) -> Optional[dict]:
     db = SessionLocal()
     try:
@@ -59,6 +80,7 @@ def get_cached(submission_id: int) -> Optional[dict]:
             "analysis": _parse_raw_response(cache_row.raw_response),
             "source": "CACHE",
             "userId": mapping.user_id,
+            **_parse_metadata(cache_row),
         }
     finally:
         db.close()
@@ -89,16 +111,19 @@ def run_analysis(submission_id: int, submission: dict, problem: dict) -> dict:
                 problem_id=problem_id,
                 analysis_type=result["analysisType"],
                 raw_response=result["rawResponse"],
+                metadata_json=_metadata_json(result),
             )
             db.add(cache_row)
             db.flush()
             source = "AI"
             parsed_analysis = result["parsedAnalysis"]
             analysis_type = result["analysisType"]
+            metadata = _parse_metadata(cache_row)
         else:
             source = "CACHE"
             parsed_analysis = _parse_raw_response(cache_row.raw_response)
             analysis_type = cache_row.analysis_type
+            metadata = _parse_metadata(cache_row)
 
         mapping = db.query(SubmissionAnalysisMap).filter(
             SubmissionAnalysisMap.submission_id == submission_id
@@ -121,6 +146,7 @@ def run_analysis(submission_id: int, submission: dict, problem: dict) -> dict:
         "analysis": parsed_analysis,
         "analysisType": analysis_type,
         "source": source,
+        **metadata,
     }
 
 
@@ -154,7 +180,7 @@ def run_analysis_stream(submission_id: int, submission: dict, problem: dict):
                 "analysisType": cache_row.analysis_type,
                 "parsedAnalysis": _parse_raw_response(cache_row.raw_response),
                 "rawResponse": cache_row.raw_response,
-                "toolCalls": [],
+                **_parse_metadata(cache_row),
             },
         }
         return
@@ -179,6 +205,7 @@ def run_analysis_stream(submission_id: int, submission: dict, problem: dict):
                 problem_id=problem_id,
                 analysis_type=result["analysisType"],
                 raw_response=result["rawResponse"],
+                metadata_json=_metadata_json(result),
             )
             db.add(cache_row)
             db.flush()
