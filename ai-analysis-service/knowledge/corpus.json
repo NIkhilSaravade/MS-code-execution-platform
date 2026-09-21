@@ -1,0 +1,995 @@
+[
+  {
+    "text": "Common Anti-Patterns and CVE-Adjacent Issues\nCurated per-language reference material for the code-review agent's\n`fetch_similar_past_reviews` tool and hybrid-search retrieval (Phase 2).\nEach heading is one retrievable unit: a real, well-known issue class, why\nit matters, and a minimal example. This replaces the 5 hardcoded one-line\nfacts `seed_knowledge.py` previously seeded as the entire \"knowledge base.\"",
+    "source": "knowledge/anti_patterns.md",
+    "kind": "prose",
+    "title": "Common Anti-Patterns and CVE-Adjacent Issues",
+    "metadata": {}
+  },
+  {
+    "text": "Python: Mutable Default Argument\nA mutable object (list, dict, set) used as a default argument value is\ncreated once, at function-definition time, and shared across every call\nthat doesn't pass its own value - not recreated per call as many people\nexpect from other languages' default-argument semantics. This causes state\nto silently leak between unrelated calls.\n\n```python\ndef add_item(item, bucket=[]):\n    bucket.append(item)\n    return bucket\n```\n\nFix: default to `None` and create the mutable object inside the function\nbody when the default is used.",
+    "source": "knowledge/anti_patterns.md",
+    "kind": "prose",
+    "title": "Python: Mutable Default Argument",
+    "metadata": {}
+  },
+  {
+    "text": "Python: Catching Bare `except:`\nA bare `except:` (or `except Exception:` used indiscriminately) swallows\n`KeyboardInterrupt`, `SystemExit`, and genuine bugs alike, making failures\nsilent instead of surfaced. This is especially dangerous in a judged\nsubmission context, where a bug that should produce a wrong-answer verdict\ninstead produces a misleadingly \"successful\" run.\n\n```python\ndef parse(raw):\n    try:\n        return int(raw)\n    except:\n        return 0\n```\n\nFix: catch the specific exception type(s) expected, and let anything else\npropagate.",
+    "source": "knowledge/anti_patterns.md",
+    "kind": "prose",
+    "title": "Python: Catching Bare `except:`",
+    "metadata": {}
+  },
+  {
+    "text": "Python: Use of `eval`/`exec` on Untrusted Input\n`eval`/`exec` on any string that isn't fully controlled by the program\nitself is arbitrary code execution. This is the exact class of issue\n`run_security_scan` (bandit rule B307) is wired to catch in this service's\nown tool loop.\n\n```python\ndef compute(expr):\n    return eval(expr)\n```\n\nFix: use `ast.literal_eval` for literal-only input, or a proper expression\nparser/interpreter scoped to the actual grammar needed.",
+    "source": "knowledge/anti_patterns.md",
+    "kind": "prose",
+    "title": "Python: Use of `eval`/`exec` on Untrusted Input",
+    "metadata": {}
+  },
+  {
+    "text": "Java: String Concatenation Inside a Loop\n`String` is immutable in Java; `s = s + x` inside a loop allocates a new\nstring object on every iteration, making an O(n)-looking loop actually\nO(n^2) in practice for large n - a common cause of TLE verdicts that look\nlike a correct algorithm on small sample inputs.\n\n```java\nString result = \"\";\nfor (int i = 0; i < n; i++) {\n    result += String.valueOf(arr[i]);\n}\n```\n\nFix: use `StringBuilder` and call `.append()`, converting to a `String`\nonce at the end.",
+    "source": "knowledge/anti_patterns.md",
+    "kind": "prose",
+    "title": "Java: String Concatenation Inside a Loop",
+    "metadata": {}
+  },
+  {
+    "text": "Java: Autoboxing Inside a Hot Loop\nUsing `Integer`/`Long` (boxed types) instead of `int`/`long` as loop\naccumulators or in tight numeric loops adds allocation and unboxing\noverhead per operation. For a judge with a tight time limit, this can be\nthe difference between AC and TLE on a solution that is asymptotically\ncorrect.",
+    "source": "knowledge/anti_patterns.md",
+    "kind": "prose",
+    "title": "Java: Autoboxing Inside a Hot Loop",
+    "metadata": {}
+  },
+  {
+    "text": "C: Buffer Overflow via `strcpy`/`sprintf`\n`strcpy`/`sprintf` (without a length-bounded variant) write until they hit\na NUL terminator in the source, with no bound on the destination buffer's\nsize. If the source is longer than the destination, this overwrites\nadjacent memory - a classic, still-common memory-safety bug (the same\nclass behind a large fraction of historical CVEs in C codebases).\n\n```c\nchar buf[16];\nstrcpy(buf, user_input);\n```\n\nFix: use `strncpy`/`snprintf` with an explicit destination size, and always\naccount for the NUL terminator.",
+    "source": "knowledge/anti_patterns.md",
+    "kind": "prose",
+    "title": "C: Buffer Overflow via `strcpy`/`sprintf`",
+    "metadata": {}
+  },
+  {
+    "text": "C: Missing `free` on Every Return Path\nWhen a function has multiple `return` statements after a `malloc`, it's\neasy to free memory on the success path but forget an early-return error\npath, leaking memory on every call that takes that path.",
+    "source": "knowledge/anti_patterns.md",
+    "kind": "prose",
+    "title": "C: Missing `free` on Every Return Path",
+    "metadata": {}
+  },
+  {
+    "text": "C++: Returning a Reference/Pointer to a Local Variable\nReturning `&local` or a reference to a stack-allocated local from a\nfunction returns a dangling reference the moment the function returns -\nthe caller reads freed stack memory, which may appear to \"work\" on small\ninputs and fail unpredictably on larger ones.",
+    "source": "knowledge/anti_patterns.md",
+    "kind": "prose",
+    "title": "C++: Returning a Reference/Pointer to a Local Variable",
+    "metadata": {}
+  },
+  {
+    "text": "JavaScript/TypeScript: `==` Instead of `===`\n`==` performs type coercion before comparing, producing surprising results\n(`\"\" == 0` is `true`, `null == undefined` is `true`, `[] == false` is\n`true`). In a submitted solution this is a common source of subtle\nwrong-answer verdicts on edge-case inputs (empty arrays/strings, `0` vs\nfalsy values) that pass on the visible sample cases.",
+    "source": "knowledge/anti_patterns.md",
+    "kind": "prose",
+    "title": "JavaScript/TypeScript: `==` Instead of `===`",
+    "metadata": {}
+  },
+  {
+    "text": "JavaScript: Off-by-One in Array Bounds from `<=` vs `<`\nLooping `for (let i = 0; i <= arr.length; i++)` reads `arr[arr.length]`,\nwhich is `undefined` in JavaScript rather than a hard crash (unlike a\nsegfault in C) - so this bug frequently manifests as a quiet wrong answer\n(e.g. `undefined` leaking into a sum or comparison) instead of a visible\nruntime error, making it harder to spot from the verdict alone.",
+    "source": "knowledge/anti_patterns.md",
+    "kind": "prose",
+    "title": "JavaScript: Off-by-One in Array Bounds from `<=` vs `<`",
+    "metadata": {}
+  },
+  {
+    "text": "Go: Ignoring an Error Return Value\nGo functions that can fail conventionally return `(result, error)`; code\nthat ignores the second value (`result, _ := doThing()`) silently proceeds\nwith a zero-value/partial result on failure instead of handling it,\nproducing incorrect output with no indication anything went wrong.",
+    "source": "knowledge/anti_patterns.md",
+    "kind": "prose",
+    "title": "Go: Ignoring an Error Return Value",
+    "metadata": {}
+  },
+  {
+    "text": "General: Off-by-One in Binary Search Bounds\nBinary search implementations commonly get the loop condition\n(`low <= high` vs `low < high`) or the bound update\n(`high = mid` vs `high = mid - 1`) wrong in a way that either infinite-loops\non a two-element range or excludes a valid boundary element - one of the\nmost common single-line bugs across every language in this class of\nproblem.",
+    "source": "knowledge/anti_patterns.md",
+    "kind": "prose",
+    "title": "General: Off-by-One in Binary Search Bounds",
+    "metadata": {}
+  },
+  {
+    "text": "General: Off-by-One in Sliding Window Size\nA sliding-window solution that computes window size as `right - left`\ninstead of `right - left + 1` (or vice versa, depending on whether `right`\nis inclusive) is a frequent source of a solution that is off by exactly one\non window-boundary test cases while passing every other case.",
+    "source": "knowledge/anti_patterns.md",
+    "kind": "prose",
+    "title": "General: Off-by-One in Sliding Window Size",
+    "metadata": {}
+  },
+  {
+    "text": "def add_item(item, bucket=[]):\n    bucket.append(item)\n    return bucket",
+    "source": "knowledge/anti_patterns.md",
+    "kind": "code",
+    "title": "Python: Mutable Default Argument",
+    "metadata": {
+      "heading": "Python: Mutable Default Argument"
+    }
+  },
+  {
+    "text": "def parse(raw):\n    try:\n        return int(raw)\n    except:\n        return 0",
+    "source": "knowledge/anti_patterns.md",
+    "kind": "code",
+    "title": "Python: Catching Bare `except:`",
+    "metadata": {
+      "heading": "Python: Catching Bare `except:`"
+    }
+  },
+  {
+    "text": "def compute(expr):\n    return eval(expr)",
+    "source": "knowledge/anti_patterns.md",
+    "kind": "code",
+    "title": "Python: Use of `eval`/`exec` on Untrusted Input",
+    "metadata": {
+      "heading": "Python: Use of `eval`/`exec` on Untrusted Input"
+    }
+  },
+  {
+    "text": "Architecture Overview",
+    "source": "docs/01-ARCHITECTURE-OVERVIEW.md",
+    "kind": "prose",
+    "title": "Architecture Overview",
+    "metadata": {}
+  },
+  {
+    "text": "What this platform is\nA LeetCode-style online judge: users write code in a browser IDE, submit it against\na problem's test cases, and get back a verdict (PASSED / WRONG_ANSWER / CE / TLE /\nMLE / RE / SYSTEM_ERROR) plus an optional AI-generated analysis of their solution.\nSeven languages are supported end-to-end: Java, C++, C, Python, JavaScript,\nTypeScript, and Go.\n\nThe system is a real microservices architecture \u2014 10 Java Spring Boot services,\n1 Go worker, 1 Python AI service, and a React frontend \u2014 deployed on a\nsingle-node k3s (lightweight Kubernetes) cluster running on an Oracle Cloud ARM VM.",
+    "source": "docs/01-ARCHITECTURE-OVERVIEW.md",
+    "kind": "prose",
+    "title": "What this platform is",
+    "metadata": {}
+  },
+  {
+    "text": "Service inventory\n| Service | Language/Framework | Responsibility |\n|---|---|---|\n| `api-gateway` | Java 17 / Spring Boot 3.5.11 / Spring Cloud Gateway | Single public entry point; routes `/auth/**`, `/problems/**`, `/submissions/**`, etc. to the right backend service; CORS termination |\n| `discovery-service` | Java / Spring Cloud Netflix Eureka | Service registry \u2014 every other service registers itself here and looks up peers by name instead of hardcoded IPs |\n| `auth-service` | Java / Spring Security | Registration, login, JWT issuance (RS256, asymmetric key pair), refresh-token rotation with reuse detection |\n| `user-service` | Java | User profile data |\n| `problem-service` | Java | Problem CRUD, per-language harness generation and storage, test-case metadata |\n| `solution-service` | Java | Reference solutions, admin-authored content, visualizer support |\n| `submission-service` | Java | Accepts a submission, embeds test cases + limits from problem-service into a Kafka event, tracks submission status, applies each language's harness to the user's raw code before judging |\n| `execution-result-service` | Java | Consumes judged results from Kafka, persists them, exposes them to the frontend |\n| `worker-service-go` | Go | The actual code executor \u2014 see `02-KUBERNETES-MIGRATION.md` and `03-SANDBOX-EXECUTION-ENGINE.md` |\n| `ai-analysis-service` | Python / FastAPI | Post-judging LLM analysis of the user's solution (complexity commentary, style feedback) via a RAG pipeline \u2014 see `12-AI-ANALYSIS-SERVICE.md` |\n| `frontend` | React 19 / TypeScript / Vite 8 / React Router 7 | The browser IDE, problem browser, 2D \"Board\" view, admin problem editor |\n\nA `config-service` existed early in the project's history and was deliberately\n**removed** (`335d171 Remove config-service - deployed but fully unused`) once it\nturned out nothing actually used it \u2014 a good example of not carrying dead\ninfrastructure just because it was already built.\n\nA legacy Java `worker-service` (Docker-outside-of-Docker based) was also fully\nremoved once `worker-service-go` replaced it (`ebd12c2`, `9805295`, `3798270`,\n`bef303f`, `8660f4d`, `b0bdac3`) \u2014 see `02-KUBERNETES-MIGRATION.md` for why the\nrewrite happened at all.",
+    "source": "docs/01-ARCHITECTURE-OVERVIEW.md",
+    "kind": "prose",
+    "title": "Service inventory",
+    "metadata": {}
+  },
+  {
+    "text": "How a submission actually flows through the system\n1. **Frontend** sends the user's raw code + language + problem id to\n   `submission-service` via `api-gateway` (JWT bearer token attached).\n2. **submission-service** calls `problem-service` to get the harness for that\n   language (see `04-LANGUAGE-SUPPORT-AND-HARNESS.md`), glues it onto the user's\n   code via `HarnessApplier`, uploads the assembled source to S3/MinIO, and\n   publishes a `SubmissionCreatedEvent` to Kafka \u2014 embedding the test cases and\n   resource limits directly in the event so the worker never needs to call back\n   into problem-service mid-judging.\n3. **worker-service-go** consumes the event, checks out a pre-warmed, hardened\n   Kubernetes Pod from its per-language pool, writes the source in, compiles\n   (if the language needs it), runs each test case, and publishes a\n   `ExecutionResultEvent` back to Kafka.\n4. **execution-result-service** consumes that event, persists the verdict, and\n   the frontend polls/reads it back through `api-gateway`.\n5. **ai-analysis-service** independently consumes the same result stream (or a\n   related topic) to kick off an LLM-based analysis pass once judging finishes.",
+    "source": "docs/01-ARCHITECTURE-OVERVIEW.md",
+    "kind": "prose",
+    "title": "How a submission actually flows through the system",
+    "metadata": {}
+  },
+  {
+    "text": "Cross-cutting technology choices\n- **Service discovery**: Eureka (`discovery-service`) \u2014 every service resolves\n  peers by logical name (`discovery-service`, `auth-service`, ...), not IP.\n  This is also the single biggest source of the \"intermittent flakiness\" this\n  project chased throughout its life \u2014 see `13-INCIDENT-POSTMORTEMS.md` and\n  `07-RESOURCE-TUNING-AND-CAPACITY.md`.\n- **Messaging**: Kafka, with SASL/TLS auth in production (see\n  `10-DATA-STORAGE-MESSAGING.md`).\n- **Storage**: Postgres (one database per Java service \u2014 database-per-service,\n  not a shared schema), MinIO (S3-compatible) for submission source code and\n  test-case content, Redis for per-user rate limiting.\n- **Observability**: OpenTelemetry + Jaeger for distributed tracing, structured\n  JSON logging across all Java services, Spring Actuator health checks\n  everywhere.\n- **Deployment target**: a single 4-vCPU / 24GB ARM VM (Oracle Cloud \"Always\n  Free\" Ampere A1) running k3s + Calico (for real `NetworkPolicy` enforcement,\n  since k3s's default Flannel CNI silently ignores `NetworkPolicy` objects).",
+    "source": "docs/01-ARCHITECTURE-OVERVIEW.md",
+    "kind": "prose",
+    "title": "Cross-cutting technology choices",
+    "metadata": {}
+  },
+  {
+    "text": "Why this shape (modular monolith \u2192 microservices)\nThe git history shows an explicit early phase called \"ModularMonolithScaffolding\"\n(`887ee4a`, `ed91e92`, `7c1f850`) \u2014 the project deliberately started as a\nmodular monolith and was later split into real, independently-deployed\nmicroservices. This is visible in the commit history as a genuine architectural\nevolution, not a from-scratch microservices design \u2014 worth knowing if asked\nabout the reasoning in an interview: start simple, split along real\nservice boundaries once they're understood, not upfront.",
+    "source": "docs/01-ARCHITECTURE-OVERVIEW.md",
+    "kind": "prose",
+    "title": "Why this shape (modular monolith \u2192 microservices)",
+    "metadata": {}
+  },
+  {
+    "text": "The Docker \u2192 Kubernetes Migration",
+    "source": "docs/02-KUBERNETES-MIGRATION.md",
+    "kind": "prose",
+    "title": "The Docker \u2192 Kubernetes Migration",
+    "metadata": {}
+  },
+  {
+    "text": "Why the old design had to go\nThe original code-execution sandbox ran on **Docker-outside-of-Docker**:\n`worker-service-go` (or its Java predecessor) held a mount to the host's\n`docker.sock` and launched sibling containers to run untrusted user code.\n\nThis is a well-known container-escape risk class: anything with access to\n`docker.sock` effectively has root on the host, because it can ask the Docker\ndaemon to do arbitrary things (mount the host filesystem into a new\ncontainer, launch a privileged container, etc.). For a platform whose entire\njob is *running arbitrary untrusted code submitted by strangers on the\ninternet*, this was an unacceptable amount of blast radius, and it also\ndoesn't translate to a Kubernetes Pod anyway \u2014 there's no `docker.sock`\ninside a k3s Pod by default, and reintroducing one to keep the old design\nwould have made the k3s migration pointless.\n\nThe fix (commit `ebfa451`): rip out Docker-outside-of-Docker entirely and\nreplace it with **pooled, hardened Kubernetes Pods**, one pool per language.",
+    "source": "docs/02-KUBERNETES-MIGRATION.md",
+    "kind": "prose",
+    "title": "Why the old design had to go",
+    "metadata": {}
+  },
+  {
+    "text": "The new design: pooled sandbox Pods\n`worker-service-go` (see `03-SANDBOX-EXECUTION-ENGINE.md` for the full internals)\nnow:\n1. Keeps a small number of pre-warmed, idle Pods per language sitting ready\n   (`SANDBOX_POOL_SIZE` per language \u2014 tuned down hard over the project's life,\n   see `07-RESOURCE-TUNING-AND-CAPACITY.md`).\n2. Checks one out for the lifetime of exactly one submission.\n3. Execs into it via the Kubernetes `pods/exec` subresource \u2014 first to write\n   the assembled source file in, then to compile (if needed), then once per\n   test case to run it.\n4. Deletes the Pod when the submission finishes. Pods are never reused across\n   submissions, only within one submission's compile+run lifecycle.\n\nThis is a deliberate change from the old \"one container per test case\"\nmodel: launching a fresh container per test case was fast enough under Docker,\nbut a Kubernetes Pod launch (schedule + kubelet + CNI setup) is far slower\nthan `docker run`, so compiling once and executing many times against the\nsame already-running Pod is what makes the latency tolerable.",
+    "source": "docs/02-KUBERNETES-MIGRATION.md",
+    "kind": "prose",
+    "title": "The new design: pooled sandbox Pods",
+    "metadata": {}
+  },
+  {
+    "text": "Security controls carried over (and how they map to Kubernetes)\nEvery control from the old Docker design has a direct Kubernetes equivalent,\ndocumented explicitly in `podspec.go`'s header comment so nobody removes one\nwithout understanding why it's there:\n\n| Docker mechanism | Kubernetes equivalent |\n|---|---|\n| `--network none` | No direct per-Pod field exists. Enforced instead via a namespace-wide **default-deny `NetworkPolicy`** (`infra/k8s/01-networkpolicy.yaml`) with empty `podSelector: {}` and no ingress/egress rules at all \u2014 denies everything, both directions, for every pod in `sandbox-execution`. |\n| `--pids-limit` | Not a per-Pod field in Kubernetes \u2014 only exposed as a **node-wide** kubelet flag (`--pod-max-pids`). Documented in `infra/k8s/README.md` rather than configured per-sandbox. |\n| Non-root user (old entrypoint.sh chown) | `SecurityContext.RunAsUser: 65534` (\"nobody\"), `RunAsNonRoot: true`, plus `FSGroup: 65534` so kubelet chowns the `emptyDir` mounts' group automatically \u2014 replaces the manual chown the old entrypoint script did. |\n| Read-only container filesystem | `ReadOnlyRootFilesystem: true` |\n| Dropped Linux capabilities | `Capabilities.Drop: [\"ALL\"]` |\n| seccomp profile | `SeccompProfile` \u2014 defaults to `RuntimeDefault`, with an optional `Localhost` profile path for a custom, tighter profile (see the `sandbox-seccomp-provisioner` DaemonSet and `05-SECURITY-HARDENING.md`) |\n| `--tmpfs /tmp:size=64m,noexec,nosuid` | A `tmp` volume: `emptyDir{Medium: Memory, SizeLimit: 64Mi}` \u2014 memory-backed, tiny, mirrors the old flags exactly |\n| Old shared-volume compile\u2192run handoff | Not needed anymore \u2014 compile and every test-case exec are separate `exec` calls into the **same already-running container**, so they already share a filesystem (the `scratch` `emptyDir` mounted at `/sandbox`) without any cross-container volume plumbing |\n| `docker stats` for peak memory | Not available per-Pod. Replaced by execing a tight polling loop into the same container that reads cgroup v2's `/sys/fs/cgroup/memory.current` directly and streams samples back over the exec stdout \u2014 one long-lived exec session per test case rather than one process-spawn per sample. |",
+    "source": "docs/02-KUBERNETES-MIGRATION.md",
+    "kind": "prose",
+    "title": "Security controls carried over (and how they map to Kubernetes)",
+    "metadata": {}
+  },
+  {
+    "text": "CPU isolation (and its own follow-up story)\nCPU is enforced via the container's `Resources.Requests`/`Limits` set equal to\neach other (a \"Guaranteed\" QoS pod) \u2014 this is what the whole\n`SANDBOX_CPU_QUOTA*` tuning saga in `07-RESOURCE-TUNING-AND-CAPACITY.md` is\nabout. Getting this number right (and eventually, right *per language*) was\none of the hardest and most recurring problems across this project's life.",
+    "source": "docs/02-KUBERNETES-MIGRATION.md",
+    "kind": "prose",
+    "title": "CPU isolation (and its own follow-up story)",
+    "metadata": {}
+  },
+  {
+    "text": "What broke during real validation (and is worth knowing about)\nThe migration commit's message calls out two concrete findings from testing\nagainst a **real** k3s+Calico cluster (not just a manifest that looks correct\non paper):\n\n1. **Node-wide `pod-max-pids=64` broke Calico's own `calico-node` agent** \u2014\n   the CNI's own control-plane component needed more than the tight PID limit\n   meant for sandbox pods. Calico needs **2048+** PIDs to function; the\n   sandbox-appropriate PID ceiling can't just be applied node-wide.\n2. **Cold sandbox image pulls can exceed the pod-startup timeout** on a\n   submission's very first run for a given language \u2014 the first person to\n   submit Go (say) pays the image-pull cost inline, which can blow past\n   `SANDBOX_POD_STARTUP_TIMEOUT` (30s default) and surface to the user as\n   \"Timed out waiting for a judging result.\"\n\nBoth are documented in `infra/k8s/README.md` as prerequisites/gotchas for\nanyone standing this cluster up fresh.",
+    "source": "docs/02-KUBERNETES-MIGRATION.md",
+    "kind": "prose",
+    "title": "What broke during real validation (and is worth knowing about)",
+    "metadata": {}
+  },
+  {
+    "text": "The Flannel \u2192 Calico swap this all depends on\nk3s ships with **Flannel** as its default CNI, and Flannel **does not enforce\n`NetworkPolicy` objects at all** \u2014 the default-deny policy above would\nsilently do nothing on a stock k3s install, giving a false sense of security\n(the manifest exists and looks correct, but nothing is actually blocked).\nThis cluster was bootstrapped with Flannel disabled and Calico installed\ninstead specifically to make the security model real, not just documented.\nThis was validated directly this session too: a live `wget` from inside a\nsandbox pod failed with `bad address` (DNS resolution blocked), proving the\npolicy is actually enforced, not just present \u2014 see `13-INCIDENT-POSTMORTEMS.md`.",
+    "source": "docs/02-KUBERNETES-MIGRATION.md",
+    "kind": "prose",
+    "title": "The Flannel \u2192 Calico swap this all depends on",
+    "metadata": {}
+  },
+  {
+    "text": "Removing the old worker entirely\nOnce `worker-service-go` was proven out, the legacy Java `worker-service`\n(the Docker-outside-of-Docker implementation) was fully deleted, not just\ndisabled behind a flag \u2014 including its OAuth client/secret, its Kafka\nACLs (`submission-topic`, `worker-group`), and every stale comment/README\nreference to it (`ebd12c2`, `9805295`, `3798270`, `bef303f`, `8660f4d`,\n`b0bdac3`, `68eaea`). This is worth calling out as good practice: once a\nmigration is validated, remove the old path completely rather than leaving\ntwo implementations to drift out of sync.",
+    "source": "docs/02-KUBERNETES-MIGRATION.md",
+    "kind": "prose",
+    "title": "Removing the old worker entirely",
+    "metadata": {}
+  },
+  {
+    "text": "Sandbox Execution Engine (`worker-service-go`) Deep Dive\nThis is the single most complex, most fought-over piece of the platform. It's\nworth understanding in full because nearly every hard bug this project hit\nlived here.",
+    "source": "docs/03-SANDBOX-EXECUTION-ENGINE.md",
+    "kind": "prose",
+    "title": "Sandbox Execution Engine (`worker-service-go`) Deep Dive",
+    "metadata": {}
+  },
+  {
+    "text": "Core data structures\n```go\ntype langDescriptor struct {\n    Image          string     // sandbox image for this language\n    CompileCmd     []string   // nil for interpreted languages\n    ExecCmd        []string   // how to run the compiled/interpreted program\n    SourceFilename string\n    Env            []string   // extra KEY=VALUE env vars for this language's pod\n    CPUQuota       float64    // per-language CPU override; 0 = use platform default\n}\n```\n\nOne `langDescriptor` exists per supported language (Python, Java, C++, C,\nJavaScript, TypeScript, Go), built once at startup by `buildLangDescriptors`.\n\n```go\ntype pool struct {\n    sandbox *Sandbox\n    lang    domain.Language\n    desc    *langDescriptor\n    ch      chan string   // channel of ready, warm pod names\n    size    int\n}\n```\n\nOne `pool` per language, created **lazily** on that language's first-ever\nsubmission after the process starts (not eagerly for all 7 languages at\nboot) \u2014 a background goroutine (`replenish`) keeps its channel topped up to\n`size` (from `SANDBOX_POOL_SIZE`) for as long as the process lives.\n\n```go\ntype Session struct {\n    sandbox *Sandbox\n    lang    domain.Language\n    desc    *langDescriptor\n    podName string\n    CompileError  bool\n    CompileOutput []byte\n}\n```\n\nOne `Session` per submission \u2014 the object callers actually interact with:\n`NewSession` \u2192 optional `RunTestCase` per test case \u2192 `Close` (deletes the pod).",
+    "source": "docs/03-SANDBOX-EXECUTION-ENGINE.md",
+    "kind": "prose",
+    "title": "Core data structures",
+    "metadata": {}
+  },
+  {
+    "text": "The submission lifecycle, step by step\n1. **`NewSession`** is called with the language, source code, wall-clock\n   timeout, memory limit, and CPU quota for this submission.\n2. It calls `getOrCreatePool` for the language (creating the pool + starting\n   its replenish goroutine on first use), then `pool.checkout(ctx)`.\n3. **`checkout`** pulls a name off the pool's channel. Before handing it back,\n   it verifies the pod is still `Running` via a live `Get` call \u2014 a pod that\n   died after being queued (evicted, OOM-killed, or removed out of band, e.g.\n   a manual `kubectl delete pods --all -n sandbox-execution`) gets discarded\n   and checkout keeps trying instead of returning a dead name. If the channel\n   is empty for longer than `SandboxPoolCheckoutTimeout`, it falls back to\n   creating a fresh pod on demand for this one submission (eating the ~1-3s\n   Pod-start latency rather than blocking indefinitely).\n4. The source file is written into `/sandbox/<filename>` via `writeFileToPod`\n   \u2014 which pipes the content as stdin to `cat > <path>` executed inside the\n   pod over the `pods/exec` subresource (there's no direct \"copy file in\"\n   primitive; this is the same trick `kubectl cp` uses internally, without\n   the tar layer since it's always exactly one file to a known path).\n5. If a pod turns out to have died in the narrow window between step 3's\n   health check and this write, `NewSession` retries **once** against a\n   guaranteed-fresh, on-demand pod rather than failing the whole submission.\n6. If `desc.CompileCmd` is set, it's executed with a timeout of\n   `max(WallTimeout * 3, minCompileTimeout=15s)`. Both stdout and stderr are\n   captured into a combined, size-capped buffer (`cappedBuffer`) \u2014 captured\n   *together* because some toolchain failures print to stdout instead of\n   stderr (see the Go `GOCACHE` postmortem in `13-INCIDENT-POSTMORTEMS.md`),\n   and a stderr-only capture would silently produce an undiagnosable,\n   empty-reason `CE`.\n7. A nonzero exit code or a timeout during compile sets `CompileError = true`\n   and stores the combined output \u2014 the caller (`executor.go`) then marks\n   every test case `CE` without ever calling `RunTestCase`.\n8. Otherwise, `RunTestCase` execs `ExecCmd` once per test case against the\n   **same already-running pod**, applying the request's wall-clock timeout\n   per case, sampling peak memory via the cgroup-polling exec described in\n   `02-KUBERNETES-MIGRATION.md`.\n9. `Session.Close()` deletes the pod unconditionally \u2014 pods are single-use\n   per submission, never returned to the pool.",
+    "source": "docs/03-SANDBOX-EXECUTION-ENGINE.md",
+    "kind": "prose",
+    "title": "The submission lifecycle, step by step",
+    "metadata": {}
+  },
+  {
+    "text": "Per-language CPU quota tiers (the hard-won part)\nEvery sandbox pod's CPU `requests == limits` (Guaranteed QoS). For most of\nthe project's life this was one global knob, `SANDBOX_CPU_QUOTA`. That\nturned out to be wrong: different languages have wildly different real CPU\nneeds to *compile* (interpreted languages need almost none; Go's toolchain\nneeds several real CPU-seconds even for a trivial file). See\n`07-RESOURCE-TUNING-AND-CAPACITY.md` for the full story of how this was\ndiscovered and fixed \u2014 the short version is `langDescriptor.CPUQuota`\nlets each language override the platform default:\n\n| Language | CPU quota | Why |\n|---|---|---|\n| Go | `1.0` (full core) | Toolchain needs ~10s of real CPU even for a one-file program; under a low quota, CFS throttling stretched that into 30+ seconds of wall-clock time and blew the compile timeout |\n| Java, TypeScript | `0.5` | Real compile step (`javac`/`tsc`) - same risk class as Go, given a safety margin as insurance |\n| Python, JavaScript | `0.15` | Pure interpretation, no compile step at all |\n| C, C++ | `0.3` (platform default) | Small native compiles are cheap enough that no override was needed |",
+    "source": "docs/03-SANDBOX-EXECUTION-ENGINE.md",
+    "kind": "prose",
+    "title": "Per-language CPU quota tiers (the hard-won part)",
+    "metadata": {}
+  },
+  {
+    "text": "`GOTMPDIR`/`GOCACHE`/`GOPROXY`/`GOSUMDB` \u2014 Go needed more than just a CPU fix\nGo's `langDescriptor` env carries several deliberately-set variables, each\nfixing a distinct, separately-discovered bug (all documented in full in\n`13-INCIDENT-POSTMORTEMS.md`):\n\n```go\nEnv: []string{\n    \"GOCACHE=/sandbox/.gocache\",   // NOT /tmp - see the tmpfs-exhaustion postmortem\n    \"GOTMPDIR=/sandbox/.gotmp\",    // must be mkdir'd first - Go stats it, never creates it\n    \"HOME=/sandbox\",\n    \"GOMAXPROCS=1\",\n    \"GOFLAGS=-p=1\",\n    \"GOPROXY=off\",                 // sandbox has zero network egress by design\n    \"GOSUMDB=off\",\n}\nCompileCmd: []string{\"sh\", \"-c\",\n    \"mkdir -p /sandbox/.gocache /sandbox/.gotmp && go build -o /sandbox/solution /sandbox/solution.go\"},\n```",
+    "source": "docs/03-SANDBOX-EXECUTION-ENGINE.md",
+    "kind": "prose",
+    "title": "`GOTMPDIR`/`GOCACHE`/`GOPROXY`/`GOSUMDB` \u2014 Go needed more than just a CPU fix",
+    "metadata": {}
+  },
+  {
+    "text": "What's still a known simplification\nPooled pods are all sized uniformly per language by `cfg.SandboxCPUQuota`\n(or its per-language override) and `cfg.SandboxMemoryMB` \u2014 a problem's own,\npossibly-lower per-problem `MemoryLimitMB`/`CPUQuota` isn't yet used to\nprovision a differently-shaped pod. A future iteration would bucket the pool\nby a small set of resource tiers if per-problem limits ever need to diverge\nmeaningfully from the platform default. This is flagged directly in the code\n(`sandbox.go`'s `Session` doc comment) rather than silently left unexplained.",
+    "source": "docs/03-SANDBOX-EXECUTION-ENGINE.md",
+    "kind": "prose",
+    "title": "What's still a known simplification",
+    "metadata": {}
+  },
+  {
+    "text": "Language Support & the Harness System",
+    "source": "docs/04-LANGUAGE-SUPPORT-AND-HARNESS.md",
+    "kind": "prose",
+    "title": "Language Support & the Harness System",
+    "metadata": {}
+  },
+  {
+    "text": "The problem this solves\nLeetCode-style judging needs the user to write **only their function**\n(`twoSum`, `class Solution:`, etc.), not a full program with stdin parsing\nand output formatting. Something has to glue a `main`/entry-point around\nwhatever the user submits, matching the exact function signature the problem\ndefines, for **seven different languages** with wildly different type\nsystems: Java, C++, C, Python, JavaScript, TypeScript, Go.\n\nThis is split across two services:\n- **`problem-service`** owns per-language **harness generators** \u2014 one class\n  per language, each implementing `HarnessGenerator`, that turn a language-\n  agnostic `FunctionSignature` (name, params, return type) into the\n  boilerplate that goes *after* the user's code.\n- **`submission-service`** owns `HarnessApplier`, which glues the generated\n  harness onto the user's raw code and prepends any language-specific\n  **preamble** that has to come *before* it.",
+    "source": "docs/04-LANGUAGE-SUPPORT-AND-HARNESS.md",
+    "kind": "prose",
+    "title": "The problem this solves",
+    "metadata": {}
+  },
+  {
+    "text": "Why some languages need a preamble and others don't\n```java\n// HarnessApplier.PREAMBLES\n\"java\", \"import java.util.*;\\n\\n\"\n\"cpp\",  \"#include <bits/stdc++.h>\\nusing namespace std;\\n\\n\"\n\"c\",    \"#include <stdio.h>\\n#include <stdlib.h>\\n#include <string.h>\\n\"\n        + \"#include <stdbool.h>\\n#include <ctype.h>\\n\\n\"\n\"go\",   \"package main\\n\\nimport (\\n\\t\\\"encoding/json\\\"\\n\\t\\\"fmt\\\"\\n\\t\\\"io\\\"\\n\\t\\\"os\\\"\\n)\\n\\n\"\n```\n\nJava needs common collection imports before any type declaration; C/C++'s\nharness-generated types (`vector`, `string`) need to be `#include`d before\nthe user's own method signatures reference them; Go's compiler enforces\nimport declarations before *any* other top-level declaration \u2014 Go's own\nharness generator can't legally emit `package main`/imports itself because\nthey must precede the user's function, not follow it. Python, JavaScript,\nand TypeScript need no preamble \u2014 their harness is only ever appended.\n\nFinal assembled source = `preamble + userCode + \"\\n\\n\" + harness`.",
+    "source": "docs/04-LANGUAGE-SUPPORT-AND-HARNESS.md",
+    "kind": "prose",
+    "title": "Why some languages need a preamble and others don't",
+    "metadata": {}
+  },
+  {
+    "text": "Per-language approach\n| Language | User writes | Harness appends | Notable trick |\n|---|---|---|---|\n| **Python** | `class Solution:` with the method | An `if __name__ == \"__main__\":` block that `json.loads(sys.stdin.read())`, calls `Solution().method(...)`, `json.dumps` the result | No type casting needed at all \u2014 `json.loads` already produces native Python types matching the platform's type vocabulary |\n| **JavaScript** | A plain top-level function | A small stdin-read + JSON-parse + call + `console.log(JSON.stringify(...))` wrapper (`JsFamilyHarness`, shared with TypeScript) | Dynamic typing means no per-param type mapping needed |\n| **TypeScript** | A plain top-level function, typed | Same `JsFamilyHarness` wrapper as JavaScript, compiled via `tsc` first | Shares its harness generator with JavaScript since the generated wrapper code is JS either way |\n| **Go** | A plain top-level `func` (no `package main`, no imports \u2014 the preamble supplies those) | An anonymous struct matching the signature's params (each JSON-tagged), `json.Unmarshal` from stdin, call, `json.Marshal` + `fmt.Println` | Go's `encoding/json` handles both directions natively \u2014 no hand-rolled JSON helper needed, unlike C/C++/Java |\n| **Java** | A method inside a class matching the expected signature | A `main` that parses stdin JSON, calls the method, prints the result | Needs a hand-written JSON helper (no JSON library in the plain JDK sandbox image) |\n| **C++** | A plain function (or class method, LeetCode-style) | A `main` with a hand-written JSON helper appended **before** `main()` | C++ compiles top-to-bottom with no forward resolution across the file, so the helper must physically precede its use |\n| **C** | A LeetCode-convention C signature \u2014 see below | A hand-written JSON helper + `main`, both appended before `main()` for the same top-to-bottom reason | The most involved generator by far \u2014 see next section |",
+    "source": "docs/04-LANGUAGE-SUPPORT-AND-HARNESS.md",
+    "kind": "prose",
+    "title": "Per-language approach",
+    "metadata": {}
+  },
+  {
+    "text": "C is the hard case: no arrays-with-length, no generics\nC has no way to express \"an array, and also know its length\" as a single\ntype, and no strings-with-length or generics at all. A generic\ntype\u2192param mapping (as every other language gets) isn't enough \u2014 the C\ngenerator has to emit **companion parameters** matching real LeetCode C\nconvention exactly, so the frontend's starter code for C problems matches\nwhat a LeetCode user would actually expect:\n\n- an `int[]` **parameter** becomes `(int* name, int nameSize)`\n- an `int[][]` **parameter** becomes `(int** name, int nameSize, int* nameColSize)`\n- an `int[]` **return** adds a trailing `(..., int* returnSize)` out-param,\n  and the function is expected to return a `malloc`'d `int*`\n- an `int[][]` **return** adds trailing\n  `(..., int* returnSize, int** returnColumnSizes)` out-params\n\nThis mirrors LeetCode's actual C templates (e.g. Two Sum's real signature is\n`int* twoSum(int* nums, int numsSize, int target, int* returnSize)`) rather\nthan inventing a friendlier custom convention \u2014 because the point is\nmatching what a LeetCode-experienced user already expects to type.\n\nSince the plain `gcc` sandbox image has no JSON library, C (like C++ and\nJava) ships a small, hand-written, deliberately **fixed** JSON reader/writer\n(`resources/harness-templates/JsonHelper.c.txt`) restricted to exactly the\nplatform's supported type vocabulary (`int`, `int[]`, `int[][]`, `string`,\n`bool`) \u2014 not a general-purpose JSON library, just enough to round-trip\nwhat this platform's problems ever need.",
+    "source": "docs/04-LANGUAGE-SUPPORT-AND-HARNESS.md",
+    "kind": "prose",
+    "title": "C is the hard case: no arrays-with-length, no generics",
+    "metadata": {}
+  },
+  {
+    "text": "The type vocabulary\nA shared `TypeVocabulary` class enforces which types every harness generator\nis allowed to accept (`int`, `int[]`, `int[][]`, `string`, `bool` \u2014 see\n`GoHarnessGenerator`'s `GO_TYPE` map for the canonical list), so a problem\nauthor can't define a signature using a type no generator knows how to\nserialize/deserialize across all seven languages at once.",
+    "source": "docs/04-LANGUAGE-SUPPORT-AND-HARNESS.md",
+    "kind": "prose",
+    "title": "The type vocabulary",
+    "metadata": {}
+  },
+  {
+    "text": "Where this connects to the sandbox\nOnce `HarnessApplier` produces the final assembled source, it's what actually\ngets uploaded to S3/MinIO and handed to `worker-service-go` \u2014 see\n`03-SANDBOX-EXECUTION-ENGINE.md` for what happens to it from there\n(`desc.SourceFilename`, `desc.CompileCmd`, `desc.ExecCmd`).",
+    "source": "docs/04-LANGUAGE-SUPPORT-AND-HARNESS.md",
+    "kind": "prose",
+    "title": "Where this connects to the sandbox",
+    "metadata": {}
+  },
+  {
+    "text": "Security Hardening\nThis project treats security as a real, continuously-audited concern, not a\ncheckbox \u2014 the history shows repeated passes going back and closing gaps\nfound by actually testing against a real deployment, not just code review.",
+    "source": "docs/05-SECURITY-HARDENING.md",
+    "kind": "prose",
+    "title": "Security Hardening",
+    "metadata": {}
+  },
+  {
+    "text": "Sandbox isolation (untrusted user code)\nCovered in full in `02-KUBERNETES-MIGRATION.md`. Summary: no Docker-outside-\nof-Docker, default-deny `NetworkPolicy` (enforced via Calico, not k3s's\ndefault Flannel which silently ignores `NetworkPolicy` objects entirely),\nnon-root (`UID 65534`), read-only root filesystem, all Linux capabilities\ndropped, seccomp (see below), a 64Mi memory-backed noexec `/tmp`.",
+    "source": "docs/05-SECURITY-HARDENING.md",
+    "kind": "prose",
+    "title": "Sandbox isolation (untrusted user code)",
+    "metadata": {}
+  },
+  {
+    "text": "The `getcpu` seccomp incident\nEvery Java submission was failing `CE` with **empty compile output** \u2014 the\nJVM itself was never starting: `getcpu(2) system call not supported by\nkernel`. This is misleading text: seccomp's `SCMP_ACT_ERRNO` returns that\nexact wording for *any denied syscall*, not an actual kernel limitation.\nThe sandbox's strict default-deny seccomp allowlist\n(`worker-service-go/docker/seccomp/execution.json`, provisioned cluster-wide\nby the `sandbox-seccomp-provisioner` DaemonSet) already permitted\n`sched_getaffinity` but was missing `getcpu` \u2014 a harmless, read-only syscall\n(returns the calling thread's current CPU/NUMA node) this particular JVM\nbuild calls during startup. Diagnosed by manually exec'ing into a live\n`sandbox-java` pod and reproducing it directly, ruling out\n`-XX:-UseContainerSupport`, `MALLOC_ARENA_MAX=1`, and gVisor (these pods run\nunder plain `runc`) as explanations before finding the actual denied\nsyscall. Fixed by adding `getcpu` to the allowlist (`1413666`).\n\nThis incident also surfaced a **second, more important gap**: HotSpot's\nVM-init failure text goes to **stdout**, not stderr, so the compile step's\nthen-stderr-only capture recorded nothing even though the JVM printed a\nvery clear message. This is the exact same class of bug that later bit Go's\ndisk-exhaustion failure (see `13-INCIDENT-POSTMORTEMS.md`) \u2014 flagged at the\ntime as a real gap but not fixed until it recurred, worth remembering as a\nlesson: a flagged-but-deferred gap tends to actually come back.",
+    "source": "docs/05-SECURITY-HARDENING.md",
+    "kind": "prose",
+    "title": "The `getcpu` seccomp incident",
+    "metadata": {}
+  },
+  {
+    "text": "Authorization (\"the authz guide rollout\")\nA deliberate, cross-service pass (`a34fae6`) closing real authorization\ngaps, not just adding auth in general:\n\n- **`ai-analysis-service`**: real RS256 JWT verification via `PyJWT` +\n  `PyJWKClient` on `/ai/analyze`, replacing what had been \"the header just\n  has to be non-empty\" \u2014 i.e. a Python service that trusted any bearer token\n  shape without actually validating a signature.\n- **`problem-service`**: `POST /problems` restricted to `ADMIN`; the rest of\n  `/problems/**` to `USER`/`ADMIN`; `@EnableMethodSecurity` +\n  `@PreAuthorize` on the service layer as an *independent second layer*\n  behind the controller-level check (defense in depth: a controller-level\n  bypass wouldn't be enough on its own to write data).\n- **`submission-service`**: an **IDOR fix** \u2014 `GET /submissions/{id}` and\n  `GET /submissions/user/{userId}` are now scoped to the caller's own JWT\n  subject at the query level, not just checked \"is this a valid token.\"\n  Before this, any authenticated user could plausibly read another user's\n  submission by guessing/incrementing an id. An explicit\n  `AccessDeniedException` handler was added so the existing catch-all\n  handler didn't turn every legitimate 403 into a misleading 500.\n- **`user-service`**: `AdminBootstrap` seeds exactly one `ADMIN` account on\n  startup (idempotent, env-configurable \u2014 doesn't create duplicates on\n  restart), and `PATCH /users/{email}/role` (ADMIN-only) is the only way to\n  promote further admins \u2014 no way to self-promote.\n\nTwo more role-scoping passes followed later: revoking `problem-service`'s\noverly broad `ROLE_SERVICE` grant on `GET /problems/**` (`69ded3d`),\nrequiring `ADMIN` specifically for `GET /problems/{id}/testcases`\n(`ee59927`) since hidden test cases shouldn't be readable by a normal user\neven authenticated, and a regression fix restoring `SERVICE`-role access to\n`GET /problems/{id}` once another service legitimately needed it back\n(`8a31e22`) \u2014 a reminder that tightening authorization is iterative and can\novershoot, requiring a quick, deliberate walk-back rather than reverting the\nwhole pass.",
+    "source": "docs/05-SECURITY-HARDENING.md",
+    "kind": "prose",
+    "title": "Authorization (\"the authz guide rollout\")",
+    "metadata": {}
+  },
+  {
+    "text": "Container hardening (non-root, read-only, minimal build context)\nAll 9 Java services were originally running **as root** in production with\nnothing in the runtime stage that actually required it \u2014 the kind of gap\nthat turns any future dependency CVE or deserialization bug into a\nroot shell instead of a contained one. Fixed (`100268d`) by adding a\ndedicated non-root `app` user to each identical Dockerfile, `COPY`ing the\njar in already owned by that user, and switching to it before `ENTRYPOINT`.\n**Verified against a real container, not just a successful build** \u2014\n`docker exec api-gateway id` confirmed `uid=100(app)`, and\n`/actuator/health` still returned 200 with liveness/readiness groups intact\nunder the new user.\n\nThe same commit added a `.dockerignore` to every service (`target/`,\n`.mvn/`, `mvnw`, `.idea/`, `HELP.md`, `.env*`) \u2014 none existed anywhere\nbefore, meaning every single build was sending its entire service directory\nas Docker build context, including leftover build artifacts and any local\n`.env` files that happened to be sitting in the directory.\n\n`ai-analysis-service` and `worker-service-go` got the equivalent multi-stage,\nnon-root, `.dockerignore`'d treatment separately (`9c30a3a`, `b8e5dd5`).",
+    "source": "docs/05-SECURITY-HARDENING.md",
+    "kind": "prose",
+    "title": "Container hardening (non-root, read-only, minimal build context)",
+    "metadata": {}
+  },
+  {
+    "text": "Secrets: keys and certs never belong in the image or the repo\nTwo separate, very similar incidents, both root-caused the same way:\n\n1. **`auth-service`'s JWT private key** (`b76a726`) \u2014 the public key was\n   committed (correctly, it's public) and baked into the image via\n   classpath resource loading. The **private** key was correctly\n   `.gitignore`'d and thus never in any image at all \u2014 `auth-service`\n   crash-looped in production the moment it needed to actually *sign* a\n   token: `class path resource [keys/jwt-private.pem] cannot be opened`.\n   Fixed by switching `JwtKeyConfig` from a hardcoded `ClassPathResource` to\n   Spring's `DefaultResourceLoader`, which resolves a bare path against the\n   classpath exactly as before (zero change for local/dev) but also honors\n   an explicit `file:` prefix \u2014 letting production mount the real private\n   key from a Kubernetes `Secret` instead, matching the pattern every other\n   per-service secret in this project already used.\n2. **Postgres/Kafka TLS certs** (`0d086d1`) \u2014 both containers crash-looped\n   on the fresh prod VM because their private keys (`server.key`,\n   `broker-keystore.pem`) were, correctly, never committed either \u2014 Docker\n   had silently created an **empty directory** where the bind-mounted file\n   was expected. Since the CAs' own private keys were equally gitignored\n   (correctly) and thus also missing, there was no way to re-sign matching\n   certs against the existing committed CA \u2014 a **fresh CA had to be\n   generated on whatever machine actually runs the stack**.\n   `infra/generate-dev-certs.sh` does this (Postgres CA + server cert,\n   Kafka CA + broker cert bundled into the PEM keystore format Confluent's\n   image expects), with the SAN list including the VM's private IP so\n   `sslmode=verify-full` and Kafka's hostname verification succeed when\n   Kubernetes pods connect via IP instead of a docker-compose container\n   hostname. A follow-up (`a410a9b`) loosened generated cert/key\n   permissions from `600` to `644` once it turned out the stricter mode\n   blocked a legitimate read path.\n\n**The pattern worth remembering**: correctly gitignoring secrets means they\ncorrectly don't survive a move to a new machine \u2014 that's not a bug in the\ngitignore, it's the gitignore doing its job. The actual fix each time was\nbuilding a repeatable, scripted way to (re)provision secrets on a fresh\nenvironment, not \"just commit the file this once.\"",
+    "source": "docs/05-SECURITY-HARDENING.md",
+    "kind": "prose",
+    "title": "Secrets: keys and certs never belong in the image or the repo",
+    "metadata": {}
+  },
+  {
+    "text": "Frontend dependency hygiene\n`524e416` \u2014 a high-severity `nanoid` DoS vulnerability fixed via\n`npm audit fix` once flagged, not left for \"later.\"",
+    "source": "docs/05-SECURITY-HARDENING.md",
+    "kind": "prose",
+    "title": "Frontend dependency hygiene",
+    "metadata": {}
+  },
+  {
+    "text": "CI/CD Pipeline",
+    "source": "docs/06-CI-CD-PIPELINE.md",
+    "kind": "prose",
+    "title": "CI/CD Pipeline",
+    "metadata": {}
+  },
+  {
+    "text": "What exists today: CI (build + push), fully automated\n`.github/workflows/docker-build-push.yml` (`b3f1fa4` and many fixes after)\nbuilds every service's Docker image and pushes it to `ghcr.io` automatically:\n\n- **Trigger**: push to `main`, a `v*.*.*` tag, any pull request against\n  `main`, or manual `workflow_dispatch`.\n- **Selective builds**: `dorny/paths-filter` diffs the changed paths and only\n  builds images for services whose directory actually changed \u2014 not all 11\n  images on every commit. `workflow_dispatch`'s `build_all` input (or pushing\n  a `v*` tag) forces every image to rebuild regardless, for the first-ever\n  build or after a base-image/workflow change nothing's paths-filter would\n  otherwise catch.\n- **Multi-arch target**: every image builds for **`linux/arm64` only** \u2014 the\n  one real deployment target is the k3s VM (Ubuntu on Oracle Ampere ARM).\n  `docker-compose.yml` still builds every service locally from source for\n  dev, so local development on any host architecture is unaffected by this\n  choice.\n- **Tags**: `latest` (only on the default branch), the branch name, the\n  short SHA, and semver (on a `v*.*.*` tag) \u2014 via `docker/metadata-action`.\n- **Caching**: `type=gha` build cache, scoped per service (`matrix.name`) \u2014\n  this scoping detail became directly relevant to a real bug, see below.\n\nA second, small workflow (`bcd9e71`) syncs any `release/*` branch onto a\nlong-lived `release` branch \u2014 the explicit reasoning in that commit is that\n**Cloudflare Pages (and, its message says, \"later ArgoCD\") needs one stable\nbranch to watch for UAT**, rather than reconfiguring a downstream watcher\nevery time a new release-candidate branch is cut.",
+    "source": "docs/06-CI-CD-PIPELINE.md",
+    "kind": "prose",
+    "title": "What exists today: CI (build + push), fully automated",
+    "metadata": {}
+  },
+  {
+    "text": "What's still missing: CD (automated deploy)\n**This is the one deliberately-deferred piece of the whole platform.**\nDeploying a new image onto the k3s cluster today is a **manual** step:\n`git pull` on the VM, `kubectl rollout restart deployment/<name> -n platform`,\nand (for the sandbox pool specifically) `kubectl delete pods --all -n\nsandbox-execution` to clear stale pool state. `infra/k8s/README.md` says\nthis explicitly: *\"Deploying those images onto the k3s cluster (infra/k8s/)\nis a separate, deliberately manual step for now.\"*\n\nThe `release` branch sync workflow's own commit message already names the\nintended next step: **ArgoCD** (or a similar GitOps controller) watching\nthat branch and applying `infra/k8s/*.yaml` automatically whenever it\nchanges, instead of a human running `kubectl apply`/`rollout restart` by\nhand. This is the concrete, well-scoped remaining piece if this project's CD\nstory needs finishing \u2014 the CI side (image build + push, image tagging,\nselective builds) is already fully solved and doesn't need to change; only\nthe \"apply this to the cluster\" half is manual today.",
+    "source": "docs/06-CI-CD-PIPELINE.md",
+    "kind": "prose",
+    "title": "What's still missing: CD (automated deploy)",
+    "metadata": {}
+  },
+  {
+    "text": "Real CI bugs hit and fixed (all genuinely instructive)",
+    "source": "docs/06-CI-CD-PIPELINE.md",
+    "kind": "prose",
+    "title": "Real CI bugs hit and fixed (all genuinely instructive)",
+    "metadata": {}
+  },
+  {
+    "text": "1. `paths-filter` needs `pull-requests: read` on PR events specifically\n`5e5153d` \u2014 on a `push` event, `dorny/paths-filter` diffs locally against\nthe previous commit; on a `pull_request` event it instead asks the GitHub\nAPI which files changed, and that call needs `pull-requests: read` on the\njob's token. Only the `build` job had explicit permissions; `changes` ran\nwith the repo's default token permissions, which didn't include it, and\nfailed with `Resource not accessible by integration`.",
+    "source": "docs/06-CI-CD-PIPELINE.md",
+    "kind": "prose",
+    "title": "1. `paths-filter` needs `pull-requests: read` on PR events specifically",
+    "metadata": {}
+  },
+  {
+    "text": "2. `GITHUB_OUTPUT` chokes on multi-line JSON\n`a803ee7` \u2014 the normal (non-`build_all`) code path already compacted its\n`jq` output to one line, so this bug only manifested on the `build_all`\ninput or a `v*` tag push \u2014 exactly the path needed for the **very first**\nbuild of every service, which is what surfaced it. `GITHUB_OUTPUT` parses\none `key=value` pair per line; the force-all branch wrote the matrix's\npretty-printed (multi-line) JSON directly, so every line after the first\nwas parsed as its own invalid `key=value` pair, failing the step outright.",
+    "source": "docs/06-CI-CD-PIPELINE.md",
+    "kind": "prose",
+    "title": "2. `GITHUB_OUTPUT` chokes on multi-line JSON",
+    "metadata": {}
+  },
+  {
+    "text": "3. Multi-arch cross-compilation is genuinely tricky to get right\nThree separate, escalating incidents, all about producing an `arm64` binary\nthat actually runs on `arm64`:\n\n- **`worker-service-go`'s Dockerfile hardcoded `GOARCH=amd64`** \u2014 harmless\n  under the old `docker-compose` flow (same architecture as the build\n  machine), silently wrong once the target became the arm64 k3s node\n  (`b3f1fa4` fixed this by switching to buildx's `TARGETOS`/`TARGETARCH`\n  build args).\n- Later, the pod **crash-looped again** with `exec format error` despite\n  containerd's own image metadata correctly reporting `architecture=arm64`\n  \u2014 investigated by logging the resolved `GOARCH` directly into the build\n  log (`bf14f61`), which proved the real bug: the `--platform=$BUILDPLATFORM`\n  cross-compile pattern (build natively on the amd64 runner, cross-compile\n  via `GOOS/GOARCH=$TARGETARCH` to skip QEMU for the Go toolchain) simply\n  wasn't resolving `TARGETARCH` correctly in this pipeline, silently\n  producing an amd64 binary inside a correctly-labeled arm64 image.\n- The actual fix (`ecfcc9c`) **dropped the cross-compile trick entirely** \u2014\n  the builder stage now runs under the same QEMU-emulated arm64 as every\n  other Dockerfile in the repo, so `go build` just targets whatever it's\n  actually running on. Slower than a working cross-compile would have been,\n  but matches the one pattern already proven reliable everywhere else in\n  this pipeline. **Lesson: a \"faster\" build trick that silently produces\n  the wrong architecture is strictly worse than a slower, uniform approach\n  that's actually correct.**\n- The eclipse-temurin JRE base image compounded this same class of problem\n  a different way: `eclipse-temurin:17-jre-alpine` (used by all 9 Java\n  services) **has no `arm64` build at all** on Docker Hub \u2014 this silently\n  broke every one of those Dockerfiles the first time CI actually tried an\n  arm64 build (`d04d410`). Fixed by switching to\n  `eclipse-temurin:17-jre-jammy` (Ubuntu-based, confirmed multi-arch\n  including `linux/arm64/v8`) \u2014 which also meant swapping Alpine's\n  `addgroup`/`adduser` for Debian's `groupadd`/`useradd` in the non-root\n  user setup, since busybox's syntax doesn't exist on the new base image.",
+    "source": "docs/06-CI-CD-PIPELINE.md",
+    "kind": "prose",
+    "title": "3. Multi-arch cross-compilation is genuinely tricky to get right",
+    "metadata": {}
+  },
+  {
+    "text": "4. A GitHub Actions runner ran out of disk mid-build\n`385c3f1` \u2014 `ai-analysis-service`'s build failed with `ENOSPC` during\nbuildkit's \"exporting to image\" step. Root cause: `torch`'s default PyPI\nwheel for `linux/arm64` transitively pulls in the **full CUDA toolkit**\n(`nvidia-cublas`, `cudnn`, `cusolver`, `nccl`, `triton`, several GB) via\n`sentence-transformers`, even though this service runs CPU-only on an\nOracle Ampere VM with no GPU at all. Fixed by installing `torch` from\nPyTorch's dedicated CPU wheel index (`download.pytorch.org/whl/cpu`)\n*before* the rest of `requirements.txt`, so `sentence-transformers`' torch\ndependency is already satisfied by the small CPU build and pip never\nresolves the GPU variant.",
+    "source": "docs/06-CI-CD-PIPELINE.md",
+    "kind": "prose",
+    "title": "4. A GitHub Actions runner ran out of disk mid-build",
+    "metadata": {}
+  },
+  {
+    "text": "Real-world build times (worth knowing if this ever feels slow)\nEvery image builds under QEMU-emulated arm64 on GitHub's x86 runners \u2014\nnotoriously slower than a native build. Confirmed live during this\nproject's CPU-quota investigation: `worker-service-go`'s image build alone\ntook **~20 minutes** (16:27:36 \u2192 16:47:54 UTC on one real run). This is an\ninherent cost of cross-architecture emulation on shared CI infrastructure,\nnot something tunable from this repo's side without switching to native\nARM runners (a real option worth evaluating if build latency ever becomes a\nbottleneck \u2014 see `07-RESOURCE-TUNING-AND-CAPACITY.md` for the broader\ninfra-cost context this project was also navigating).",
+    "source": "docs/06-CI-CD-PIPELINE.md",
+    "kind": "prose",
+    "title": "Real-world build times (worth knowing if this ever feels slow)",
+    "metadata": {}
+  },
+  {
+    "text": "Resource Tuning & Capacity Planning: the full saga\nThis is the single most recurring theme across the entire project's history \u2014\nrunning ~14 services plus a pooled sandbox execution engine on **one 4-vCPU /\n24GB node** (Oracle Cloud's free-tier Ampere A1 ARM VM). Nearly every\n\"intermittent flakiness\" bug this project hit traces back to CPU or memory\novercommit on this one box. This document is the full chronological story,\nbecause understanding it as a sequence matters more than any single fix.",
+    "source": "docs/07-RESOURCE-TUNING-AND-CAPACITY.md",
+    "kind": "prose",
+    "title": "Resource Tuning & Capacity Planning: the full saga",
+    "metadata": {}
+  },
+  {
+    "text": "The fundamental constraint\nKubernetes schedules pods against **requests**, not real-time usage. A pod\nwhose request doesn't fit in the node's remaining allocatable capacity sits\n`Pending` forever, regardless of how idle the node actually is. This\nplatform hit that exact trap **multiple times**, at different layers, before\nthe pattern was fully internalized.",
+    "source": "docs/07-RESOURCE-TUNING-AND-CAPACITY.md",
+    "kind": "prose",
+    "title": "The fundamental constraint",
+    "metadata": {}
+  },
+  {
+    "text": "Chapter 1 \u2014 the app services overcommitted the node before anything else ran\nAll 9 Java app-service Deployments together requested up to **1150m CPU** on\na node with only **4000m allocatable**. Combined with `worker-service-go`,\nthe sandbox seccomp DaemonSet, and k3s/Calico's own system pods, total\n*requested* CPU hit **3900m (97%)** \u2014 confirmed live: 3 of the 9 services\n(auth, problem, ai-analysis) sat `Pending` indefinitely with\n`Insufficient cpu`, **even though actual node CPU usage was ~12%**. This is\nthe requests-vs-usage gap in its purest form. Fixed (`641170b`) by halving\nrequests across all 9 manifests (100m\u219250m, 150m\u219275m) while leaving *limits*\nuntouched \u2014 each service can still burst to its existing ceiling under real\nload; only the scheduling-time reservation shrank.\n\n`worker-service-go` hit the identical trap the first time it was ever\nactually deployed (`dabc9d8`): the node was already at 3800m/4000m (95%)\nrequested, leaving only 200m free \u2014 not enough for its 250m request. Fixed\nthe same way: most of this service's real CPU work happens inside the\nsandbox pods it orchestrates, not in the orchestrator process itself, so\n100m was plenty for its own reservation.",
+    "source": "docs/07-RESOURCE-TUNING-AND-CAPACITY.md",
+    "kind": "prose",
+    "title": "Chapter 1 \u2014 the app services overcommitted the node before anything else ran",
+    "metadata": {}
+  },
+  {
+    "text": "Chapter 2 \u2014 JVM heap caps, because 10 uncapped JVMs don't share a box well\nNone of the 9 JVMs had a heap cap (`-Xmx`) \u2014 each defaults to a fraction of\nwhatever memory the container/host reports, which doesn't budget sanely once\n~10 JVMs, Kafka, Zookeeper, Postgres, and MinIO all share one 24GB box.\n`b779afa` set `JAVA_TOOL_OPTIONS` per service, sized by actual role rather\nthan a flat number:\n\n| Tier | Services | `-Xmx` | Why |\n|---|---|---|---|\n| Low | discovery, config*, user, execution-result | 256m | Low-traffic CRUD or largely inert |\n| Medium | auth, solution | 320m | RS256 signing / gRPC / S3 streaming |\n| Medium-high | problem, submission | 384m | S3 + Kafka + harness generation |\n| Highest | api-gateway | 400m | WebFlux, highest request volume, most held-open connections |\n\n*(`config-service` was later removed entirely \u2014 see `01-ARCHITECTURE-OVERVIEW.md`.)*\n\nTotal heap budget: ~2.8GB across all 9, leaving the rest of the 24GB box for\nKafka/Zookeeper/Postgres/MinIO/Redis, `ai-analysis-service`'s torch/\ntransformers footprint, and the sandbox pods `worker-service-go` spins up\n(each independently capped via `SANDBOX_MEMORY_MB`). Verified live, not just\nby reading the config: rebuilt/restarted `api-gateway`, confirmed the JVM's\nown startup log line `Picked up JAVA_TOOL_OPTIONS: -Xmx400m`, and that\n`/actuator/health` still returned 200 at that cap.\n\n`ai-analysis-service` needed its own memory fix separately (`0cae07e`) \u2014 it\nwas getting `OOMKilled` (exit 137) a few seconds after every startup. It\nloads a HuggingFace `sentence-transformers` embeddings model, and PyTorch\nplus the model weights alone routinely exceed 512Mi on top of FastAPI/\nuvicorn's own baseline. Since the node had ~4.2GB requested against 24GB\ntotal at the time, there was plenty of headroom to simply raise the limit\nrather than trim anything else.",
+    "source": "docs/07-RESOURCE-TUNING-AND-CAPACITY.md",
+    "kind": "prose",
+    "title": "Chapter 2 \u2014 JVM heap caps, because 10 uncapped JVMs don't share a box well",
+    "metadata": {}
+  },
+  {
+    "text": "Chapter 3 \u2014 the sandbox pool itself was oversized for this node\n`worker-service-go`'s **code defaults** \u2014 `SANDBOX_CPU_QUOTA=1.0` (a full\nCPU per sandbox pod) and `SANDBOX_POOL_SIZE=3` (three idle pods kept warm\n*per language*) \u2014 assume a node with real headroom. On this 4-vCPU VM, with\n~10 platform services also holding their own CPU requests, those defaults\nlet only 2-3 sandbox pods schedule **at all** before the node ran out of\nallocatable CPU \u2014 every language after that sat `Pending` forever, and every\nsubmission needing it timed out after `SANDBOX_POD_STARTUP_TIMEOUT` (30s),\nsurfacing to users as \"Timed out waiting for a judging result.\" `b2d41d0`\ndocumented the fix already applied live to the ConfigMap:\n`SANDBOX_CPU_QUOTA=0.3`, `SANDBOX_POOL_SIZE=2`.",
+    "source": "docs/07-RESOURCE-TUNING-AND-CAPACITY.md",
+    "kind": "prose",
+    "title": "Chapter 3 \u2014 the sandbox pool itself was oversized for this node",
+    "metadata": {}
+  },
+  {
+    "text": "Chapter 4 \u2014 this session's crisis: adding a 6th/7th language broke the budget again\nEven at `0.3`/`2`, the math didn't hold once **Go** (and, separately, C) were\nbeing exercised as new languages: 5 languages \u00d7 pool size 2 \u00d7 300m = 3000m,\non top of the platform's own ~700m requests \u2014 new-language sandbox pods\nsimply couldn't schedule. Diagnosed via full resource accounting across\nevery namespace (`kube-system`: 200m, `platform`: 700m requests / 6700m\nlimits, `sandbox-execution`: 3000m for 10 pods). **Fix**: drop\n`SANDBOX_POOL_SIZE` to **1** \u2014 confirmed live, CPU requests dropped from\n3900m/97% to 900m/22%, and Go's pod could finally schedule (surfacing the\nnext, deeper bug \u2014 see `13-INCIDENT-POSTMORTEMS.md`).",
+    "source": "docs/07-RESOURCE-TUNING-AND-CAPACITY.md",
+    "kind": "prose",
+    "title": "Chapter 4 \u2014 this session's crisis: adding a 6th/7th language broke the budget again",
+    "metadata": {}
+  },
+  {
+    "text": "Chapter 5 \u2014 Go needed CPU the platform-wide quota couldn't give it\nOnce Go could schedule, it still failed \u2014 not from a scheduling problem, but\nfrom **CFS throttling stretching a real compile job past its timeout**. Live\nreproduction inside a running `sandbox-go` pod showed `go build` needed\n~10.17s of actual CPU time (user+sys) for a trivial, dependency-free\nprogram; under the platform's `0.3` CPU quota, CFS throttling stretched that\ninto **34.68s of wall-clock time** \u2014 comfortably exceeding the compile\nstep's ~15s timeout, killing the process before it ever printed anything.\nFull detail in `13-INCIDENT-POSTMORTEMS.md`. The fix: a **per-language CPU\nquota override** (`SandboxCPUQuotaGo`, defaulting to a full core), leaving\nevery other language on the platform default. See `03-SANDBOX-EXECUTION-\nENGINE.md` for the mechanism.",
+    "source": "docs/07-RESOURCE-TUNING-AND-CAPACITY.md",
+    "kind": "prose",
+    "title": "Chapter 5 \u2014 Go needed CPU the platform-wide quota couldn't give it",
+    "metadata": {}
+  },
+  {
+    "text": "Chapter 6 \u2014 right-sizing every language, and clawing back the margin that cost\nBumping Go to a full CPU ate real headroom (the always-warm pool went from\n~2100m to ~2800m total CPU committed, at pool size 1). Two follow-up moves,\nboth from later in this same session:\n\n1. **Per-language quota tiers for every language, not just Go** \u2014 Python/\n   JavaScript (pure interpretation, no compile step) dropped to `0.15`;\n   Java/TypeScript (real compile steps \u2014 `javac`/`tsc` \u2014 sitting at the same\n   `0.3` that broke Go) raised to `0.5` as pre-emptive insurance against the\n   same failure class, without waiting for a live incident to prove it;\n   C/C++ stayed at `0.3` (small native compiles are cheap enough).\n2. **Trimmed oversized platform-namespace CPU *limits*** (not requests) \u2014\n   auth/gateway/submission/problem services from 750m\u2192500m,\n   ai-analysis/execution-result from 500m\u2192400m, user/solution from\n   500m\u2192350m. This doesn't change what gets scheduled; it caps how far\n   simultaneous bursts across services can stack, directly targeting the\n   mechanism behind the recurring \"works, then randomly doesn't\" reports\n   (a service missing an Eureka heartbeat or timing out a downstream call\n   because CFS throttled it mid-burst). Platform-wide limits dropped from\n   **6700m (167% of node capacity) to 5200m (130%)**.",
+    "source": "docs/07-RESOURCE-TUNING-AND-CAPACITY.md",
+    "kind": "prose",
+    "title": "Chapter 6 \u2014 right-sizing every language, and clawing back the margin that cost",
+    "metadata": {}
+  },
+  {
+    "text": "The numbers, end to end (as of this session)\n| Layer | CPU committed |\n|---|---|\n| `kube-system` | ~200m |\n| `platform` namespace requests | ~700m (unchanged throughout) |\n| `platform` namespace limits | 5200m (down from 6700m) |\n| `sandbox-execution`, fully warmed (6 languages \u00d7 their tier + Go \u00d7 1.0) | ~2800m |\n| **Total committed, fully warmed** | **~3700m / 4000m (93%)** |\n| **Real slack for traffic bursts** | **~300m (7%)** |\n\nActual live usage measured via `kubectl top node` at the same time: **11%\nCPU, 32% memory** \u2014 the physical hardware is nowhere near saturated; the\nconstraint is entirely in how much has been *reserved on paper*.",
+    "source": "docs/07-RESOURCE-TUNING-AND-CAPACITY.md",
+    "kind": "prose",
+    "title": "The numbers, end to end (as of this session)",
+    "metadata": {}
+  },
+  {
+    "text": "Where this leaves the platform, honestly\nThis is a demo/small-team-scale configuration, not something to point real\nconcurrent traffic at without either a bigger node, a second node (ruled out\nfor this project \u2014 single VM only), or continuing to trim reservations\ncloser to real observed need. The single biggest remaining lever not yet\npulled: this node is running on Oracle's \"Always Free\" tier, which was\n**silently cut from 4 OCPU/24GB to 2 OCPU/12GB** industry-wide in mid-2026 \u2014\na genuine, external risk to this deployment's current capacity that exists\nindependent of anything in this codebase. See the session transcript around\nthe Oracle free-tier discussion for the cost math on paid alternatives\n(Oracle PAYG top-up, Hetzner's ARM `CAX` line, or self-hosting on\nalready-owned Apple Silicon hardware).",
+    "source": "docs/07-RESOURCE-TUNING-AND-CAPACITY.md",
+    "kind": "prose",
+    "title": "Where this leaves the platform, honestly",
+    "metadata": {}
+  },
+  {
+    "text": "Authentication & Session Management",
+    "source": "docs/08-AUTH-SESSION-MANAGEMENT.md",
+    "kind": "prose",
+    "title": "Authentication & Session Management",
+    "metadata": {}
+  },
+  {
+    "text": "Token model\n`auth-service` issues **RS256-signed JWTs** (asymmetric key pair \u2014 see\n`05-SECURITY-HARDENING.md` for how the private key is provisioned in\nproduction) as a short-lived **access token** (15 minutes) plus a longer-lived\n**refresh token** (14 days). The access token's `sub` claim is the user's\nUUID (what every other service expects as `userId`, not their email), and a\nseparate `email` claim carries the human-readable identity; a `roles` claim\n(e.g. `[\"ADMIN\"]`) is what every resource server trusts for authorization \u2014\nthe frontend also reads it client-side purely for UI convenience (showing/\nhiding the \"+ Add Problem\" button), never as an actual security boundary;\nevery write is re-checked server-side regardless.",
+    "source": "docs/08-AUTH-SESSION-MANAGEMENT.md",
+    "kind": "prose",
+    "title": "Token model",
+    "metadata": {}
+  },
+  {
+    "text": "Refresh token rotation and reuse detection\nEvery use of a refresh token **rotates** it \u2014 `auth-service`'s\n`TokenService.consumeRefreshToken` issues a brand-new refresh token on every\n`/auth/refresh` call and invalidates the old one. If the **same** (now-\nconsumed) refresh token is ever presented a second time, that's treated as\ntheft \u2014 the reuse-detection logic revokes the **whole session**, not just\nthat one token. This is a standard, deliberate hardening pattern (limits the\nblast radius of a leaked refresh token to one use), but it has a real\nconsequence for the frontend: two concurrent callers racing to refresh at\nthe same moment would otherwise have one of them present an\nalready-consumed token and get wrongly logged out for it.",
+    "source": "docs/08-AUTH-SESSION-MANAGEMENT.md",
+    "kind": "prose",
+    "title": "Refresh token rotation and reuse detection",
+    "metadata": {}
+  },
+  {
+    "text": "Frontend token handling (`frontend/src/api/`)\n- **`tokenStore.ts`** is the single source of truth for the token pair\n  (`localStorage`, deliberately *not* React state) \u2014 `client.ts` needs to\n  read/refresh tokens outside of any component tree, and putting this in\n  `AuthContext` would force `client.ts` to import from a component file.\n  `AuthContext` **subscribes** to this store instead, so React state stays\n  in sync no matter which side triggers a change (an explicit `login()`\n  call, or `client.ts` silently refreshing behind a 401 mid-request).\n- **In-flight refresh de-duplication**: a single shared `refreshInFlight`\n  promise ensures concurrent callers all await the *same* refresh call\n  rather than each firing their own \u2014 directly defusing the reuse-detection\n  race described above.\n- **`client.ts`'s `apiFetch`** has a reactive fallback: any 401 on a request\n  that *carried* a token (not a bare `/auth/login` 401, which is just wrong\n  credentials) triggers exactly one silent refresh-and-retry.\n- **`AuthContext.tsx`** additionally runs a **proactive** refresh timer,\n  firing 60 seconds before the access token's own `exp` claim \u2014 covers\n  clock drift and requests already in flight when the token expires, so\n  most users never actually hit the reactive 401 path at all in normal use.",
+    "source": "docs/08-AUTH-SESSION-MANAGEMENT.md",
+    "kind": "prose",
+    "title": "Frontend token handling (`frontend/src/api/`)",
+    "metadata": {}
+  },
+  {
+    "text": "The session-expiry bug (this session's fix)\n**Symptom reported**: \"submitting code 2-3 times sends me back to the sign-in\npage\" \u2014 happening intermittently, not on every submission.\n\n**Root cause**: `refreshAccessToken()` treated *every* failure identically \u2014\na genuinely expired/revoked refresh token, **and** a transient infra hiccup\n(an Eureka/DNS cache-refresh failure, a stale cached pod IP producing\n`NoRouteToHostException`, or a plain 5xx from the gateway while the mesh\nreconverges) both called `clearTokens()` and force-logged the user out. On\nthis platform's single 4-vCPU node (see `07-RESOURCE-TUNING-AND-CAPACITY.md`),\nthose hiccups recurred roughly every 20-30 minutes \u2014 closely matching the\nproactive refresh timer's own cadence, so a background refresh landing\nduring one of those blips wiped a perfectly valid session for no real\nreason.\n\n**The fix** (two coordinated changes):\n1. `refreshAccessToken()` now only clears the session on a genuine **401 or\n   403** from `auth-service` \u2014 meaning the token was actually evaluated and\n   rejected. Any network-level failure (`fetch()` itself throwing) or other\n   non-2xx response is retried up to 3 times with a short backoff, and the\n   stored tokens are left completely untouched if every retry still fails.\n2. `AuthContext`'s proactive refresh timer now **retries itself** after a\n   failed-but-not-cleared refresh, instead of silently giving up until the\n   token eventually hard-expires (before this, since the access token\n   hadn't changed, the effect wouldn't naturally re-run on its own).\n\nThis is a good example of a bug that looked infrastructure-shaped (and\npartly was \u2014 see `07-RESOURCE-TUNING-AND-CAPACITY.md` for the CPU-overcommit\nside of the same story) but had a real, independent frontend defect at its\ncore: even a system with zero flakiness would still log a user out on any\none-off network blip under the old logic. Fixing the frontend's error\nhandling was strictly necessary regardless of how much the infra-side\nflakiness ever gets reduced.",
+    "source": "docs/08-AUTH-SESSION-MANAGEMENT.md",
+    "kind": "prose",
+    "title": "The session-expiry bug (this session's fix)",
+    "metadata": {}
+  },
+  {
+    "text": "Authorization model\nCovered in depth in `05-SECURITY-HARDENING.md`'s \"Authorization\" section \u2014\nthe short version: JWT validation happens independently in every resource\nserver (including `ai-analysis-service`, a Python service, via `PyJWT` +\n`PyJWKClient` against the same RS256 public key), object-level checks (IDOR\nprotection) are scoped to the caller's own JWT subject rather than trusting\n\"any valid token can read any id,\" and admin provisioning is a one-time\nidempotent bootstrap plus an admin-only promotion endpoint \u2014 no\nself-promotion path exists anywhere in the system.",
+    "source": "docs/08-AUTH-SESSION-MANAGEMENT.md",
+    "kind": "prose",
+    "title": "Authorization model",
+    "metadata": {}
+  },
+  {
+    "text": "Observability: Tracing, Logging, Health Checks",
+    "source": "docs/09-OBSERVABILITY.md",
+    "kind": "prose",
+    "title": "Observability: Tracing, Logging, Health Checks",
+    "metadata": {}
+  },
+  {
+    "text": "Distributed tracing: OpenTelemetry + Jaeger\n`ai-analysis-service` (Python) and `worker-service-go` (Go) were both\nalready instrumented with OpenTelemetry SDKs, but for a long stretch of the\nproject **nothing was actually deployed to receive the spans** \u2014 traces went\nnowhere, silently. `0f22c18` added Jaeger (in-memory storage, UI on `:16686`)\nand an OTel Collector to `docker-compose.yml`, receiving OTLP from both\nservices and forwarding to Jaeger.\n\nWiring up the collector surfaced **two real, independent bugs** that meant\nneither service's traces would have worked *even with* a collector deployed\n\u2014 both are excellent examples of failures that are silent by construction,\nworth knowing as a category of bug to watch for:\n\n1. **A trailing-path bug in the Python exporter.** `tracing.py` passed\n   `endpoint=` explicitly to `OTLPSpanExporter`'s constructor \u2014 which\n   bypasses the SDK's automatic `/v1/traces` path-append (that only happens\n   when the exporter reads `OTEL_EXPORTER_OTLP_ENDPOINT` itself, not when a\n   caller passes the value through manually). Every export would have\n   404'd. Fixed by appending the path manually rather than relying on\n   implicit SDK behavior that wasn't actually triggered.\n2. **Instrumentation registered too late in FastAPI's lifecycle.**\n   `FastAPIInstrumentor.instrument_app(app)` was called inside the\n   `lifespan` startup handler \u2014 too late, because Starlette caches its\n   middleware stack on the very first ASGI call (the lifespan scope\n   invocation itself), *before* that handler's added middleware can affect\n   it. Every request traced **zero spans, with no error anywhere** \u2014 silent\n   by construction. Fixed by moving the call immediately after\n   `app = FastAPI(...)` is constructed, before the app is ever invoked.\n\nA related, separate bug hit later in this same area (`b2d41d0`, covered in\n`07-RESOURCE-TUNING-AND-CAPACITY.md`): `otlptracehttp.WithEndpoint()`\nexpects a bare `host:port`, but `OTEL_EXPORTER_OTLP_ENDPOINT` is configured\nas a full URL \u2014 silently double-prefixing the scheme (`http://http://...`)\nand dropping every trace. Fixed by switching to `WithEndpointURL()`, which\naccepts the full URL as actually documented.\n\n**The pattern across all three bugs**: tracing failures tend to be\n*completely silent* \u2014 nothing errors, spans just never arrive. Every fix\nhere was verified against a **real running container** generating a real\nrequest and confirming a span actually showed up in Jaeger, not just that\nthe code compiled or the collector started.",
+    "source": "docs/09-OBSERVABILITY.md",
+    "kind": "prose",
+    "title": "Distributed tracing: OpenTelemetry + Jaeger",
+    "metadata": {}
+  },
+  {
+    "text": "Structured logging\nOnly `ai-analysis-service` (Python `structlog`) and `worker-service-go`\n(Go `zerolog`) emitted JSON logs natively. All 9 Java services still logged\nSpring Boot's default plain-text console pattern \u2014 which can't be reliably\nparsed by any real log aggregation system (ELK, Loki, CloudWatch Logs\nInsights) once actually deployed. `6698e10` added\n`logstash-logback-encoder` + a `logback-spring.xml` to all 9 services:\nconsole-only JSON via `LogstashEncoder`, deliberately with\n`includeContext=false` so output carries one clean `service` field rather\nthan dumping every logback context property redundantly. Uses\n`logback-spring.xml` specifically (not `logback.xml`) so Boot's\n`springProperty` extension works, pulling the service name from each app's\nown `spring.application.name` instead of hardcoding it per file \u2014 one\nchange, applied identically nine times, rather than nine slightly different\nsnowflake configs.",
+    "source": "docs/09-OBSERVABILITY.md",
+    "kind": "prose",
+    "title": "Structured logging",
+    "metadata": {}
+  },
+  {
+    "text": "Health checks and graceful shutdown\nBefore `c97afa4`, **nothing** in the Java fleet exposed a liveness/readiness\nendpoint or handled `SIGTERM` gracefully \u2014 every rolling deploy would have\nhard-dropped whatever requests were in flight, and a deadlocked pod would\nnever get restarted since nothing could detect it. Added\n`spring-boot-starter-actuator` +\n`management.endpoint.health.probes.enabled` (exposing\n`/actuator/health/liveness` and `/readiness`, the standard Kubernetes-probe\nwiring) plus `server.shutdown=graceful` with a 20s shutdown-phase timeout,\nto all 9 services. Two services needed **no extra thought** for the\nKafka-consumer case: Spring Kafka's listener container stops as part of the\nsame graceful-shutdown lifecycle automatically, so an in-flight consumer\npoll finishes before the context closes.\n\n`ai-analysis-service` and `worker-service-go` got their own equivalent\nhealth/graceful-shutdown treatment separately (`c995d08`, `2cb1611` \u2014\n`/health`, `/healthz`, `/readyz`), matching what each framework's idiomatic\npattern actually is rather than forcing one uniform shape onto both.",
+    "source": "docs/09-OBSERVABILITY.md",
+    "kind": "prose",
+    "title": "Health checks and graceful shutdown",
+    "metadata": {}
+  },
+  {
+    "text": "Verification discipline worth calling out\nA recurring theme across this whole observability effort: every fix was\nchecked against **a real running instance**, not just \"the code compiles.\"\nThe health-check commit even cross-checked three `application.yml` files\ndirectly against SnakeYAML to catch a duplicate-key/indentation mistake\n`mvn compile` alone wouldn't have caught. This same discipline \u2014 reproduce\nlive, verify live \u2014 is what made the much harder debugging sessions later\nin this project's life (see `13-INCIDENT-POSTMORTEMS.md`) actually\ntractable instead of guesswork.",
+    "source": "docs/09-OBSERVABILITY.md",
+    "kind": "prose",
+    "title": "Verification discipline worth calling out",
+    "metadata": {}
+  },
+  {
+    "text": "Data, Storage & Messaging",
+    "source": "docs/10-DATA-STORAGE-MESSAGING.md",
+    "kind": "prose",
+    "title": "Data, Storage & Messaging",
+    "metadata": {}
+  },
+  {
+    "text": "Postgres: database-per-service\nEvery Java service that persists data owns its own Postgres database \u2014 not\na shared schema. Confirmed naming convention: `submission_service` database\n\u2192 `submission` table; `execution_result_service` database \u2192\n`execution_result` table (singular table names). Production connections use\n`sslmode=verify-full` against a real CA-signed cert (see\n`05-SECURITY-HARDENING.md` for how that CA/cert pair gets provisioned on a\nfresh VM).\n\n`a0b7d80` fixed a real bootstrap-ordering bug: `ssl=on` was originally a\n`docker-compose` command-line flag, which meant it applied to Postgres's\n**init-script bootstrap server** too \u2014 before `configure-ssl.sh` had\nactually copied the cert/key into place, so the server that runs first-boot\ninit scripts came up expecting TLS material that didn't exist yet. Fixed by\nmoving `ssl=on` into `postgresql.conf` instead, so it only takes effect once\nthe real config is loaded.",
+    "source": "docs/10-DATA-STORAGE-MESSAGING.md",
+    "kind": "prose",
+    "title": "Postgres: database-per-service",
+    "metadata": {}
+  },
+  {
+    "text": "Kafka: the messaging backbone, and its SASL_SSL/DNS headaches\nKafka is genuinely load-bearing here \u2014 every submission's judging is\ndispatched via a `SubmissionCreatedEvent`, and results flow back via an\n`ExecutionResultEvent`, both async over Kafka topics.\n\n**Getting SASL_SSL working at all** (`a0b7d80`) required several\nsimultaneous, easy-to-miss fixes: mounting keystore/truststore credential\nfiles exactly where Confluent's entrypoint expects them under\n`/etc/kafka/secrets`, then **removing** the generated\n`ssl.keystore.password`/`ssl.key.password` properties since the broker\nactively rejects those alongside a plain, unencrypted PEM keystore; adding\nSASL/DIGEST-MD5 JAAS config for Kafka's *internal* Zookeeper client once a\nJVM-wide `login.config` existed for the broker's own listener; and dropping\nan erroneous `file:` prefix from `trust-store-location` across every\nKafka-consuming Java service (Spring's PEM `Resource` loader doesn't want\nit) plus adding the (Go) worker's missing `KafkaConsumerConfig`-equivalent\nbean.\n\n**The advertised-hostname vs. real DNS problem** hit **twice**, independently,\nonce per language runtime \u2014 worth understanding as one root cause with two\nseparate blast radii:\n\n- Kafka's broker advertises itself back to clients as `kafka:9093`\n  (`KAFKA_ADVERTISED_LISTENERS`, which `docker-compose` siblings on that\n  network still legitimately need). `KAFKA_BROKERS` (the VM's real IP)\n  works fine for the *initial* bootstrap connection, but once connected,\n  every client independently resolves the broker's *advertised* hostname to\n  find the actual consumer-group coordinator \u2014 and `kafka` isn't a real DNS\n  name inside a Kubernetes cluster.\n- **`worker-service-go`** hit this first (`20f33d8`): Run/Submit timed out\n  even though the pod started fine \u2014 logs showed\n  `lookup kafka on 10.43.0.10:53: no such host` repeating on every\n  coordinator lookup. Fixed with `hostAliases` (a pod-local `/etc/hosts`\n  entry mapping `kafka` \u2192 the VM's IP), scoped to this one pod, without\n  touching the broker config every `docker-compose` sibling still depends\n  on.\n- The **exact same failure** then hit `submission-service`,\n  `execution-result-service`, and `ai-analysis-service` (`630b86a`) \u2014\n  `submission-service`'s **producer** was timing out trying to publish\n  `SubmissionCreatedEvent`, which is why Run/Submit still surfaced as \"An\n  unexpected error occurred\" even *after* `worker-service-go` itself had\n  already been fixed. Same `hostAliases` fix, applied to each.\n\n**The lesson**: a hostname-resolution fix scoped to one consumer of a shared\nresource doesn't imply every other consumer is fixed too \u2014 each service\nindependently resolves the same advertised hostname and needed the identical\nfix applied to it separately.",
+    "source": "docs/10-DATA-STORAGE-MESSAGING.md",
+    "kind": "prose",
+    "title": "Kafka: the messaging backbone, and its SASL_SSL/DNS headaches",
+    "metadata": {}
+  },
+  {
+    "text": "MinIO (S3-compatible object storage)\nUsed for two distinct kinds of content: assembled submission source code\n(what `worker-service-go` actually reads to execute) and test-case\ninput/expected-output content. A separate session\n(`session_0121koVF9UroDik7rpgjZR9J`, \"MinIO local to production migration\")\nmigrated all local dev data \u2014 **216 objects across 3 buckets** \u2014 to the\nproduction MinIO instance, tunneled securely rather than exposed directly,\nwith object counts verified after the mirror completed.",
+    "source": "docs/10-DATA-STORAGE-MESSAGING.md",
+    "kind": "prose",
+    "title": "MinIO (S3-compatible object storage)",
+    "metadata": {}
+  },
+  {
+    "text": "Redis: per-user rate limiting\nBefore `2a782e9`, **no rate limiting existed anywhere in the stack** \u2014 this\nplatform runs arbitrary user-submitted code, so without a limit, one account\ncould flood the Kafka queue and starve every other user's judging capacity,\nor hammer the results-polling endpoint. Added a Redis-backed\n`RequestRateLimiter` (Spring Cloud Gateway's built-in implementation,\ndeliberately chosen over an in-memory limiter so limits stay correct across\nmultiple `api-gateway` replicas if that service ever scales horizontally) on\ntwo routes with deliberately different budgets:\n\n- `submission-service`: **2 req/s replenish, burst 10** \u2014 judging is\n  expensive (a sandbox pod spin-up per submission, plus one exec per test\n  case).\n- `execution-result-service`: **10 req/s replenish, burst 20** \u2014 a cheap DB\n  read the frontend polls for status, looser but still capped against a\n  runaway poll loop.\n\nKeyed **per-user**, not per-IP \u2014 a `KeyResolver` bean reads the JWT subject\nout of the reactive security context, so one abusive account only throttles\nitself instead of sharing a limit with every legitimate user behind the same\nNAT/IP. Redis itself runs password-only (no TLS, unlike Postgres/Kafka) \u2014\na deliberate, documented risk acceptance: it holds nothing but short-lived\nrate-limit counters, and no host port is published since only `api-gateway`\never talks to it.",
+    "source": "docs/10-DATA-STORAGE-MESSAGING.md",
+    "kind": "prose",
+    "title": "Redis: per-user rate limiting",
+    "metadata": {}
+  },
+  {
+    "text": "Networking, Ingress & Domain Setup",
+    "source": "docs/11-NETWORKING-AND-INGRESS.md",
+    "kind": "prose",
+    "title": "Networking, Ingress & Domain Setup",
+    "metadata": {}
+  },
+  {
+    "text": "The public entry point: Cloudflare Tunnel, not a NodePort or public IP\n`api-gateway` is exposed to the internet via **Cloudflare Tunnel**\n(`cloudflared`), not through a Kubernetes `NodePort`, a `LoadBalancer`\nservice, or by directly exposing the VM's IP on a firewall rule. `768258c`\nruns `cloudflared` as its **own Deployment inside the `platform` namespace**\n(not a `docker-compose` container on the bare VM), specifically so it\nresolves and reaches `api-gateway` over the **cluster's own internal DNS**\n(`api-gateway.platform.svc.cluster.local`) \u2014 no `NodePort` or host\nnetworking needed at all. This matches how Kafka/Postgres deliberately stay\n*outside* the cluster while everything that needs to reach a Kubernetes\n`Service` lives *inside* it \u2014 a consistent \"put things where their natural\nnetwork boundary is\" design choice, not an accident.\n\nThe tunnel's auth token is stored as a Kubernetes **Secret**, never baked\ninto the manifest itself \u2014 the actual tunnel is created once, manually, in\nthe Cloudflare dashboard, with its Public Hostname pointed at\n`api-gateway`'s in-cluster Service; the Deployment manifest just consumes\nthe resulting token.\n\n**Why Cloudflare Tunnel specifically, and why it matters beyond convenience**:\na tunnel makes only an **outbound** connection from `cloudflared` to\nCloudflare's edge \u2014 nothing needs to be exposed inbound on the VM's network\nat all. This is exactly what makes self-hosting from an arbitrary machine\n(including, as discussed in this session, a home MacBook with no static IP\nor port-forwarding) practical: whatever machine runs `cloudflared` \"just\nworks\" the moment it can make outbound HTTPS calls, with zero router/NAT/DNS\nconfiguration on that machine's own network.",
+    "source": "docs/11-NETWORKING-AND-INGRESS.md",
+    "kind": "prose",
+    "title": "The public entry point: Cloudflare Tunnel, not a NodePort or public IP",
+    "metadata": {}
+  },
+  {
+    "text": "Domain\nThe production frontend is served at **`app.nikhilsaravade.com`** (a real\ncustom domain, not a bare `*.pages.dev`/`*.workers.dev` subdomain) \u2014 visible\ndirectly in the CORS-configuration commit below. The commit also anticipates\nfuture `*.nikhilsaravade.com` subdomains for UAT environments, and keeps a\n`pages.dev` fallback domain allowed alongside the custom one.",
+    "source": "docs/11-NETWORKING-AND-INGRESS.md",
+    "kind": "prose",
+    "title": "Domain",
+    "metadata": {}
+  },
+  {
+    "text": "CORS: a real, hit-in-production bug\n`api-gateway`'s `SecurityConfig` originally **hardcoded**\n`allowedOriginPatterns` to `http://localhost:*` \u2014 meaning the moment the real\nfrontend went live at `app.nikhilsaravade.com`, every single request failed\nin the browser with a generic \"Failed to fetch,\" because the CORS preflight\nwas rejected **before the request ever reached the service at all** (this is\na browser-enforced check; the server never even sees the actual request when\na preflight fails). Fixed (`0c64c77`) by externalizing this to a\n`cors.allowed-origin-patterns` property (comma-separated) \u2014 following the\nsame environment-driven config pattern used everywhere else in this project\n\u2014 so local dev keeps its existing `localhost` default via\n`application.properties`, while the Kubernetes manifest overrides it via\n`CORS_ALLOWED_ORIGIN_PATTERNS` to include the real production origins.\n\n**Worth remembering**: a hardcoded CORS allowlist is exactly the kind of bug\nthat's invisible in every environment except the one it actually breaks \u2014\nlocal dev and any same-origin testing never exercise it.",
+    "source": "docs/11-NETWORKING-AND-INGRESS.md",
+    "kind": "prose",
+    "title": "CORS: a real, hit-in-production bug",
+    "metadata": {}
+  },
+  {
+    "text": "NetworkPolicy enforcement: Calico, not Flannel\nCovered in full in `02-KUBERNETES-MIGRATION.md` \u2014 k3s's default CNI\n(Flannel) silently ignores `NetworkPolicy` objects entirely, so the\nsandbox's default-deny policy would do nothing on a stock install. This\ncluster runs Calico instead specifically so the security boundary is real,\nconfirmed live via a blocked DNS lookup from inside a sandbox pod during\nthis session's Go debugging (see `13-INCIDENT-POSTMORTEMS.md`).",
+    "source": "docs/11-NETWORKING-AND-INGRESS.md",
+    "kind": "prose",
+    "title": "NetworkPolicy enforcement: Calico, not Flannel",
+    "metadata": {}
+  },
+  {
+    "text": "Service-to-service discovery quirks: IP vs. hostname, twice\nTwo separate services hit the identical class of bug \u2014 a client library\ndefaulting to registering/advertising a **pod hostname** that isn't\nresolvable cluster-wide, instead of an IP:\n\n- **Java services** avoid this by setting\n  `EUREKA_INSTANCE_PREFER_IP_ADDRESS=true` from the start.\n- **`ai-analysis-service` (Python)** didn't have an equivalent set\n  initially, and hit it for real (`8bb9007`): `api-gateway` consistently\n  500'd on `/ai/analysis/{id}` with\n  `UnknownHostException: Failed to resolve 'ai-analysis-service-<old-pod>'`\n  \u2014 every restart left `api-gateway`'s client-side load balancer trying to\n  DNS-resolve the **previous** pod's raw Kubernetes hostname. Root cause:\n  `py_eureka_client.init_async()` takes `instance_ip` and `instance_host` as\n  *separate* parameters; only `instance_ip` was set, so `instance_host`\n  (which becomes the registered Eureka `hostName` field \u2014 what other\n  services' load balancers actually build request URLs from) silently\n  defaulted to `socket.gethostname()`, i.e. the pod's own hostname. Fixed by\n  setting `instance_host` to the same resolved IP as `instance_ip` \u2014 the\n  Python client's direct equivalent of the Java flag.\n\nThis is the same underlying lesson as the Kafka advertised-hostname bug in\n`10-DATA-STORAGE-MESSAGING.md`: **a fix already applied to one client\nlibrary does not carry over to a different client library for the same\nprotocol** \u2014 each language's client independently needs the equivalent\n\"advertise a real, resolvable address\" configuration applied to it.",
+    "source": "docs/11-NETWORKING-AND-INGRESS.md",
+    "kind": "prose",
+    "title": "Service-to-service discovery quirks: IP vs. hostname, twice",
+    "metadata": {}
+  },
+  {
+    "text": "AI Analysis Service: the RAG/LLM pipeline evolution",
+    "source": "docs/12-AI-ANALYSIS-SERVICE.md",
+    "kind": "prose",
+    "title": "AI Analysis Service: the RAG/LLM pipeline evolution",
+    "metadata": {}
+  },
+  {
+    "text": "What it does\nAfter a submission is judged, `ai-analysis-service` (Python/FastAPI) runs an\nLLM-based analysis pass over the user's code \u2014 complexity commentary, style\nfeedback, and (for failed submissions) debugging suggestions \u2014 using a\nRetrieval-Augmented Generation pipeline so the model has relevant context\nbeyond just the raw code.",
+    "source": "docs/12-AI-ANALYSIS-SERVICE.md",
+    "kind": "prose",
+    "title": "What it does",
+    "metadata": {}
+  },
+  {
+    "text": "Tech stack evolution (each swap driven by a real, named reason)\nThe service didn't arrive at its current stack in one shot \u2014 the git history\nshows a sequence of deliberate swaps:\n\n1. **`bb26d80`** \u2014 initial version: LangChain RAG pipeline, hardcoded\n   `ChatGroq`.\n2. **`c7e44bb`** \u2014 swapped the hardcoded `ChatGroq` client for **`litellm`**,\n   a unified LLM-calling abstraction \u2014 decouples the code from any one\n   provider's SDK, which turned out to matter a lot (see the Groq incident\n   below: swapping to different Groq **models** at runtime was trivial\n   because of this, and swapping providers entirely would be too).\n3. **`951ca50`** \u2014 replaced local **ChromaDB** with **pgvector-backed RAG**\n   \u2014 moves vector storage into the same Postgres infrastructure the rest of\n   the platform already runs and operates, rather than a separate\n   special-purpose vector database with its own persistence/backup story.\n4. **`6e335a5`** \u2014 `structlog` JSON logging + OpenTelemetry tracing (see\n   `09-OBSERVABILITY.md` for the tracing bugs this surfaced).\n5. **`4f32bb0`** \u2014 circuit breakers around calls to `submission-service`/\n   `problem-service` \u2014 this service depends on both being up; a circuit\n   breaker stops it from hammering a struggling dependency and makes the\n   failure mode graceful instead of a cascading timeout pile-up.\n6. **`8acae33`** \u2014 LLM cost/usage tracking \u2014 meaningful once real API spend\n   is involved, not free to skip.\n7. **`977059d`** \u2014 retry/DLQ topology + Kafka consumer idempotency (see\n   below).\n8. **`c2f87bc`** / **`c91e2ba`** \u2014 strict output validation and\n   content-addressed caching, landed as two separate, independently\n   reviewable commits after an earlier combined attempt was reverted (see\n   below).\n9. **`c1a864c`** \u2014 folded verdict status into the cache key (see below) \u2014\n   this session's fix, actually landed just before this documentation\n   effort's own session, as part of the same ongoing hardening arc.",
+    "source": "docs/12-AI-ANALYSIS-SERVICE.md",
+    "kind": "prose",
+    "title": "Tech stack evolution (each swap driven by a real, named reason)",
+    "metadata": {}
+  },
+  {
+    "text": "The Groq model deprecation incident (an external break, caught by real testing)\n`c6e293d`: **both** of the service's configured default models\n(`groq/llama-3.1-8b-instant`, `groq/llama-3.1-70b-versatile`) turned out to\nbe dead against the real API key \u2014 the 70b model outright decommissioned by\nGroq, the 8b model returning \"does not exist or you do not have access to\nit\" for this specific account, **despite Groq's own public docs still\nlisting it as current**. The entire AI-analysis feature \u2014 both the\nauto-trigger and the manual `POST /ai/analyze` \u2014 had been completely\nnon-functional: every attempt exhausted both retry tiers and landed silently\nin the DLQ, with `GET /ai/analysis/{id}` stuck at `PENDING` forever and\n**no error ever surfaced to the user**.\n\nThe commit message is explicit about the nature of this bug: *\"Not caused by\nanything on this branch - this is an external break (Groq deprecated/\nrestricted models out from under a hardcoded default) that real end-to-end\ntesting caught and code review never would have.\"* Diagnosed by querying\n`GET https://api.groq.com/openai/v1/models` against the **actual** API key\nto get this account's real available model list (materially different from\nGroq's public catalog), then verifying replacement models\n(`groq/openai/gpt-oss-20b` primary, `groq/openai/gpt-oss-120b` fallback)\nwith real completion calls through `litellm` before shipping them.\n\n**Lesson**: a third-party LLM provider silently changing model availability\nis a class of failure that only end-to-end testing against the real,\nlive provider catches \u2014 no amount of local code review or unit testing\nwould have surfaced it, because the code was never wrong.",
+    "source": "docs/12-AI-ANALYSIS-SERVICE.md",
+    "kind": "prose",
+    "title": "The Groq model deprecation incident (an external break, caught by real testing)",
+    "metadata": {}
+  },
+  {
+    "text": "Caching: a revert, and why it happened\n`5d4a37b` originally shipped **two distinct features in one commit**:\ncontent-addressed caching (keyed by `sha256(problem_id + normalized_code)`,\nso identical code across different submissions/users shares one LLM call\ninstead of each paying for its own) **and** strict LLM output validation\n(rejecting a response that doesn't match the expected `PassedAnalysis`/\n`FailedAnalysis` schema instead of silently caching an `\"ERROR\"`\nplaceholder). This combined commit was **reverted** (`0698edf`) and later\nre-landed as **two separate, smaller commits** \u2014 `c2f87bc` (validation\nalone) and `c91e2ba` (caching alone, introducing the `AnalysisCache` table\nplus a `SubmissionAnalysisMap` pointer table carrying `user_id` for the\nownership check).\n\n**Why this matters as a practice, not just a historical detail**: splitting\na reverted combined change into independently reviewable, independently\nrevertable pieces is exactly the right response when a combined commit needs\nundoing \u2014 it means a future problem with just one of the two features\ndoesn't force reverting both again.",
+    "source": "docs/12-AI-ANALYSIS-SERVICE.md",
+    "kind": "prose",
+    "title": "Caching: a revert, and why it happened",
+    "metadata": {}
+  },
+  {
+    "text": "The cache-key correctness bug this later surfaced\nOnce caching existed, a genuine correctness bug followed: the cache key was\n`sha256(problem_id + normalized_code)` with **no verdict in the key**.\nResubmitting the *exact same code* after it starts passing (e.g. after an\nunrelated platform bug \u2014 like the ones in `13-INCIDENT-POSTMORTEMS.md` \u2014 got\nfixed) hashed to the **same** cache key as an earlier `CE`/`FAILED` run of\nthat identical code, so `run_analysis()` served back the **old\nFAILED-shaped analysis** (`failureReason`/`debuggingSuggestion`/\n`edgeCases`/`hints`) instead of ever calling the LLM again for the new\n`PASSED` verdict \u2014 producing a confident-sounding but completely wrong\ncompile-error narrative for code that had actually just passed. Fixed\n(`c1a864c`) by folding `status` into the hashed key, so a `FAILED`-verdict\nanalysis and a `PASSED`-verdict analysis for identical code can never shadow\neach other again.",
+    "source": "docs/12-AI-ANALYSIS-SERVICE.md",
+    "kind": "prose",
+    "title": "The cache-key correctness bug this later surfaced",
+    "metadata": {}
+  },
+  {
+    "text": "Reliability: retry/DLQ topology and idempotency\n`977059d` switched `analysis.trigger.v1` consumption to **manual offset\ncommits** (only advanced after a message is fully handled \u2014 the default\nauto-commit behavior risks losing a message if the process crashes\nmid-handling) and added a **two-tier delayed retry topology**\n(`analysis.trigger.v1.retry-1`/`-2`, 30s/5min \"not before\" delay via message\nheaders) plus a dead-letter queue for messages that keep failing after both\nretries. A new `ProcessedEvent` idempotency table guards against **Kafka\nredelivery causing duplicate work** \u2014 a message can be redelivered (at-least-\nonce delivery semantics) without the analysis actually running twice.",
+    "source": "docs/12-AI-ANALYSIS-SERVICE.md",
+    "kind": "prose",
+    "title": "Reliability: retry/DLQ topology and idempotency",
+    "metadata": {}
+  },
+  {
+    "text": "Incident Postmortems\nFormal write-ups of the hardest bugs this project hit, in the order they\nwere found. Every one of these was diagnosed by **live reproduction** \u2014\nexec'ing into a real pod, reading real logs, querying the real database \u2014\nnever by guessing from reading code alone. That discipline is itself the\nmain lesson threaded through all of them.\n\n---",
+    "source": "docs/13-INCIDENT-POSTMORTEMS.md",
+    "kind": "prose",
+    "title": "Incident Postmortems",
+    "metadata": {}
+  },
+  {
+    "text": "Postmortem 1: Go submissions failing with empty-output CE (GOCACHE exhaustion)\n**Symptom**: Go submissions failed with verdict `CE`, but the stored compile\noutput was completely empty \u2014 no diagnostic information at all.\n\n**Investigation**: Live-reproduced by exec'ing into a running `sandbox-go`\npod and manually assembling the exact source (preamble + user code +\nharness) with the exact env vars `worker-service-go` uses, then compiling by\nhand.\n\n**Root cause**: `GOCACHE` and `HOME` pointed at `/tmp`, a **64Mi,\nmemory-backed, `noexec` tmpfs** \u2014 deliberately tiny, sized for languages\nthat barely touch `/tmp` at all, not for a build cache. Since sandbox pods\nare **pooled and reused across many submissions** (not one pod per\nsubmission \u2014 see `03-SANDBOX-EXECUTION-ENGINE.md`), `GOCACHE` only ever\ngrows across that pod's lifetime, eventually exhausting the 64Mi tmpfs\nentirely: `\"no space left on device\"`.\n\n**Why the output was empty**: that failure message prints to `go build`'s\n**stdout**, not stderr \u2014 and the compile step's capture was stderr-only at\nthe time. This is the exact same category of bug as the earlier `getcpu`\nseccomp incident (see `05-SECURITY-HARDENING.md`) \u2014 a second occurrence of\na gap that had already been flagged once and not yet fixed.\n\n**Fix**: redirect `GOCACHE`/`GOTMPDIR`/`HOME` to `/sandbox` (the \"scratch\"\n`emptyDir`, backed by the node's overlay disk with no size limit) instead of\n`/tmp`. Combined stdout+stderr capture in the compile step, closing the\ndiagnostics gap for good (rather than just for Go).\n\n---",
+    "source": "docs/13-INCIDENT-POSTMORTEMS.md",
+    "kind": "prose",
+    "title": "Postmortem 1: Go submissions failing with empty-output CE (GOCACHE exhaustion)",
+    "metadata": {}
+  },
+  {
+    "text": "Postmortem 2: the fix introduced a new bug \u2014 `GOTMPDIR` directory never created\n**Symptom**: immediately after Postmortem 1's fix shipped, Go submissions\nstill failed `CE`, now with:\n`go: creating work dir: stat /sandbox/.gotmp: no such file or directory`\n\n**Root cause**: setting `GOTMPDIR=/sandbox/.gotmp` as an env var doesn't\ncreate that directory. Unlike `GOCACHE` (which Go creates on demand), Go's\ntoolchain only ever `stat`s `GOTMPDIR` \u2014 it expects the directory to already\nexist.\n\n**Fix**: route the compile command through a shell so `mkdir -p\n/sandbox/.gocache /sandbox/.gotmp` runs before `go build` ever does.\n\n**Lesson**: a fix for one bug can introduce an adjacent one in the same\nmechanism \u2014 the second live-test cycle (never assuming \"should be fixed\nnow\" without actually resubmitting) is what caught this immediately instead\nof it shipping silently.\n\n---",
+    "source": "docs/13-INCIDENT-POSTMORTEMS.md",
+    "kind": "prose",
+    "title": "Postmortem 2: the fix introduced a new bug \u2014 `GOTMPDIR` directory never created",
+    "metadata": {}
+  },
+  {
+    "text": "Postmortem 3: stale sandbox pod handed to a submission (`SYSTEM_ERROR`)\n**Symptom**: `SYSTEM_ERROR: execution infrastructure error: create sandbox\nsession: write source into sandbox pod: exec stream: pods\n\"sandbox-go-z9wr7\" not found`\n\n**Root cause**: the sandbox pool keeps a Go-side, in-memory channel of\npod names it believes are \"ready.\" A manual `kubectl delete pods --all -n\nsandbox-execution` (run earlier that day to clear leftover pods after a\ndifferent fix) deleted pods the running `worker-service-go` **process**\nstill had queued as ready in its own memory \u2014 that process was never\nrestarted, so it had no way to know they were gone. The next submission for\nthat language got handed a dead pod name.\n\n**Fix**: two layers.\n1. `pool.checkout()` now verifies a pod pulled off the channel is actually\n   still `Running` (a live `Get` call) before handing it back \u2014 discards\n   dead entries and keeps trying instead of trusting the channel blindly.\n2. `NewSession` retries **once**, against a guaranteed-fresh, on-demand\n   pod, if the source-write step still hits a \"pod gone\" error \u2014 closing\n   the narrow remaining race between the health check and the actual write.\n\n**Why this matters beyond the one incident**: this is a **general\nresilience fix**, not just a patch for this one manual-deletion scenario \u2014\nit protects equally against a pod dying from an OOM-kill, a node-level\neviction, or any other out-of-band removal, none of which the pool could\npreviously distinguish from \"this pod is fine.\"\n\n---",
+    "source": "docs/13-INCIDENT-POSTMORTEMS.md",
+    "kind": "prose",
+    "title": "Postmortem 3: stale sandbox pod handed to a submission (`SYSTEM_ERROR`)",
+    "metadata": {}
+  },
+  {
+    "text": "Postmortem 4: the branch/PR confusion \u2014 a commit pushed after merge never actually shipped\n**What happened**: a fix (the resilience fix from Postmortem 3) was pushed\nas an additional commit onto a feature branch **after** the user had already\nmerged that branch's pull request. Editing the (now closed) PR's title and\ndescription succeeded \u2014 GitHub allows metadata edits on a merged PR \u2014 which\ncreated the false impression that the new commit had been folded in. It\nhad not: a merged, closed PR does not retroactively absorb commits pushed to\nits head branch afterward. The commit sat alone on the branch, in `main`.\n\n**How it was caught**: the user asked directly, \"I already merged this PR,\nhow did you write into it?\" \u2014 a good instinct to question a discrepancy\nrather than accept a confident-sounding claim.\n\n**Fix, done correctly**: rather than force-pushing (which a safety\nclassifier correctly blocked, since it discards history), the branch was\nreset to match the untouched remote, then a plain `git merge origin/main`\nbrought it current \u2014 a **normal, non-destructive merge commit**, since the\nonly \"new\" content on `main` was the already-identical commit the branch\nalready had as an ancestor. The one truly unmerged commit was then opened as\nits own, fresh pull request.\n\n**Lesson**: verify a claimed merge state against the actual commit graph\n(`git log`, comparing SHAs) rather than trusting that an API call\n\"succeeding\" means what it appears to mean. This is also a good example of\nrecovering from a mistake **without** reaching for a destructive shortcut \u2014\nforce-pushing would have \"worked\" but was unnecessary and riskier than a\nplain merge.\n\n---",
+    "source": "docs/13-INCIDENT-POSTMORTEMS.md",
+    "kind": "prose",
+    "title": "Postmortem 4: the branch/PR confusion \u2014 a commit pushed after merge never actually shipped",
+    "metadata": {}
+  },
+  {
+    "text": "Postmortem 5: Go compiling successfully but timing out anyway (GOPROXY red herring, then the real cause)\n**Symptom**: after Postmortems 1-3 were fixed and deployed, Go submissions\n*still* failed `CE` with empty output.\n\n**First hypothesis (wrong, but reasonably so)**: `go build`, even with zero\nexternal dependencies, still defaults to `GOPROXY=https://proxy.golang.org`\nand `GOSUMDB=sum.golang.org` \u2014 and the sandbox's `NetworkPolicy` (see\n`02-KUBERNETES-MIGRATION.md`) blocks **all** egress, including DNS. Live\ntesting confirmed DNS resolution genuinely failing inside the pod\n(`wget: bad address`). Setting `GOPROXY=off`/`GOSUMDB=off` appeared to fix\nit immediately: a repeated build went from 34.68s to 0.61s.\n\n**The apparent fix was actually a false positive**: that \"0.61s\" result was\na **build-cache hit** \u2014 the second build reused the same pod's now-warm\n`GOCACHE` from the first (slow) build of the *identical* source, which has\nnothing to do with `GOPROXY`. The real problem was still there.\n\n**How this was caught**: after merging the `GOPROXY`/`GOSUMDB` fix and\nredeploying, Go submissions **still** failed. Re-tested live, in a **fresh**\npod this time (cold cache), with `GOPROXY=off`/`GOSUMDB=off` already\nconfirmed present via `echo $GOPROXY` \u2014 and the build still took **33.97s**,\nthis time with `BUILD EXIT: 0` (success) and correct output. The build\ngenuinely worked; it just took far too long.\n\n**Real root cause**: `go build` needed **~10.17s of real CPU time**\n(measured via `user`+`sys` from `time`) even for a trivial, dependency-free\nprogram. Under the sandbox's `SANDBOX_CPU_QUOTA=0.3` (300m \u2014 see\n`07-RESOURCE-TUNING-AND-CAPACITY.md` for why that number existed), Linux's\nCFS bandwidth throttling stretched that CPU-bound work across roughly **3x**\nas much wall-clock time (34s), comfortably exceeding the compile step's own\n~15s timeout and getting the process killed **before it ever wrote anything\nto stdout or stderr** \u2014 indistinguishable, from the outside, from every\nother empty-output `CE` this project had already fixed two different ways.\n\n**Fix**: a per-language CPU quota override, giving Go's pool a full CPU\n(`1.0`) independent of the platform-wide `0.3` default. The math: with a\nfull core available continuously and ~10.17s of actual work needed, wall\ntime drops close to that 10-12s figure \u2014 comfortably inside the compile\ntimeout.\n\n**Lesson, stated plainly**: the `GOPROXY` fix was real and worth keeping\n(it removes wasted, doomed network calls, and is correct regardless), but it\nwas **not** the actual fix for the symptom being chased. Confirming a fix\nworked requires testing under conditions that rule out a false positive\n(here: a cold cache) \u2014 a passing retest immediately after a change is not\nproof the change caused the pass.\n\n---",
+    "source": "docs/13-INCIDENT-POSTMORTEMS.md",
+    "kind": "prose",
+    "title": "Postmortem 5: Go compiling successfully but timing out anyway (GOPROXY red herring, then the real cause)",
+    "metadata": {}
+  },
+  {
+    "text": "Postmortem 6: the session-expiry / \"randomly logged out\" bug\nCovered in full in `08-AUTH-SESSION-MANAGEMENT.md`. Summary for this\npostmortem index: `refreshAccessToken()` treated a transient network hiccup\nidentically to a genuinely invalid refresh token, both clearing the\nsession. Root-caused to the same underlying CPU/Eureka flakiness this whole\ndocument describes, but required an independent **frontend** fix regardless\nof how much the infra-side flakiness ever improves \u2014 a system with zero\nbackend flakiness would still have logged users out on any one-off network\nblip under the old logic.\n\n---",
+    "source": "docs/13-INCIDENT-POSTMORTEMS.md",
+    "kind": "prose",
+    "title": "Postmortem 6: the session-expiry / \"randomly logged out\" bug",
+    "metadata": {}
+  },
+  {
+    "text": "Postmortem 7: a \"platform bug\" that was actually a genuine user typo\n**Symptom**: a C submission failed to compile with\n`expected ';' before '}' token` at a specific line.\n\n**Investigation**: pulled the actual submitted code from the database\n(`submission` table, `code` column) rather than assuming a harness/platform\nbug \u2014 found a literal missing semicolon (`return NULL` instead of\n`return NULL;`) in the user's own code.\n\n**Resolution**: **not a platform bug at all.** The user was told this\ndirectly; a later resubmission (confirmed by re-querying the same column)\nshowed the identical, still-uncorrected typo, and the user resubmitted\nagain later with it actually fixed.\n\n**Why this belongs in the postmortem list**: distinguishing \"the platform\nis broken\" from \"the user's code is broken\" requires actually reading the\nsubmitted code, not assuming every reported failure is an infrastructure\nproblem \u2014 a routine but important part of triage.\n\n---",
+    "source": "docs/13-INCIDENT-POSTMORTEMS.md",
+    "kind": "prose",
+    "title": "Postmortem 7: a \"platform bug\" that was actually a genuine user typo",
+    "metadata": {}
+  },
+  {
+    "text": "Common thread across every postmortem in this document\nEvery one of these was solved by the same discipline, repeated: **reproduce\nthe exact failure live** (exec into the real pod, run the real command with\nthe real env vars, read the real database row), rather than reasoning from\nthe code in the abstract. Several (Postmortems 1, 3, 5) had a plausible-but-\nwrong first hypothesis that live reproduction disproved before the real\ncause was found \u2014 that pattern, not any single fix, is the actual\ntransferable skill this project's history demonstrates.",
+    "source": "docs/13-INCIDENT-POSTMORTEMS.md",
+    "kind": "prose",
+    "title": "Common thread across every postmortem in this document",
+    "metadata": {}
+  },
+  {
+    "text": "Deployment & Operations Runbook\nPractical, copy-pasteable operational knowledge accumulated across this\nproject's life. This is the \"how do I actually operate this thing\" document.",
+    "source": "docs/14-DEPLOYMENT-OPERATIONS-RUNBOOK.md",
+    "kind": "prose",
+    "title": "Deployment & Operations Runbook",
+    "metadata": {}
+  },
+  {
+    "text": "Standard deploy cycle (manual \u2014 see `06-CI-CD-PIPELINE.md` for the CD gap)\n1. Merge the PR into `main`. GitHub Actions builds and pushes the changed\n   service(s)' image(s) to `ghcr.io` automatically (~15-20 minutes for a Go\n   or Java image under QEMU-emulated arm64 \u2014 this is inherent to\n   cross-architecture emulation on shared CI runners, not something to\n   optimize away from this repo's side alone).\n2. On the VM:\n   ```\n   git pull origin main\n   kubectl rollout restart deployment/<service> -n platform\n   kubectl rollout status deployment/<service> -n platform   # blocks until actually rolled out\n   ```\n   `rollout status` matters \u2014 don't assume a restart succeeded just because\n   the restart command returned; wait for \"successfully rolled out.\"\n3. **If the change touched `worker-service-go`'s sandbox pool config or\n   language descriptors**, also clear stale pool state:\n   ```\n   kubectl delete pods --all -n sandbox-execution\n   ```\n   This is necessary because the sandbox pool is **in-process memory** \u2014\n   restarting `worker-service-go` resets its pool tracking, but any\n   still-running sandbox pods from before the restart are untouched by that\n   restart and may carry stale env vars/config from before the change.\n4. **If the change touched platform-namespace resource limits** (not just\n   one service's code), restart **every affected Deployment**, not just\n   `worker-service-go` \u2014 a resource-limit change only takes effect on a\n   pod's next creation, not by editing the manifest alone.\n5. Sandbox pools are created **lazily**, one language at a time, on that\n   language's first submission after a restart \u2014 `sandbox-execution`\n   showing zero pods immediately after a restart is expected, not a bug.\n   The first submission for each language pays a one-time on-demand pod\n   creation cost (a few seconds slower).",
+    "source": "docs/14-DEPLOYMENT-OPERATIONS-RUNBOOK.md",
+    "kind": "prose",
+    "title": "Standard deploy cycle (manual \u2014 see `06-CI-CD-PIPELINE.md` for the CD gap)",
+    "metadata": {}
+  },
+  {
+    "text": "Common namespace/flag mistakes (already hit, worth avoiding)\n- `kubectl rollout restart deployment/X` **without `-n platform`** silently\n  targets the wrong (default) namespace and fails with\n  `deployments.apps \"X\" not found` \u2014 easy to misread as \"the deployment\n  doesn't exist\" rather than \"wrong namespace.\"\n- Never assume a merged PR's commits are live without confirming via\n  `git log` on the actual branch \u2014 see Postmortem 4 in\n  `13-INCIDENT-POSTMORTEMS.md` for a real instance of this exact mistake.",
+    "source": "docs/14-DEPLOYMENT-OPERATIONS-RUNBOOK.md",
+    "kind": "prose",
+    "title": "Common namespace/flag mistakes (already hit, worth avoiding)",
+    "metadata": {}
+  },
+  {
+    "text": "Health-check commands (this project's actual triage sequence)\n```\nkubectl top node                                    # is the node itself under CPU/mem pressure right now?\nkubectl get pods -A -o wide                          # any CrashLoopBackOff, Pending, high restart counts?\nkubectl top pods -n platform --sort-by=cpu           # who's actually using CPU right now?\nkubectl get events -A --sort-by='.lastTimestamp' | tail -30   # recent cluster-level events\n```\n\nPer-service Actuator health (all 9 Java services + ai-analysis-service +\nworker-service-go expose this):\n```\nkubectl exec -n platform deploy/<service> -- curl -s localhost:<port>/actuator/health\n```\n\nEureka's own view of the mesh (the single most useful check given how much\nof this project's flakiness traced back to service-discovery issues):\n```\nkubectl exec -n platform deploy/discovery-service -- curl -s localhost:8761/eureka/apps | grep -E \"app name|status\"\n```",
+    "source": "docs/14-DEPLOYMENT-OPERATIONS-RUNBOOK.md",
+    "kind": "prose",
+    "title": "Health-check commands (this project's actual triage sequence)",
+    "metadata": {}
+  },
+  {
+    "text": "Database inspection (direct psql, when the frontend/API layer isn't enough)\nDatabase-per-service naming (see `10-DATA-STORAGE-MESSAGING.md`):\n```\ndocker exec -it postgres psql -U postgres -d submission_service -c \\\n  \"SELECT id, language, status, submitted_at FROM submission ORDER BY id DESC LIMIT 5;\"\n\ndocker exec -it postgres psql -U postgres -d execution_result_service -c \\\n  \"SELECT submission_id, status, output, reason FROM execution_result WHERE submission_id = <id>;\"\n```\nNote: for a `CE` verdict, the compiler's diagnostic text lives in the\n**`output`** column, not `reason` \u2014 `reason` is only ever populated for\ninfrastructure-level `SYSTEM_ERROR`s (see `executor.go`'s `Handle`, which\nhardcodes `reason=\"\"` on every normal judged-result path).",
+    "source": "docs/14-DEPLOYMENT-OPERATIONS-RUNBOOK.md",
+    "kind": "prose",
+    "title": "Database inspection (direct psql, when the frontend/API layer isn't enough)",
+    "metadata": {}
+  },
+  {
+    "text": "Live sandbox-pod reproduction (the technique that solved every hard bug)\nFind a warm pod for a language, exec in, and run the exact production\ncommand with the exact production env vars \u2014 this is how every postmortem\nin `13-INCIDENT-POSTMORTEMS.md` was actually root-caused, not guessed at:\n\n```\nkubectl get pods -n sandbox-execution -l sandbox.platform/language=<lang>\nkubectl exec -it <pod-name> -n sandbox-execution -- sh\n```\nOnce inside, check what env vars are actually present (don't assume a\ndeploy took effect \u2014 verify):\n```\necho GOPROXY=$GOPROXY GOSUMDB=$GOSUMDB GOTMPDIR=$GOTMPDIR\n```\nTime a real build to see whether it's failing fast, succeeding fast, or\nsucceeding-but-too-slow (the CPU-throttling signature \u2014 see Postmortem 5):\n```\ntime go build -o /sandbox/solution /sandbox/solution.go\n```",
+    "source": "docs/14-DEPLOYMENT-OPERATIONS-RUNBOOK.md",
+    "kind": "prose",
+    "title": "Live sandbox-pod reproduction (the technique that solved every hard bug)",
+    "metadata": {}
+  },
+  {
+    "text": "Verifying a CI build actually finished before redeploying\nDon't guess based on elapsed time \u2014 a QEMU-emulated arm64 build genuinely\ntakes ~15-20 minutes, and redeploying before it's actually pushed just\nre-pulls the old image. Check the workflow run directly (GitHub Actions UI,\nor the GitHub API/MCP tooling) for `conclusion: success` on the specific\nservice's build job before assuming `:latest` in `ghcr.io` is current.",
+    "source": "docs/14-DEPLOYMENT-OPERATIONS-RUNBOOK.md",
+    "kind": "prose",
+    "title": "Verifying a CI build actually finished before redeploying",
+    "metadata": {}
+  },
+  {
+    "text": "Capacity ceiling this cluster actually has\nSee `07-RESOURCE-TUNING-AND-CAPACITY.md` for the full numbers. Rule of\nthumb as of this document: ~3-4 concurrent code executions across all\nlanguages combined, ~10-15 concurrent lightweight (browsing/login) users,\nbefore contention starts producing the intermittent-failure symptoms this\nwhole runbook exists to triage. This is a demo/small-team-scale\nconfiguration on a single 4-vCPU node, not a production-traffic-ready one.",
+    "source": "docs/14-DEPLOYMENT-OPERATIONS-RUNBOOK.md",
+    "kind": "prose",
+    "title": "Capacity ceiling this cluster actually has",
+    "metadata": {}
+  },
+  {
+    "text": "A note on the underlying VM's own risk\nThe production VM runs on Oracle Cloud's free-tier Ampere A1 allocation.\nThat free tier was cut industry-wide in 2026 (4 OCPU/24GB \u2192 2 OCPU/12GB),\nand this deployment may be running on a trial or grandfathered allocation\nthat isn't guaranteed to persist \u2014 worth checking the Oracle Cloud console's\nbilling/account status periodically rather than assuming the VM's current\nspecs are permanent.",
+    "source": "docs/14-DEPLOYMENT-OPERATIONS-RUNBOOK.md",
+    "kind": "prose",
+    "title": "A note on the underlying VM's own risk",
+    "metadata": {}
+  },
+  {
+    "text": "Lessons Learned & Portfolio Talking Points\nThis document exists for one specific purpose: turning everything in\n`docs/01` through `docs/14` into material you can actually use \u2014 on a\nresume, a portfolio site, a LinkedIn post, or in an interview.",
+    "source": "docs/15-LESSONS-LEARNED-PORTFOLIO-NOTES.md",
+    "kind": "prose",
+    "title": "Lessons Learned & Portfolio Talking Points",
+    "metadata": {}
+  },
+  {
+    "text": "The numbers, stated plainly\n- **10 Java Spring Boot microservices + 1 Go worker + 1 Python AI service +\n  1 React frontend** \u2014 a real, independently-deployed microservices\n  architecture (not a monolith split into folders), evolved deliberately\n  from an initial modular-monolith phase.\n- **7 languages judged end-to-end**: Java, C++, C, Python, JavaScript,\n  TypeScript, Go \u2014 each with its own harness-generation strategy matched to\n  that language's actual type system and idioms (see `04-LANGUAGE-SUPPORT-\n  AND-HARNESS.md`).\n- **140 commits** of real, iterative engineering \u2014 not a single large\n  \"initial commit,\" but a genuine history of features, fixes, and hardening\n  passes, each with a specific, documented reason.\n- **Zero-trust sandbox execution**: untrusted, arbitrary user code runs\n  under a default-deny `NetworkPolicy`, non-root, read-only root filesystem,\n  all Linux capabilities dropped, and a custom seccomp profile \u2014 on real\n  Kubernetes infrastructure, migrated deliberately away from a\n  Docker-outside-of-Docker design specifically because of its\n  container-escape risk.\n- Runs entirely on a **single 4-vCPU / 24GB ARM node** \u2014 forcing genuine,\n  non-trivial resource-engineering work (per-language CPU quotas, CFS\n  throttling analysis, JVM heap budgeting) that a well-resourced cluster\n  would never have surfaced at all.",
+    "source": "docs/15-LESSONS-LEARNED-PORTFOLIO-NOTES.md",
+    "kind": "prose",
+    "title": "The numbers, stated plainly",
+    "metadata": {}
+  },
+  {
+    "text": "The single best interview story this project has\n**The Go CPU-throttling investigation** (`13-INCIDENT-POSTMORTEMS.md`,\nPostmortem 5) is genuinely excellent material \u2014 it has everything a\ntechnical interviewer wants to hear:\n- A symptom that looked like one thing (a network/proxy issue) and had a\n  plausible, partially-correct fix that turned out to be a **false\n  positive** caused by build-cache reuse.\n- A live measurement (`time go build`, comparing `user+sys` CPU time to\n  real wall-clock time) that proved the *actual* mechanism: Linux CFS\n  bandwidth throttling stretching CPU-bound work across far more wall-clock\n  time than the process's CPU budget should allow.\n- A fix that required understanding the difference between Kubernetes\n  `requests` (scheduling-time reservations) and `limits` (enforced ceilings,\n  implemented via cgroup CFS quotas) \u2014 and applying a **per-language**\n  override rather than a blunt global change, to avoid re-triggering the\n  exact resource-overcommit crisis the project had *already* solved once.\n\n**How to tell it in 60 seconds**: *\"Go submissions kept failing with an\nempty compile error. I traced it through three separate root causes before\nfinding the real one: a disk-exhaustion bug, a missing directory, and\nfinally \u2014 the actual cause \u2014 CPU throttling. The sandbox pods were capped\nat 0.3 CPU cores for cost reasons, but Go's compiler genuinely needs about\nten seconds of real CPU time even for a trivial program. Under that quota,\nLinux's CFS scheduler throttled it so hard that a 10-second job took 34\nseconds of wall-clock time \u2014 longer than our compile timeout. I confirmed\nthis by timing the build inside a live pod and comparing CPU time to\nwall-clock time, then gave Go's language pool its own CPU tier instead of\nraising the limit for every language, which would have blown the whole\nnode's resource budget again.\"*",
+    "source": "docs/15-LESSONS-LEARNED-PORTFOLIO-NOTES.md",
+    "kind": "prose",
+    "title": "The single best interview story this project has",
+    "metadata": {}
+  },
+  {
+    "text": "Other strong, specific talking points\n- **The requests-vs-limits-vs-actual-usage distinction**, hit repeatedly\n  and independently across the project's life (`07-RESOURCE-TUNING-AND-\n  CAPACITY.md`) \u2014 a genuinely subtle Kubernetes concept most junior\n  candidates get wrong, demonstrated here through several real, resolved\n  incidents rather than textbook knowledge.\n- **Diagnosing a \"random\" bug to its actual root cause instead of treating\n  it as unfixable flakiness** \u2014 the session-expiry bug (`08-AUTH-SESSION-\n  MANAGEMENT.md`) looked like intermittent infra noise but had a real,\n  fixable frontend defect at its core (treating a network hiccup the same\n  as a genuinely invalid token). Good example of not accepting \"it's just\n  flaky\" as an explanation.\n- **Silent-failure classes, found three separate times**: OpenTelemetry\n  spans silently not exporting (`09-OBSERVABILITY.md`), a JVM startup\n  failure printing to the wrong stream (`05-SECURITY-HARDENING.md`), and Go\n  build failures doing the same (`13-INCIDENT-POSTMORTEMS.md`) \u2014 a\n  demonstrable pattern-recognition skill: once you've seen \"the error text\n  went to the wrong stream\" once, you know to check for it again.\n- **A real external-dependency break, not a code bug**: the Groq model\n  deprecation (`12-AI-ANALYSIS-SERVICE.md`) \u2014 diagnosed by querying the\n  provider's actual live API rather than trusting its published\n  documentation, which was stale.\n- **Multi-architecture Docker builds are genuinely hard** \u2014 three separate,\n  escalating incidents (`06-CI-CD-PIPELINE.md`) getting ARM64 cross-\n  compilation right, including recognizing when a \"faster\" cross-compile\n  trick was silently producing the wrong architecture and choosing\n  correctness over speed.\n- **Security as continuous practice, not a one-time pass** \u2014 the IDOR fix,\n  the non-root container rollout (verified against a real running\n  container, not just a successful build), the seccomp `getcpu` incident,\n  and the JWT/TLS secret provisioning story all show security work\n  revisited and re-audited over the project's life, not done once and\n  forgotten.",
+    "source": "docs/15-LESSONS-LEARNED-PORTFOLIO-NOTES.md",
+    "kind": "prose",
+    "title": "Other strong, specific talking points",
+    "metadata": {}
+  },
+  {
+    "text": "What to actually put on a portfolio page\n1. **Architecture diagram** \u2014 pull directly from `01-ARCHITECTURE-OVERVIEW.md`.\n2. **Screenshots**: the Practice board, the code editor/submission flow, a\n   PASSED result with the AI analysis panel.\n3. **A \"5 hardest bugs I fixed\" section**, sourced directly from\n   `13-INCIDENT-POSTMORTEMS.md` \u2014 write each as symptom \u2192 investigation \u2192\n   root cause \u2192 fix, 3-4 sentences each. This is the highest-signal content\n   on the whole page.\n4. **Concrete numbers**: 7 languages, 12 services, 140 commits, the\n   security-control table from `05-SECURITY-HARDENING.md`.\n5. **A short demo video/GIF** rather than a live link \u2014 always available,\n   controls the narrative, never embarrassingly down when a recruiter\n   clicks it.\n6. **The GitHub repo link**, with this `docs/` folder visible \u2014 a\n   well-documented `docs/` folder is itself a strong signal to anyone who\n   actually opens the repo, independent of anything on the portfolio page.",
+    "source": "docs/15-LESSONS-LEARNED-PORTFOLIO-NOTES.md",
+    "kind": "prose",
+    "title": "What to actually put on a portfolio page",
+    "metadata": {}
+  },
+  {
+    "text": "What would genuinely make this stronger going forward\nStated honestly, not to undersell the project but because \"what would you\nimprove\" is a real interview question this project can answer specifically:\n\n- **CD is still manual** (`06-CI-CD-PIPELINE.md`) \u2014 the natural next step,\n  already scoped in the codebase's own commit history (a `release` branch\n  exists specifically anticipating an ArgoCD-style GitOps controller).\n- **Single point of failure**: one node, no redundancy, no second\n  availability zone \u2014 a deliberate, documented trade-off for a free-tier\n  demo deployment, not an oversight, but worth naming as such rather than\n  implying this is production-grade at scale.\n- **Per-problem resource tiers don't exist yet** \u2014 every sandbox pod in a\n  language's pool is sized uniformly, even though a problem's own\n  `MemoryLimitMB`/`CPUQuota` could in principle differ meaningfully\n  (flagged directly in `sandbox.go`'s own code comments as a known,\n  deliberate simplification).",
+    "source": "docs/15-LESSONS-LEARNED-PORTFOLIO-NOTES.md",
+    "kind": "prose",
+    "title": "What would genuinely make this stronger going forward",
+    "metadata": {}
+  },
+  {
+    "text": "CLAUDE.md\nThis file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.",
+    "source": "CLAUDE.md",
+    "kind": "prose",
+    "title": "CLAUDE.md",
+    "metadata": {}
+  },
+  {
+    "text": "Architecture Overview\nThis is a LeetCode-style competitive coding platform built as Spring Cloud microservices, plus one Go service, one Python FastAPI service, and a React frontend. The Angular frontend that was removed (commit `faafc61`) has been rebuilt from scratch in React (`frontend/`) \u2014 there IS a working browser UI now (landing page, practice list, and a Monaco-based solve/IDE page with Run/Submit). The frontend is **not** part of `docker-compose.yml`; run it separately (`cd frontend && npm run dev`, Vite dev server on port 5173).\n\n**Services:**\n\n| Service | Language | Port | Role |\n|---|---|---|---|\n| `discovery-service` | Java/Eureka | 8761 | Service registry |\n| `auth-service` | Java | 8086 | Identity/token issuance (see Auth section) |\n| `user-service` | Java | 8081 (+ gRPC 9090) | User CRUD, roles, admin bootstrap \u2014 no longer issues tokens |\n| `problem-service` | Java | 8082 | Problem CRUD + test cases + per-language harness generation, backed by MinIO/S3 |\n| `submission-service` | Java | 8083 | Accepts submissions, applies the generated harness, Kafka producer |\n| `worker-service-go` | Go | 8091 (health only) | Kubernetes-sandboxed code executor (pooled Pods via the Kubernetes API \u2014 **not** Docker containers, and **not** part of `docker-compose.yml`), Kafka consumer+DLQ producer |\n| `execution-result-service` | Java | 8085 | Kafka consumer, verdict storage |\n| `solution-service` | Java | 8087 | Per-problem written solutions (parts, each its own row) + step-through visualizer HTML, backed by Postgres + MinIO/S3 |\n| `ai-analysis-service` | Python/FastAPI | 8000 | LLM code analysis (Groq + pgvector RAG) |\n| `api-gateway` | Java/Spring Cloud Gateway (WebFlux) | 8080 | Reverse proxy + JWT resource server |\n| `frontend` | React/TypeScript/Vite | 5173 (dev) | Landing page, practice list, Monaco-based solve page. Not containerized \u2014 run separately. |\n\n**`worker-service-go` is the only worker.** A legacy Java worker (`worker-service`, with a Docker SDK dependency and no Docker execution hardening \u2014 no CPU/memory caps, no network isolation, no seccomp) previously ran side by side with it behind an `ACTIVE_WORKER` switch on `submission-service`, purely for a performance comparison. It has been removed: `worker-service-go`'s sandbox was already the production-grade path, and running arbitrary user code through an unhardened second executor was a real risk not worth carrying into a deploy. `worker-service-go` registers with Eureka (`WORKER-SERVICE-GO`) for dashboard visibility only \u2014 it no longer resolves problem-service/submission-service/auth-service through Eureka or calls them directly at all; `submission-service` embeds everything a job needs (test cases, limits, harness-glued code) into the `submissions.created.v1` Kafka event it publishes, and the worker reports results by publishing to `execution-result-topic` (the single, unified result topic both workers published to when there were two \u2014 `executions.completed.v1` and the old direct-HTTP-callback-to-submission-service design were removed as part of that consolidation, not just left unconsumed).\n\n**`worker-service-go`'s sandbox execution mechanism runs on Kubernetes, not Docker.** It no longer shells out to `docker run` (Docker-outside-of-Docker via a mounted `/var/run/docker.sock` \u2014 a container-escape risk for untrusted code) \u2014 instead it pools pre-warmed, hardened Pods per language via the Kubernetes API (`internal/sandbox`), execs into one per submission (compile once if the language needs it, then once per test case via the `pods/exec` subresource, stdin attached over the exec stream), and tears the pod down afterward. Network isolation is a namespace-wide default-deny `NetworkPolicy` instead of `--network none` \u2014 this requires a `NetworkPolicy`-enforcing CNI (k3s's default, Flannel, does **not** enforce these; needs Calico or similar, see `infra/k8s/README.md`). Peak memory is read directly from the sandbox pod's own cgroup v2 `memory.current` (streamed over a second exec session) rather than `docker stats`. Isolation is scoped **per submission, not per test case** \u2014 all of one submission's test cases exec sequentially into the same pod (a Kubernetes Pod launch is far more expensive than a `docker run` was, so compiling and creating a fresh pod per test case wasn't viable); a resource leak in one test case can affect a later test case's measurements within the *same* submission, but never crosses into another submission or user. `SandboxRuntime`/`SANDBOX_RUNTIME_CLASS` now names a Kubernetes `RuntimeClass` (e.g. for gVisor) rather than a Docker `--runtime` flag \u2014 left empty (plain `runc`) for now, matching what `docker-compose.yml` ran in production before this migration; gVisor is a deliberately deferred, config-gated follow-up (OCI's ARM shapes likely lack the nested virtualization gVisor's fast `kvm` platform needs). See `infra/k8s/` for the manifests (namespace split \u2014 sandbox pods in `sandbox-execution`, the worker itself in `platform`, since the deny-all NetworkPolicy would otherwise cut off the worker's own Kafka/S3/API-server traffic \u2014 RBAC, NetworkPolicy, seccomp-profile provisioning) and `worker-service-go/cmd/sandboxcheck` for the standalone smoke-test tool that validates this against a live cluster (pool checkout/exec/compile-error path, and \u2014 the most important thing to reverify after touching this code \u2014 that the NetworkPolicy is actually enforced, not just applied).\n\n\u26a0\ufe0f **A node-wide `pod-max-pids` kubelet setting replaces the old per-container `--pids-limit`, and 64 (the old container-level default) is confirmed too low.** There is no per-Pod pids-limit field in the Kubernetes API; `--pod-max-pids` applies to *every* pod on the node, sandbox or not. Setting it to 64 broke Calico's own `calico-node` agent (`unable to fork, sleeping: temporary failure`, confirmed by reproducing it on a real single-node k3s cluster) \u2014 it needs meaningfully more than that for its own process tree. Use 2048 (or higher) as the real floor, sized to the neediest *infra* pod on the node, not to what a sandboxed submission needs.\n\n**Startup:** The full stack (Postgres, MinIO, Redis, Kafka/Zookeeper, Kafka UI, an OTel Collector + Jaeger, and every Java/Python service above except the frontend) is defined in the root `docker-compose.yml` \u2014 `docker-compose up -d` brings up the entire backend **except `worker-service-go`**, which is not in `docker-compose.yml` at all and instead runs against a Kubernetes cluster (see `infra/k8s/README.md`) \u2014 without it, submissions queue in Kafka but are never judged. Requires a populated `.env` (copy `.env.example`); `ai-analysis-service` will refuse to start without its required secret (`GROQ_API_KEY`). **TypeScript submissions additionally require a one-time local image build**, and if running against Kubernetes that image (having no registry to pull from) must also be imported into the cluster's own container runtime \u2014 see \"Multi-language judging\" below and `infra/k8s/README.md`.\n\n**Request flow for code submission:**\n`Client \u2192 api-gateway \u2192 submission-service (applies generated harness, embeds test cases/limits) \u2192 [Kafka: submissions.created.v1] \u2192 worker-service-go \u2192 Kubernetes Pod exec \u2192 [Kafka: execution-result-topic] \u2192 execution-result-service \u2192 [Kafka: submission-update-topic \u2192 submission-service, analysis.trigger.v1 \u2192 ai-analysis-service]`",
+    "source": "CLAUDE.md",
+    "kind": "prose",
+    "title": "Architecture Overview",
+    "metadata": {}
+  },
+  {
+    "text": "Build & Run Commands",
+    "source": "CLAUDE.md",
+    "kind": "prose",
+    "title": "Build & Run Commands",
+    "metadata": {}
+  },
+  {
+    "text": "Java Services (Maven, Spring Boot 3.5.11, Java 17)\n```bash\n./mvnw clean install -DskipTests\n./mvnw spring-boot:run\n./mvnw test\n./mvnw test -Dtest=ClassName\n./mvnw test -Dtest=ClassName#methodName\n```",
+    "source": "CLAUDE.md",
+    "kind": "prose",
+    "title": "Java Services (Maven, Spring Boot 3.5.11, Java 17)",
+    "metadata": {}
+  },
+  {
+    "text": "worker-service-go (Go 1.22)\n```bash\ncd worker-service-go\ngo build ./...\ngo run ./cmd/worker\n```",
+    "source": "CLAUDE.md",
+    "kind": "prose",
+    "title": "worker-service-go (Go 1.22)",
+    "metadata": {}
+  },
+  {
+    "text": "Python AI Service\n```bash\ncd ai-analysis-service\nsource venv/bin/activate   # Windows: venv\\Scripts\\activate\npip install -r requirnments.txt\npython main.py\n```",
+    "source": "CLAUDE.md",
+    "kind": "prose",
+    "title": "Python AI Service",
+    "metadata": {}
+  },
+  {
+    "text": "Frontend (React 19 + Vite + TypeScript)\n```bash\ncd frontend\nnpm install\nnpm run dev      # Vite dev server, http://localhost:5173\nnpm run build     # tsc -b && vite build\n```\n\nTalks to the backend through `api-gateway` on `http://localhost:8080` (see `frontend/src/api/client.ts`) \u2014 the full backend stack must be up first.",
+    "source": "CLAUDE.md",
+    "kind": "prose",
+    "title": "Frontend (React 19 + Vite + TypeScript)",
+    "metadata": {}
+  },
+  {
+    "text": "Full Stack (backend only \u2014 frontend is separate)\n```bash\ncp .env.example .env    # fill in secrets first\ndocker-compose up -d\ndocker-compose down\n```\n\nThere is no `frontend` entry in `docker-compose.yml` \u2014 run it with `npm run dev` per above.",
+    "source": "CLAUDE.md",
+    "kind": "prose",
+    "title": "Full Stack (backend only \u2014 frontend is separate)",
+    "metadata": {}
+  },
+  {
+    "text": "Authentication & Authorization\nAuth is centralized in **auth-service**, not shared-secret HS256 between api-gateway/user-service as before:\n\n- **auth-service** issues RS256 (asymmetric) JWTs, keyed off its own private key, publishes public keys at `/.well-known/jwks.json`. Issuer `https://auth-service`, audience `ms-code-execution`, access token TTL 15 min, refresh token TTL 14 days.\n  - `POST /auth/register`, `/auth/login`, `/auth/refresh` \u2014 end-user auth\n  - `POST /auth/token` \u2014 OAuth2 client-credentials grant for machine-to-machine calls (submission-service authenticating to problem-service to fetch a problem's harness; ai-analysis-service authenticating to submission-service/problem-service when triggered by Kafka). Allowed clients are configured in `service-clients.clients.*` (e.g. `submission-service`, `ai-analysis-service`, role `SERVICE`). `worker-service-go` authenticates to nothing \u2014 it calls no other service directly.\n  - Calls user-service over **gRPC** (port 9090) to look up/verify users during login.\n- Every other business service (api-gateway, user-service, problem-service, submission-service, execution-result-service, ai-analysis-service) is **independently an OAuth2 resource server** \u2014 each validates JWTs itself against auth-service's JWKS/issuer/audience, rather than trusting the gateway alone.\n- **user-service** owns user CRUD and roles only. `AdminBootstrap` idempotently seeds one ADMIN account on startup (`ADMIN_EMAIL`/`ADMIN_PASSWORD` env vars). `PATCH /users/{email}/role` (ADMIN-only) promotes other users.\n- **IDOR fix**: `submission-service`'s `GET /submissions/{id}` is scoped by `findByIdAndUserId` and returns 404 (not 403) on mismatch to avoid confirming existence to an attacker. `GET /submissions/user/{userId}` requires the JWT subject to match the path `userId`.\n- `POST /problems/{id}/harness/regenerate` is gated ADMIN-only via `@PreAuthorize` on `ProblemService.regenerateHarness` \u2014 same defense-in-depth pattern as `createProblem` (route-level rule allows any USER/ADMIN through `/problems/**`, the method-level check narrows to ADMIN).\n- \u26a0\ufe0f **`problem-service`'s `GET /problems/**` route requires `hasAnyRole(\"USER\", \"ADMIN\", \"SERVICE\")`, not just `USER`/`ADMIN`.** `submission-service`'s `HarnessApplier` fetches `GET /problems/{id}` (for `harnessByLanguage`) using its own service-credential token \u2014 `/internal/**` doesn't expose harness data, only test-cases/limits, so this general route is the only place to get it. Narrowing this to drop `SERVICE` (it looks redundant if you only check what *problem-service itself* references) breaks every submission in production \u2014 confirmed by doing exactly that on this branch and catching it only via a real end-to-end submission test, not code review. `GET /problems/{id}/testcases` stays ADMIN-only regardless, via its own `@PreAuthorize` on `ProblemService.getTestCasesForWorker` \u2014 that method-level check is the actual hidden-test-case gate, independent of this route-level rule.",
+    "source": "CLAUDE.md",
+    "kind": "prose",
+    "title": "Authentication & Authorization",
+    "metadata": {}
+  },
+  {
+    "text": "Multi-language judging (LeetCode-style harness system)\nThe platform judges \"LeetCode-style\" submissions (`class Solution { ... }` / a plain function, not a full stdin/stdout script) by generating language-specific boilerplate \u2014 a **harness** \u2014 from an admin-authored, language-agnostic function signature, and gluing it to the user's submitted code before it's judged.\n\n**Currently supported: Python, Java, C++, C, JavaScript, TypeScript, Go** \u2014 7 languages total. A problem with no signature at all still works as a raw stdin/stdout script judge (the original, pre-harness behavior), for both this and every future language.\n\n**Where things live:**\n- `problem-service`'s `harness/` package: one `HarnessGenerator` implementation per language (`PythonHarnessGenerator`, `JavaHarnessGenerator`, `CppHarnessGenerator`, `CHarnessGenerator`, `JavaScriptHarnessGenerator`/`TypeScriptHarnessGenerator` \u2014 these two delegate to shared `JsFamilyHarness` logic since JS/TS output is nearly byte-identical, `GoHarnessGenerator`). Adding a new language is registering one new `@Component` implementing `HarnessGenerator` \u2014 nothing else needs to change structurally.\n- `Problem.harnessByLanguage`: a single `Map<String,String>` column (language id \u2192 generated code), persisted as JSON via `HarnessMapConverter` \u2014 NOT one column per language. `ProblemService` autowires `List<HarnessGenerator>`, indexes it by `language()`, and loops over it to populate the map at problem-creation time.\n- `POST /problems/{id}/harness/regenerate` (ADMIN-only): re-runs every *currently-registered* generator against a problem's already-stored signature, overwriting `harnessByLanguage`. This is how an existing problem picks up a language added after it was created \u2014 call it once per problem whenever a new `HarnessGenerator` ships.\n- `submission-service`'s `HarnessApplier`: looks up `harnessByLanguage.get(lang)`, prepends a small per-language `PREAMBLES` entry when the language needs one (Java: `import java.util.*;`; C++: `#include <bits/stdc++.h>`/`using namespace std;`; C: stdio/stdlib/string/stdbool/ctype includes; Go: `package main` + its harness's required imports \u2014 Python/JS/TS need no preamble), then appends the harness. Falls back to the user's code unchanged if there's no harness for that language.\n- `worker-service-go` executes per-language via a small registry rather than hardcoded branches: `sandbox.go`'s `buildLangDescriptors`, a `map[domain.Language]*langDescriptor` \u2014 image, optional two-step compile+exec commands, source filename, optional extra `Env`.\n\n**Per-language sandbox images** (see `worker-service-go/internal/config/config.go`'s `LanguageImages`):\n\n| Language | Image | Notes |\n|---|---|---|\n| Python | `python:3.12-slim` | interpreted, no JSON helper needed (`json` stdlib) |\n| Java | `eclipse-temurin:21-jdk-alpine` | compiled; hand-rolled `__Json` helper appended (`JsonHelper.java.txt`) \u2014 no JSON lib in a plain JDK sandbox |\n| C++ | `gcc:14` | compiled; hand-rolled `__json` namespace (`JsonHelper.cpp.txt`) |\n| C | `gcc:14` | compiled; hand-rolled `__json_*` functions (`JsonHelper.c.txt`); real LeetCode-C signature convention (raw pointers + `numsSize`/`returnSize` out-params), not a custom struct vocabulary |\n| JavaScript | `node:20-slim` | interpreted; `JSON.parse`/`JSON.stringify` built in, no helper needed |\n| TypeScript | `platform/node-typescript:20` (**locally built**) | compiled (`tsc`) then run with `node`; no official image ships both Node and `tsc`, and the sandbox has no network access to `npm install` it at request time \u2014 **must be built once**: `docker build -t platform/node-typescript:20 infra/sandbox-images/node-typescript`, then imported into whatever runtime actually schedules the sandbox pods (Kubernetes' own containerd, e.g. `docker save platform/node-typescript:20 \\| ctr -n k8s.io images import -` for k3s \u2014 this image has no registry to pull from, so kubelet can't fetch it any other way; see `infra/k8s/README.md`) |\n| Go | `golang:1.22-alpine` | compiled (`go build`); `encoding/json` stdlib handles both parse and serialize via an anonymous struct \u2014 no hand-rolled JSON helper needed at all, unlike C/C++/Java |\n\n\u26a0\ufe0f **gcc has no `-slim` tag on Docker Hub** \u2014 only bare version tags (`gcc:12`, `gcc:14`, ...). `gcc:14-slim` doesn't exist and will 404.\n\n\u26a0\ufe0f **Go's sandbox compile step sets `GOMAXPROCS=1`/`GOFLAGS=-p=1`** (via `langDescriptor.Env`, passed as `corev1.EnvVar` entries on the pooled pod's container spec in `podspec.go` \u2014 previously a generic `-e KEY=VAL` Docker CLI passthrough) \u2014 without it, `go build` compiling the full stdlib dependency chain from a cold, per-submission `GOCACHE` spawns enough concurrent compiler/assembler subprocesses to blow through the pids ceiling (fork-bomb protection; now a node-wide kubelet `--pod-max-pids` rather than a per-container Docker `--pids-limit` \u2014 see the \"sandbox execution mechanism runs on Kubernetes\" note above), failing every submission with \"resource temporarily unavailable\". Also needs `GOCACHE`/`HOME` pointed at a writable path (`/tmp`) since the sandbox's non-root user has no real `$HOME`.\n\n\u26a0\ufe0f **TypeScript needs an inline `declare function require(id: string): any;`** ambient declaration in the generated harness (TS-only, JS's generated code is otherwise identical) \u2014 a standalone, no-project `tsc <file>.ts` invocation has no way to discover `@types/node` (global npm installs aren't on its default `typeRoots` lookup), so `require`/`fs` are otherwise unresolvable.\n\n\u26a0\ufe0f **The legacy Java worker's `DockerExecutionService` only pulls an image if it isn't already present locally** (`inspectImageCmd` first, `pullImageCmd` only on `NotFoundException`) \u2014 required for `platform/node-typescript:20`, which exists only in the local Docker daemon, never on any registry; an unconditional pull 404s on it.\n\n**Run vs Submit:** `SubmissionRequest.includeHidden` (boolean, defaults to `true`/full-Submit semantics unless explicitly `false`) \u2014 `false` judges only the problem's visible/sample test cases (LeetCode's \"Run Code\"), `true` judges everything including hidden cases (\"Submit\"). Threaded through `SubmissionCreatedEvent` (Kafka), the worker filters its test case list accordingly before judging. **Every test case is always judged and reported \u2014 the worker never short-circuits on the first failure** (an earlier design that stopped at the first failing case was deliberately changed).\n\n**Per-test-case result reporting:** the worker reports a structured `TestCaseResult[]` (ordinal, passed, hidden, and `input`/`expected`/`actual` \u2014 populated only for non-hidden cases, a hidden test case's content is never sent anywhere past the worker) rather than a single flat output string.",
+    "source": "CLAUDE.md",
+    "kind": "prose",
+    "title": "Multi-language judging (LeetCode-style harness system)",
+    "metadata": {}
+  },
+  {
+    "text": "Inter-Service Communication\n**Synchronous (REST):**\n- API Gateway routes via load balancer (`lb://SERVICE-NAME`) using Eureka service discovery\n- auth-service \u2194 user-service via gRPC (port 9090)\n- `worker-service-go` calls neither problem-service nor submission-service \u2014 submission-service embeds everything a job needs into the Kafka event it publishes\n- submission-service calls problem-service (also via OAuth2 client-credentials) to fetch a problem's generated harness before publishing to Kafka\n- execution-result-service uses OpenFeign declarative clients\n\n**Asynchronous (Kafka) \u2014 a single pipeline:**\n- `submissions.created.v1` (submission-service \u2192 worker-service-go, code uploaded to S3/MinIO first, test cases/limits embedded inline) \u2192 `execution-result-topic` (worker-service-go \u2192 execution-result-service \u2014 the single ingestion point for judged results)\n- `execution-result-service` fans out two lightweight events: `submission-update-topic` (\u2192 submission-service, flips its `status` column) and `analysis.trigger.v1` (\u2192 ai-analysis-service, which auto-runs its LLM analysis; has its own `analysis.trigger.v1.retry-1`/`retry-2`/`.dlq` topics for retry/failure handling)\n- worker-service-go additionally publishes failed messages to `dlq.submissions.created.v1`, and infra-level failures to `executions.failed.v1`\n\nKafka now runs SASL_SSL only (no plaintext listener), with AclAuthorizer and default-deny ACLs. Topics/ACLs are provisioned by the `kafka-init` one-shot container via `infra/kafka/acls.sh`.\n\n**Eureka service names:** `USER-SERVICE`, `AUTH-SERVICE`, `PROBLEM-SERVICE`, `SUBMISSION-SERVICE`, `EXECUTION-RESULT-SERVICE`, `SOLUTION-SERVICE`, `AI-ANALYSIS-SERVICE`, `WORKER-SERVICE-GO`",
+    "source": "CLAUDE.md",
+    "kind": "prose",
+    "title": "Inter-Service Communication",
+    "metadata": {}
+  },
+  {
+    "text": "API Gateway Routes\nAll external traffic enters via port 8080:\n- `/auth/**` \u2192 AUTH-SERVICE\n- `/users/**` \u2192 USER-SERVICE\n- `/problems/**` \u2192 PROBLEM-SERVICE (includes `POST /problems/{id}/harness/regenerate`)\n- `/submissions/**` \u2192 SUBMISSION-SERVICE\n- `/api/results/**` \u2192 EXECUTION-RESULT-SERVICE\n- `/solutions/**` \u2192 SOLUTION-SERVICE\n\nThere is currently **no gateway route for ai-analysis-service** (no `/ai/**` entry) \u2014 call it directly on port 8000 if the route hasn't been re-added.",
+    "source": "CLAUDE.md",
+    "kind": "prose",
+    "title": "API Gateway Routes",
+    "metadata": {}
+  },
+  {
+    "text": "Solution Service\nBacks the Solve page's \"Solutions\" tab (written explanation + step-through visualizer) \u2014 not yet wired to the frontend, which still reads a hardcoded `frontend/src/data/solutions.ts` for this content.\n\n- `GET /solutions/problem/{problemId}` (USER/ADMIN) \u2014 a `Solution`'s parts (each stored as its own `SolutionPart` row: `ordinal`, `title`, `markdown` \u2014 not one giant blob, so the frontend can fetch/render each \"Part N\" bullet independently and an admin can edit one without touching the rest) plus `visualizerUrl` if a visualizer has been uploaded.\n- `POST /solutions` (ADMIN) \u2014 full-replace upsert: swaps every part for a `problemId` with exactly the list in the request body.\n- `POST /solutions/problem/{problemId}/visualizer` (ADMIN, multipart) \u2014 uploads a self-contained visualizer HTML file to MinIO/S3 (bucket `platform-solution-assets`, key `solutions/{problemId}/visualizer.html`); `Solution.visualizerObjectKey` points at it. Markdown text lives in Postgres, the visualizer blob does not \u2014 same \"blob content goes in MinIO, not a TEXT column\" split submission-service and problem-service already use.\n- `GET /solutions/problem/{problemId}/visualizer` \u2014 streams that HTML back with `Content-Type: text/html`. Deliberately **unauthenticated** (permitted at both solution-service's own `SecurityConfig` and api-gateway's `SecurityConfig`) since it's loaded directly by a browser `<iframe src=\"...\">`, which has no way to attach a Bearer token; visualizer content isn't sensitive. Not a presigned MinIO URL \u2014 MinIO's container hostname (`minio`) isn't resolvable from the browser, only from other containers on the compose network, so the service proxies the bytes itself instead.",
+    "source": "CLAUDE.md",
+    "kind": "prose",
+    "title": "Solution Service",
+    "metadata": {}
+  },
+  {
+    "text": "Code Execution (worker-service-go)\n- Launches sandbox Pods through the Kubernetes API (in-cluster ServiceAccount token, or `K8S_IN_CLUSTER=false`+`KUBECONFIG_PATH` for local dev) \u2014 no `/var/run/docker.sock` mount, no Docker CLI, not part of `docker-compose.yml` at all. See the \"sandbox execution mechanism runs on Kubernetes\" note above and `infra/k8s/`.\n- Execution timeout: 30 seconds; compilation gets a proportionally longer timeout (`max(3\u00d7 wall timeout, 15s floor)`) \u2014 cold tsc/go-build startup overhead is otherwise roughly constant regardless of a fast problem's short execution budget.\n- Test cases and judging limits are embedded into the `submissions.created.v1` event by submission-service (see \"`worker-service-go` is the only worker\" note above) \u2014 the worker does not call problem-service itself. Compares actual vs. expected output for PASSED/FAILED/TLE/MLE/RE/CE/SYSTEM_ERROR verdicts.\n- Test-case content and submission artifacts are stored in MinIO/S3 (buckets `platform-test-cases`, `platform-artifacts`), provisioned by the `minio-init` one-shot container\n- See \"Multi-language judging\" above for how a submission's raw code becomes the actual thing that gets compiled/run\n- The only HTTP surface this service has at all: `GET /healthz` (liveness, 200 once the process is up) and `GET /readyz` (readiness, 200 once the Kafka consumer goroutine has started) on `HEALTH_PORT` (default `8091` - `8090` is already kafka-ui's host port) \u2014 added for Kubernetes probes, since otherwise this is a pure Kafka consumer with nothing else to point a probe at",
+    "source": "CLAUDE.md",
+    "kind": "prose",
+    "title": "Code Execution (worker-service-go)",
+    "metadata": {}
+  },
+  {
+    "text": "Databases\nPostgreSQL, one database per service: `user_service`, `auth_service`, `problem_service`, `submission_service`, `execution_result_service`, `solution_service`, `ai_analysis_db`. Provisioned by `infra/postgres/init-multiple-databases.sh`.\n\n- **Schema management is now Flyway (`db/migration/V1__init.sql`, `V2__...`, `V3__...` per service), `ddl-auto=validate`** \u2014 NOT Hibernate auto-DDL (`update`) as before. Add new migrations rather than relying on Hibernate to alter the schema. `problem_service` is up to `V3__harness_by_language.sql` (replaced per-language `harness_python`/`harness_java` TEXT columns with a single `harness_by_language` JSON column).\n- Each Java-service DB has two roles: an **owner** role (DDL, used only by Flyway) and an **app** role (DML-only, used by the running service).\n- `ai_analysis_db` is the exception \u2014 no Flyway equivalent for SQLAlchemy, so it connects directly as owner.\n- All connections require TLS (`sslmode=verify-full`); Postgres accepts `hostssl` only, no plaintext auth.",
+    "source": "CLAUDE.md",
+    "kind": "prose",
+    "title": "Databases",
+    "metadata": {}
+  },
+  {
+    "text": "AI Analysis Service (Python)\nFastAPI service with:\n- Groq LLM for code analysis, via `litellm` (`services/llm_provider.py`) \u2014 provider-agnostic `<provider>/<model>` naming, model swappable via `LLM_MODEL`/`LLM_FALLBACK_MODEL` env vars with no code change.\n  - \u26a0\ufe0f **Groq's available-model list is account-specific and shifts under you.** The original defaults (`groq/llama-3.1-8b-instant`, `groq/llama-3.1-70b-versatile`) both broke in production \u2014 one decommissioned outright by Groq, the other returning \"does not exist or you do not have access to it\" for this account despite still being listed on Groq's own public docs page. This was completely silent: submissions exhaust both retry tiers, land in the DLQ, and `GET /ai/analysis/{id}` just hangs at `PENDING` forever with no error surfaced anywhere. Currently pinned to `groq/openai/gpt-oss-20b` / `groq/openai/gpt-oss-120b`, verified against the real key via `GET https://api.groq.com/openai/v1/models` (not Groq's public docs \u2014 that listed models this key doesn't actually have). If AI analysis silently stops working again, check this first, the same way, before assuming it's a code bug.\n- pgvector (Postgres-backed, via `langchain_community.vectorstores.PGVector` in `services/rag_service.py`) for RAG context \u2014 migrated off a local ChromaDB directory; `infra/postgres/init-multiple-databases.sh` creates the `vector` extension as superuser at DB init.\n- Registers itself with Eureka (`py-eureka-client`)\n- Independently verifies incoming JWTs as an OAuth2 resource server (`security/jwt_verifier.py`, PyJWT + `PyJWKClient` against auth-service's JWKS, checking issuer/audience) \u2014 no longer a \"header just has to be non-empty\" check\n- Caches analysis results in PostgreSQL\n- `GET /health` for K8s liveness/readiness; graceful shutdown via FastAPI's `lifespan` (cancels the Kafka consumer task, deregisters from Eureka, disposes the DB engine) \u2014 see the `FastAPIInstrumentor` timing gotcha under \"Infrastructure Hardening\" below before touching `main.py`'s startup sequence.",
+    "source": "CLAUDE.md",
+    "kind": "prose",
+    "title": "AI Analysis Service (Python)",
+    "metadata": {}
+  },
+  {
+    "text": "Infrastructure Hardening (`infra/`)\n`infra/kafka/` and `infra/postgres/` contain local-dev TLS/ACL bootstrapping (certs, JAAS config, `pg_hba.conf`, init scripts) \u2014 no Terraform/Kubernetes/nginx. Note: CA/server/broker private keys are committed here for local-dev convenience; do not reuse these certs in a real deployment.\n\n`infra/sandbox-images/node-typescript/` holds the Dockerfile for the locally-built TypeScript sandbox image (see \"Multi-language judging\" above) \u2014 the only sandbox image that isn't pulled straight from Docker Hub.\n\nThe Kafka admin password is not yet env-driven (hardcoded in `infra/kafka/kafka_server_jaas.conf` / `admin-client.properties`) \u2014 flagged in-repo as a follow-up (Vault or similar).\n\n`infra/otel/otel-collector-config.yaml` configures a minimal OTel Collector (traces only, OTLP in \u2192 OTLP out to Jaeger). `ai-analysis-service` and `worker-service-go` export to it (`otel-collector:4317`/`4318` inside the compose network); Jaeger UI at `:16686`, in-memory storage only (no Elasticsearch/Cassandra \u2014 traces don't survive a `jaeger` restart). The other 9 Java services aren't instrumented, so there's no full-request tracing across the whole platform yet, only across these two hops.\n\n\u26a0\ufe0f **Python's `OTLPSpanExporter` only auto-appends `/v1/traces` when it reads `OTEL_EXPORTER_OTLP_ENDPOINT` itself** \u2014 passing `endpoint=` explicitly to its constructor (as `ai-analysis-service/tracing.py` does) bypasses that, so the path has to be appended manually or every export 404s. Go's `otlptracehttp.WithEndpoint` doesn't have this problem (it always appends the path itself) \u2014 this is a real, confirmed difference between the two SDKs' APIs, not a copy-paste inconsistency.\n\n\u26a0\ufe0f **`FastAPIInstrumentor.instrument_app(app)` must run before the ASGI app receives its first call, not inside a `lifespan` startup handler.** Starlette caches `app.middleware_stack` on the very first `__call__` (which is the `lifespan` scope invocation itself) \u2014 a middleware added during that same lifespan's startup handler is added too late to affect the already-built, cached stack, so every request traces zero spans with no error anywhere. Confirmed by reproducing it directly. `ai-analysis-service/main.py` calls `configure_tracing(app)` immediately after `app = FastAPI(...)`, not inside `lifespan()`.",
+    "source": "CLAUDE.md",
+    "kind": "prose",
+    "title": "Infrastructure Hardening (`infra/`)",
+    "metadata": {}
+  },
+  {
+    "text": "Key Dependencies\n- Spring Cloud version: 2025.0.1\n- JWT: jjwt 0.13.0 (RS256, JWKS-based via auth-service)\n- Kafka: Confluent 7.5.0 (Zookeeper-based, not KRaft), SASL_SSL + ACLs\n- worker-service-go: Go 1.22, AWS SDK v2 (S3), `segmentio/kafka-go`, `rs/zerolog`, OpenTelemetry SDK/OTLP-HTTP exporter, hand-written Eureka REST client (`internal/eureka`), `k8s.io/client-go` + `k8s.io/api`/`k8s.io/apimachinery` (sandbox pod pool + exec \u2014 see `internal/sandbox`)\n- Frontend: React 19, TypeScript, Vite, `react-router-dom` v7, `@monaco-editor/react`, `three` (landing page visuals) \u2014 not containerized, run via `npm run dev`",
+    "source": "CLAUDE.md",
+    "kind": "prose",
+    "title": "Key Dependencies",
+    "metadata": {}
+  }
+]

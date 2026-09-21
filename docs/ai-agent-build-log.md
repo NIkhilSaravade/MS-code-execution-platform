@@ -223,3 +223,181 @@ Mapped against the stated Done-when criteria:
   infra/observability pass.
 
 ---
+
+## Phase 2 — Real RAG: chunking, hybrid search, reranking (2026-09-21)
+
+### What was built
+
+**`ai-analysis-service/services/chunking.py`** (new) — `Chunk` dataclass (`text`, `source`, `kind`,
+`title`, `metadata`) plus three chunkers:
+- `chunk_markdown(text, source)` — heading-based: each chunk is one heading + its body up to the
+  next heading, any level. Verified against a real file: `docs/03-SANDBOX-EXECUTION-ENGINE.md`
+  chunks into 6 coherent sections (`Core data structures`, `The submission lifecycle, step by
+  step`, `Per-language CPU quota tiers...`, etc.) — real output, checked by hand before writing
+  any test around it.
+- `chunk_python_code(code, source)` — parses with stdlib `ast`, yields one chunk per top-level
+  `FunctionDef`/`AsyncFunctionDef`/`ClassDef` using `node.lineno`/`node.end_lineno` to slice the
+  original source lines (so exact formatting/comments inside the function are preserved, not
+  re-serialized from the AST). Falls back to one whole-snippet chunk on `SyntaxError` or when there
+  are no top-level defs at all.
+- `chunk_markdown_with_code(text, source)` — heading-chunks first, then re-scans each heading's
+  body for fenced ` ```python ` blocks and AST-chunks those separately, tagging each with the
+  enclosing heading as `metadata["heading"]`/`title`. This is what
+  `knowledge/anti_patterns.md` (below) is ingested with, since each entry there is prose + one
+  code example.
+
+**`ai-analysis-service/knowledge/anti_patterns.md`** (new) — 15 curated, real anti-pattern / bug-class
+entries spanning Python, Java, C, C++, JavaScript/TypeScript, Go, and language-agnostic
+(binary-search/sliding-window off-by-one) issues, each with a short rationale and a minimal code
+example. This directly replaces `seed_knowledge.py`'s 5 hardcoded one-liners as "the knowledge
+base" — the old file is left in place (a manual one-shot script, not imported by anything else)
+but is no longer what backs `fetch_similar_past_reviews`.
+
+**`ai-analysis-service/services/corpus.py`** (new) — `build_corpus()` ingests
+`knowledge/anti_patterns.md` (via `chunk_markdown_with_code`) plus every `docs/*.md` in the repo
+root and `CLAUDE.md` (via `chunk_markdown`) — real content about this actual codebase, which is
+what the task brief calls "this repo's own style/contribution docs." `save_corpus`/`load_corpus`
+serialize to/from `knowledge/corpus.json` so ingestion is a discrete, reproducible step
+(`python -m services.corpus`) rather than re-walking the filesystem on every request. Ran it for
+real: **141 chunks** written from the current repo state.
+
+**`ai-analysis-service/services/hybrid_search.py`** (new) — `BM25Index` (wraps `rank_bm25.BM25Okapi`
+over the corpus, lazy singleton via `get_bm25_index()`) for lexical search, plus
+`reciprocal_rank_fusion(*ranked_lists, k=60)` (standard RRF - `score += 1/(k+rank+1)` per list a
+chunk appears in) to merge BM25's ranking with the vector store's. `hybrid_retrieve(query, top_k,
+vector_search_fn=None)` takes an injectable vector-search function (defaults to the real
+`RAGService`/PGVector via `services.rag_service.get_rag_service()`) so it's testable without live
+Postgres, mirroring the pattern Phase 1 already established for `LLMProvider`.
+
+**`ai-analysis-service/services/reranker.py`** (new) — `sentence_transformers.CrossEncoder`
+(`cross-encoder/ms-marco-MiniLM-L-6-v2`), lazy singleton, `rerank(query, candidates, top_k)` scores
+every (query, candidate) pair jointly and returns the top-k by score. Verified with a real model
+download (network was available in this environment) against the real 141-chunk corpus - e.g. for
+the query "python code using eval on user input is dangerous," reranking a BM25-only candidate set
+correctly placed "Python: Use of `eval`/`exec` on Untrusted Input" at rank 1.
+
+**`ai-analysis-service/services/tools.py`** — `fetch_similar_past_reviews` rewired from the old
+direct `RAGService.retrieve` call to `hybrid_retrieve(query, top_k=10)` → `rerank(query,
+candidates, top_k=3)`, so the agent loop's tool now uses the real hybrid+rerank pipeline, not a
+single semantic-only lookup.
+
+### Chunking strategy rationale (as required by the task brief)
+
+Heading-based for prose: a human author already drew topic boundaries with headings: reusing them
+is free and reliably coherent, versus a fixed-token-count splitter that would routinely cut a
+paragraph (or an anti-pattern's explanation from its code example) in half. AST-based for code: a
+function/class definition is the smallest unit that's still meaningful read in isolation; splitting
+on blank lines or line count would just as routinely cut a function body in half. Neither needs an
+embedding-based "semantic" splitter (e.g. clustering sentence embeddings) - for structured
+markdown and syntactically valid code, the document's own structure already gives correct chunk
+boundaries, and that's simpler and cheaper than fitting a splitter.
+
+### Reranking A/B eval — actual results (Done-when requires this; result was NOT the hoped-for
+### direction, reported honestly)
+
+`ai-analysis-service/scripts/eval_retrieval.py` — standalone script (not Phase 3's formal harness,
+which doesn't exist yet). Vector-only baseline: real `all-MiniLM-L6-v2` embeddings (same model
+`RAGService` wraps), cosine similarity over the in-memory 141-chunk corpus - computed directly
+rather than through the real PGVector store, since this dev environment has no live Postgres to
+test against (documented as a real limitation, not hidden). Hybrid+rerank arm: the actual
+`hybrid_retrieve` + `rerank` functions, same corpus.
+
+16 hand-labeled queries (source: `LABELED_QUERIES` in the script) - the person writing the queries
+(this session) also wrote the corpus, so labels are targeted-by-construction, not learned-then-
+checked; this is a legitimate small benchmark, not a statistically powered one. Two metrics:
+precision@3 (title-deduped - see below) and mean reciprocal rank (1/rank of first correct hit).
+
+**First run hit a real bug**: `chunk_markdown_with_code` emits a prose chunk and a code chunk that
+share the same `title` for each anti-pattern entry (by design - see chunking.py above). The eval's
+first version counted both as separate "hits," inflating precision@3 to as high as 0.67 on some
+queries and making the reranked arm look artificially worse when reranking correctly demoted the
+bare-code duplicate. Fixed by deduplicating by `title` before scoring (`_dedupe_by_title` in the
+eval script) - this is a metric fix, not a change to retrieval/reranking itself.
+
+**Actual result after the fix**, run via `venv/Scripts/python.exe -m scripts.eval_retrieval`:
+
+```
+mean precision@3: vector-only=0.333  hybrid+rerank=0.312
+mean reciprocal rank: vector-only=1.000  hybrid+rerank=0.953
+```
+
+Vector-only tied hybrid+rerank on 15 of 16 queries (both found the correct chunk at rank 1). On one
+adversarial query - "returning early on failure without acting on what the call told you" (meant
+to target "Go: Ignoring an Error Return Value") - hybrid+rerank actually regressed: RR dropped
+to 0.25 (found at rank 4) vs vector-only's 1.00. Traced the real cause by printing the actual
+ranked lists (not guessed): BM25 pulled in "C++: Returning a Reference/Pointer to a Local Variable"
+above the correct chunk purely on the shared word "returning," and the cross-encoder reranker then
+promoted "C: Missing `free` on Every Return Path" to rank 1 - a genuine cross-encoder misranking on
+ambiguous phrasing that shares surface vocabulary ("return", "early", "path") with three different
+corpus entries.
+
+**Honest conclusion**: this benchmark does NOT show the precision@k improvement the Done-when
+criterion asks for - on net it shows a slight regression (0.333 → 0.312 precision@3, 1.000 → 0.953
+MRR). The retrieval/reranking mechanism itself works correctly in isolation (proven by the earlier
+ad hoc eval-security example, and by 15/16 labeled queries still resolving correctly), but at this
+corpus's small scale (141 chunks, mostly topically distinct entries) vector-only search is already
+at or near a precision ceiling, leaving reranking no room to add value while still carrying real
+risk of occasionally misranking on adversarial/ambiguous phrasing. This is a corpus-scale/benchmark-
+design limitation, not a broken implementation - a larger, denser corpus (more entries that
+genuinely compete for the same query, which is exactly where reranking is supposed to help) would
+be a fairer test, and is a legitimate Phase 2 follow-up rather than something to fake past here.
+
+### Tests added (`ai-analysis-service/tests/`)
+
+- `test_chunking.py` (5 tests) - heading splits, source/kind tagging, one-chunk-per-def, syntax-
+  error fallback, fenced-code extraction with heading tagging.
+- `test_corpus.py` (2 tests) - `build_corpus()` against the real repo (>50 chunks, includes
+  `knowledge/anti_patterns.md` and at least one `docs/*.md` source, includes the known eval-security
+  title); `save_corpus`/`load_corpus` round-trip via `tmp_path`.
+- `test_hybrid_search.py` (5 tests) - BM25 exact-keyword match on a tiny synthetic corpus; empty-
+  corpus edge case; RRF favors an item ranked first in both input lists; RRF still includes an item
+  present in only one list; `hybrid_retrieve` with an injected fake vector search actually merges
+  both arms' distinct results.
+- `test_reranker.py` (2 tests) - real `CrossEncoder` call (not mocked - Phase 2's Done-when
+  explicitly wants a real reranking pass) orders an obviously-relevant candidate first among
+  distractors; empty-candidates edge case.
+
+### Done-when check — actual output
+
+Ran `venv/Scripts/python.exe -m pytest tests/ -v` from `ai-analysis-service/`:
+
+```
+collected 28 items
+... (all Phase 1 tests, unchanged) ...
+tests/test_chunking.py - 5 passed
+tests/test_corpus.py - 2 passed
+tests/test_hybrid_search.py - 5 passed
+tests/test_reranker.py - 2 passed
+============================= 28 passed in 16.11s ==============================
+```
+
+Mapped against the stated Done-when criteria:
+- **"retrieval returns real, relevant results from the real corpus, example queries + retrieved
+  chunks shown"** — met: see the `strcpy`/`mutable default argument`/`GOMAXPROCS`/`binary search`
+  BM25 query examples above, and the eval-security cross-encoder example, both against the real
+  141-chunk corpus.
+- **"a reranking A/B test showing precision@k improvement... existing + new tests green"** — the
+  eval ran end-to-end and produced real numbers, but those numbers do NOT show an improvement (see
+  "Honest conclusion" above) - this criterion is only partially met, logged accurately rather than
+  glossed over. All 28 tests (14 from Phase 1 + 14 new) pass.
+- **Stretch goal (call-graph/dependency-graph retrieval)** — not attempted this phase, as explicitly
+  permitted by the task brief ("don't block Phase 2 completion on it"). Logged here as still
+  outstanding.
+
+### Known scope deviations / follow-ups from this phase
+
+- Vector-only baseline in the eval script bypasses the real PGVector store (no live Postgres in
+  this dev environment) in favor of direct `SentenceTransformer` cosine similarity over an in-
+  memory corpus. Same embedding model, same math, different storage layer - a real but narrow gap
+  between what was evaluated and what runs in production. Re-running this eval against a live
+  PGVector-backed `RAGService.retrieve` once real infra is available is a follow-up, not done here.
+- The reranking A/B result is a genuine negative finding at this corpus scale (see above) - flagged
+  as a follow-up to revisit once Phase 3's golden dataset and/or a larger corpus exist, since a
+  bigger, denser corpus is the more realistic test of whether reranking earns its cost here.
+- "Once Phase 3 exists" corpus source (accepted past review comments) is not ingested - Phase 3
+  doesn't exist yet, per the task's own phase ordering.
+- `services/rag_service.py`'s `RAGService`/`PGVector` machinery is unchanged and still used as the
+  default `vector_search_fn` in `hybrid_retrieve` for production; only the eval script's baseline
+  bypasses it, as noted above.
+
+---

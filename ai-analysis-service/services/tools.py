@@ -23,7 +23,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-from services.rag_service import get_rag_service
+from services.hybrid_search import hybrid_retrieve
+from services.reranker import rerank
 
 LINTER_TIMEOUT_SECONDS = 10
 
@@ -116,10 +117,14 @@ def run_security_scan(language: str, code: str) -> dict:
 
 
 def fetch_similar_past_reviews(query: str) -> dict:
-    """Wraps the existing RAGService.retrieve - real retrieval mechanism,
-    limited corpus until Phase 2 (see services/rag_service.py, seed_knowledge.py)."""
-    docs = get_rag_service().retrieve(query)
-    return {"results": [doc.page_content for doc in docs]}
+    """Phase 2: hybrid (vector + BM25, RRF-fused) retrieval over the real
+    corpus (services/corpus.py - repo docs + knowledge/anti_patterns.md),
+    reranked with a cross-encoder (services/reranker.py) before the top
+    results are handed to the LLM. See services/hybrid_search.py and
+    scripts/eval_retrieval.py for how this was evaluated."""
+    candidates = hybrid_retrieve(query, top_k=10)
+    top = rerank(query, candidates, top_k=3)
+    return {"results": [{"source": c.source, "title": c.title, "text": c.text} for c in top]}
 
 
 def get_style_guide_section(topic: str) -> dict:
