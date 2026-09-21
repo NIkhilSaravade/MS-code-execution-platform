@@ -63,7 +63,22 @@ def resolve_tool_calls(messages: list[dict]) -> list[dict]:
     seen_calls: set[tuple[str, str]] = set()
 
     for step in range(MAX_TOOL_STEPS):
-        response = LLMProvider.complete_with_tools(messages, TOOL_SCHEMAS)
+        try:
+            response = LLMProvider.complete_with_tools(messages, TOOL_SCHEMAS)
+        except Exception as exc:
+            # Real failure mode hit while running Phase 3's eval harness
+            # against live Groq: with tools still bound, the model
+            # sometimes tries to "answer" by emitting a tool call to a
+            # hallucinated tool (observed literally named "JSON", not in
+            # TOOL_SCHEMAS) instead of just returning content - Groq's API
+            # rejects this outright (400 tool_use_failed) and litellm
+            # surfaces it as a hard exception even through the fallback
+            # model. Rather than let one bad tool-call turn crash the whole
+            # analysis, treat it the same as "no more tool calls needed"
+            # and fall through to finalize_non_stream/finalize_stream,
+            # which call with tools=None and don't hit this failure mode.
+            log.warning("agent_loop.tool_step_failed", step=step, error=str(exc))
+            return transcript
         message = response.choices[0].message
         tool_calls = getattr(message, "tool_calls", None) or []
 
