@@ -1,0 +1,17 @@
+# Phase 6 LoRA fine-tuning stack - deliberately kept OUT of the main
+# ai-analysis-service/requirnments.txt: these are heavy, GPU-oriented
+# packages (torch's CUDA build alone is ~2.7GB) that the deployed service
+# itself never needs - only this local/offline training + eval workflow
+# does. Install into the same venv as the main service (it already has
+# everything finetune/*.py imports from the service itself - prompts,
+# schemas, evals/golden_dataset, etc.) via:
+#   venv/Scripts/python.exe -m pip install -r finetune/requirements-finetune.txt
+#   venv/Scripts/python.exe -m pip install --index-url https://download.pytorch.org/whl/cu128 torch
+# (torch needs the CUDA-specific index for a GPU build - see
+# docs/ai-agent-build-log.md's Phase 6 entry for why the plain PyPI wheel
+# is CPU-only and won't use the GPU at all.)
+transformers
+peft
+bitsandbytes
+accelerate
+datasets

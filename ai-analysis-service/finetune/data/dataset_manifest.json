@@ -1,0 +1,16 @@
+{
+  "totalMinedRaw": 4538,
+  "realSampled": 460,
+  "syntheticGenerated": 48,
+  "totalBeforeDedup": 508,
+  "removedAsContaminatedWithEvalSet": 0,
+  "removedAsExactDuplicates": 0,
+  "finalTotal": 508,
+  "realToSyntheticRatio": "460:48",
+  "splits": {
+    "train": 406,
+    "val": 50,
+    "test": 52
+  },
+  "seed": 20260921
+}

@@ -1,0 +1,130 @@
+{
+  "datasetSize": 5,
+  "catchRate": 1.0,
+  "falsePositiveRate": 0.0,
+  "judge": {
+    "meanHelpfulness": 4.5,
+    "meanAccuracy": 5.0,
+    "meanActionability": 4.4,
+    "nScored": 10
+  },
+  "perCase": [
+    {
+      "id": "two_sum",
+      "bugClass": "comparator_flip",
+      "mutationCorrectnessAffected": true,
+      "mutationCaught": true,
+      "mutationToolCalls": [],
+      "mutationJudgeScore": {
+        "helpfulness": 5,
+        "accuracy": 5,
+        "actionability": 5,
+        "rationale": "The review accurately pinpoints the inverted condition, offers a precise code change, and gives clear next steps."
+      },
+      "cleanFalsePositive": false,
+      "cleanToolCalls": [
+        "run_linter"
+      ],
+      "cleanJudgeScore": {
+        "helpfulness": 4,
+        "accuracy": 5,
+        "actionability": 1,
+        "rationale": "The review correctly confirms the implementation is optimal but provides no specific actionable advice."
+      }
+    },
+    {
+      "id": "valid_parentheses",
+      "bugClass": "missing_none_check",
+      "mutationCorrectnessAffected": true,
+      "mutationCaught": true,
+      "mutationToolCalls": [],
+      "mutationJudgeScore": {
+        "helpfulness": 5,
+        "accuracy": 5,
+        "actionability": 5,
+        "rationale": "The review accurately pinpoints the stack pop bug, explains its impact, and offers a clear, actionable code fix."
+      },
+      "cleanFalsePositive": false,
+      "cleanToolCalls": [
+        "run_linter"
+      ],
+      "cleanJudgeScore": {
+        "helpfulness": 4,
+        "accuracy": 5,
+        "actionability": 4,
+        "rationale": "The review accurately describes complexity, offers concrete readability improvements, and suggests a clear alternative approach, making it helpful and actionable."
+      }
+    },
+    {
+      "id": "max_subarray",
+      "bugClass": "off_by_one",
+      "mutationCorrectnessAffected": true,
+      "mutationCaught": true,
+      "mutationToolCalls": [],
+      "mutationJudgeScore": {
+        "helpfulness": 5,
+        "accuracy": 5,
+        "actionability": 5,
+        "rationale": "The review correctly identifies the double\u2011counting bug and missing empty\u2011list handling, and offers a precise fix with clear guidance."
+      },
+      "cleanFalsePositive": false,
+      "cleanToolCalls": [
+        "run_linter"
+      ],
+      "cleanJudgeScore": {
+        "helpfulness": 4,
+        "accuracy": 5,
+        "actionability": 4,
+        "rationale": "The review correctly identifies the algorithm\u2019s complexity, points out a real edge case (empty input), and gives concrete suggestions like validation, type hints, and a docstring."
+      }
+    },
+    {
+      "id": "is_palindrome",
+      "bugClass": "resource_leak",
+      "mutationCorrectnessAffected": false,
+      "mutationCaught": true,
+      "mutationToolCalls": [
+        "run_linter",
+        "run_security_scan"
+      ],
+      "mutationJudgeScore": {
+        "helpfulness": 4,
+        "accuracy": 5,
+        "actionability": 5,
+        "rationale": "The review accurately identifies the resource leak and unnecessary I/O, and gives concrete steps to remove the file operations and switch to a two\u2011pointer approach for better space usage."
+      },
+      "cleanFalsePositive": false,
+      "cleanToolCalls": [],
+      "cleanJudgeScore": {
+        "helpfulness": 4,
+        "accuracy": 5,
+        "actionability": 5,
+        "rationale": "The review accurately describes complexity, identifies a real optimization, and gives concrete next steps, though it could be slightly more specific about implementation details."
+      }
+    },
+    {
+      "id": "fibonacci_memo",
+      "bugClass": "mutable_default_argument",
+      "mutationCorrectnessAffected": false,
+      "mutationCaught": true,
+      "mutationToolCalls": [],
+      "mutationJudgeScore": {
+        "helpfulness": 5,
+        "accuracy": 5,
+        "actionability": 5,
+        "rationale": "The review accurately identifies the mutable default argument issue, recursion depth limits, and offers concrete alternatives like using None, iterative DP, or lru_cache."
+      },
+      "cleanFalsePositive": false,
+      "cleanToolCalls": [
+        "run_linter",
+        "run_security_scan"
+      ],
+      "cleanJudgeScore": {
+        "helpfulness": 5,
+        "accuracy": 5,
+        "actionability": 5,
+        "rationale": "The review accurately identifies the algorithm's complexities, offers clear, concrete improvements, and provides actionable code examples."
+      }
+    }
+  ]
+}

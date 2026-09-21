@@ -1,7 +1,9 @@
 import asyncio
+import json
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import httpx
 
@@ -9,6 +11,7 @@ from logging_config import get_logger
 from services import analysis_pipeline
 from services.circuit_breaker import CircuitOpenError, get_breaker
 from services.exceptions import AnalysisOutputInvalid
+from services.rate_limiter import get_analysis_rate_limiter
 from db.database import engine
 from db.init_db import create_tables
 from discovery.eureka_client import deregister_from_eureka, register_with_eureka
@@ -65,19 +68,11 @@ class AnalyzeRequest(BaseModel):
     submissionId: int
 
 
-@app.post("/ai/analyze")
-async def analyze_code(
-    request: AnalyzeRequest,
-    authorization: str = Header(None),
-    claims: dict = Depends(get_current_claims),
-):
-    cached = analysis_pipeline.get_cached(request.submissionId)
-    if cached:
-        log.info("analyze.cache_hit", submission_id=request.submissionId)
-        return {"analysis": cached["analysis"], "source": cached["source"]}
-
-    log.info("analyze.cache_miss", submission_id=request.submissionId)
-
+async def _fetch_submission_and_problem(submission_id: int, authorization: str) -> tuple[dict, dict]:
+    """Shared by POST /ai/analyze and POST /ai/analyze/stream - both need the
+    same ownership-scoped fetch of the submission (via the caller's own JWT,
+    not a service token - see submission-service's IDOR-scoped GET
+    /submissions/{id}) plus its problem."""
     headers = {"Authorization": authorization}
 
     submission_service_url = await get_service_url("SUBMISSION-SERVICE")
@@ -86,31 +81,52 @@ async def analyze_code(
     submission_breaker = get_breaker("submission-service")
     problem_breaker = get_breaker("problem-service")
 
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            submission_response = await submission_breaker.call(
-                client.get,
-                f"{submission_service_url}/submissions/{request.submissionId}",
-                headers=headers,
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        submission_response = await submission_breaker.call(
+            client.get,
+            f"{submission_service_url}/submissions/{submission_id}",
+            headers=headers,
+        )
+        if submission_response.status_code != 200:
+            raise HTTPException(
+                status_code=submission_response.status_code,
+                detail=submission_response.text
             )
-            if submission_response.status_code != 200:
-                raise HTTPException(
-                    status_code=submission_response.status_code,
-                    detail=submission_response.text
-                )
-            submission = submission_response.json()
+        submission = submission_response.json()
 
-            problem_response = await problem_breaker.call(
-                client.get,
-                f"{problem_service_url}/problems/{submission['problemId']}",
-                headers=headers,
+        problem_response = await problem_breaker.call(
+            client.get,
+            f"{problem_service_url}/problems/{submission['problemId']}",
+            headers=headers,
+        )
+        if problem_response.status_code != 200:
+            raise HTTPException(
+                status_code=problem_response.status_code,
+                detail=problem_response.text
             )
-            if problem_response.status_code != 200:
-                raise HTTPException(
-                    status_code=problem_response.status_code,
-                    detail=problem_response.text
-                )
-            problem = problem_response.json()
+        problem = problem_response.json()
+
+    return submission, problem
+
+
+@app.post("/ai/analyze")
+async def analyze_code(
+    request: AnalyzeRequest,
+    authorization: str = Header(None),
+    claims: dict = Depends(get_current_claims),
+):
+    if not get_analysis_rate_limiter().allow(claims.get("sub", "unknown")):
+        raise HTTPException(status_code=429, detail="Too many analysis requests - try again shortly.")
+
+    cached = analysis_pipeline.get_cached(request.submissionId)
+    if cached:
+        log.info("analyze.cache_hit", submission_id=request.submissionId)
+        return {"analysis": cached["analysis"], "source": cached["source"]}
+
+    log.info("analyze.cache_miss", submission_id=request.submissionId)
+
+    try:
+        submission, problem = await _fetch_submission_and_problem(request.submissionId, authorization)
     except CircuitOpenError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -118,6 +134,33 @@ async def analyze_code(
         return analysis_pipeline.run_analysis(request.submissionId, submission, problem)
     except AnalysisOutputInvalid as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/ai/analyze/stream")
+async def analyze_code_stream(
+    request: AnalyzeRequest,
+    authorization: str = Header(None),
+    claims: dict = Depends(get_current_claims),
+):
+    """SSE variant of POST /ai/analyze - each event is `data: <json>\\n\\n`,
+    one of {"type": "tool_call", ...} / {"type": "token", "content": ...} /
+    {"type": "done", "result": ...} / {"type": "error", "message": ...}.
+    Auth/ownership/circuit-breaker behavior is identical to POST /ai/analyze;
+    the only difference is the response is streamed as it's generated
+    instead of returned as one blocking JSON body."""
+    if not get_analysis_rate_limiter().allow(claims.get("sub", "unknown")):
+        raise HTTPException(status_code=429, detail="Too many analysis requests - try again shortly.")
+
+    try:
+        submission, problem = await _fetch_submission_and_problem(request.submissionId, authorization)
+    except CircuitOpenError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    async def event_generator():
+        for event in analysis_pipeline.run_analysis_stream(request.submissionId, submission, problem):
+            yield f"data: {json.dumps(event)}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 @app.get("/ai/analysis/{submission_id}")

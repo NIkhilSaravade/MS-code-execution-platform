@@ -1,0 +1,24 @@
+{
+  "baseModel": "Qwen/Qwen2.5-Coder-3B-Instruct",
+  "trainExamples": 406,
+  "valExamples": 50,
+  "epochs": 3,
+  "wallClockSeconds": 922.2,
+  "peakGpuMemoryGB": 8.18,
+  "finalTrainLoss": 0.8382093205171472,
+  "perEpochEvalLoss": [
+    {
+      "epoch": 1.0,
+      "eval_loss": 0.944367527961731
+    },
+    {
+      "epoch": 2.0,
+      "eval_loss": 0.9463128447532654
+    },
+    {
+      "epoch": 3.0,
+      "eval_loss": 0.9949769377708435
+    }
+  ],
+  "adapterPath": "C:\\Users\\Nikhil\\Desktop\\Projects\\MS-code-execution-platform\\ai-analysis-service\\finetune\\checkpoints\\qwen2.5-coder-3b-lora\\final_adapter"
+}

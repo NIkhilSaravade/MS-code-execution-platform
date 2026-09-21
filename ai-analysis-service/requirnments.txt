@@ -18,3 +18,10 @@ opentelemetry-api
 opentelemetry-sdk
 opentelemetry-instrumentation-fastapi
 opentelemetry-exporter-otlp-proto-http
+ruff
+bandit
+pytest
+pytest-asyncio
+rank_bm25
+pip-audit
+mcp

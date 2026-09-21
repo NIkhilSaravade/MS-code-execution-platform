@@ -122,3 +122,80 @@ def run_analysis(submission_id: int, submission: dict, problem: dict) -> dict:
         "analysisType": analysis_type,
         "source": source,
     }
+
+
+def run_analysis_stream(submission_id: int, submission: dict, problem: dict):
+    """Streaming counterpart to run_analysis - a generator of the same event
+    shape as AnalysisService.analyze_stream (see that docstring), except a
+    cache hit short-circuits to a single {"type": "done", ...} event instead
+    of re-running the LLM. Persists the same AnalysisCache/
+    SubmissionAnalysisMap rows as run_analysis once the stream finishes, so a
+    second submission with identical (problem_id, code, status) still gets a
+    cache hit afterward - callers should call get_cached first, same as
+    run_analysis's callers do, to avoid re-entering this generator on an
+    already-cached submission_id."""
+    problem_id = submission["problemId"]
+    user_id = submission["userId"]
+    cache_key = _cache_key(problem_id, submission["code"], submission["status"])
+
+    db = SessionLocal()
+    try:
+        cache_row = db.query(AnalysisCache).filter(
+            AnalysisCache.cache_key == cache_key
+        ).first()
+    finally:
+        db.close()
+
+    if cache_row is not None:
+        yield {
+            "type": "done",
+            "source": "CACHE",
+            "result": {
+                "analysisType": cache_row.analysis_type,
+                "parsedAnalysis": _parse_raw_response(cache_row.raw_response),
+                "rawResponse": cache_row.raw_response,
+                "toolCalls": [],
+            },
+        }
+        return
+
+    result = None
+    for event in AnalysisService.analyze_stream(submission_id, submission, problem):
+        if event["type"] == "done":
+            result = event["result"]
+        yield event
+
+    if result is None:
+        return  # error event already yielded, nothing to persist
+
+    db = SessionLocal()
+    try:
+        cache_row = db.query(AnalysisCache).filter(
+            AnalysisCache.cache_key == cache_key
+        ).first()
+        if cache_row is None:
+            cache_row = AnalysisCache(
+                cache_key=cache_key,
+                problem_id=problem_id,
+                analysis_type=result["analysisType"],
+                raw_response=result["rawResponse"],
+            )
+            db.add(cache_row)
+            db.flush()
+
+        mapping = db.query(SubmissionAnalysisMap).filter(
+            SubmissionAnalysisMap.submission_id == submission_id
+        ).first()
+        if mapping is None:
+            db.add(SubmissionAnalysisMap(
+                submission_id=submission_id,
+                cache_key=cache_key,
+                user_id=user_id,
+            ))
+        else:
+            mapping.cache_key = cache_key
+            mapping.user_id = user_id
+
+        db.commit()
+    finally:
+        db.close()
