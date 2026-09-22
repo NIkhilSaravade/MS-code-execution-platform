@@ -211,3 +211,18 @@ add adversarial cases that start from level 2/3 rather than only level 1, and co
 `hint_guardrails.py`'s heuristic needs a domain-aware exception for problems whose own subject
 matter includes code-like characters (brackets, braces) rather than tightening it further and
 risking more false positives on ordinary prose.
+
+## 10. Hints/Explain frontend: no live click-through
+
+Phase D (`docs/ai-agent-build-log.md`'s Phase D entry) wired `frontend/src/api/aiHints.ts` and two
+new `SolvePage.tsx` tabs (Hints, Explain) into the editor. Verified via `tsc --noEmit`, `oxlint`, a
+production build, and a dev-server boot check - the same set of checks item 6 already disclosed as
+short of a real click-through, for the same reason (no `docker-compose up -d` stack running in this
+environment). The request/response typing against the real backend DTOs is real; a human clicking
+"Get hint" in an actual browser against a live `ai-analysis-service`/`problem-service` is not,
+yet.
+
+**What closing this looks like:** same as item 6 - bring up the full stack and click through the
+Hints tab's escalation (levels 1 through 3, then the two-step solution reveal) and the Explain tab
+in both modes (a real PASSED submission, and a problem with no passed submission) in an actual
+browser session.

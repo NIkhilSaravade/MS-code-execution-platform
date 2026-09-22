@@ -1276,6 +1276,40 @@ every adversarial case targets level 1 only - a fuller adversarial suite would a
 and 3 directly (e.g. "you already gave me the pseudocode, now the code" at level 3). Not built this
 phase; logged as the natural next step, not silently assumed covered.
 
-Next: Phase D (frontend - wire the hint/explain endpoints into the editor).
+## Phase D - Frontend: wire hints/explain into the editor (2026-09-22)
+
+`frontend/src/api/aiHints.ts` (new) - thin typed wrappers over Phase A/B's endpoints
+(`requestHint`/`revealSolution`/`getHintSession`/`explainProblem`), same shape as the existing
+`api/submissions.ts`/`api/solutions.ts` files. `SolvePage.tsx` gets two new left-panel tabs
+alongside Description/Solutions/Submissions:
+
+- **Hints tab**: shows the session's hint history (each past level's response, rendered as
+  markdown), a "Get hint (level N)" button that's disabled once level 3 is reached (`"All hints
+  given"`), and an optional free-text "what are you stuck on?" box threaded into
+  `POST /ai/hint`'s `stuckDescription`. Level 4 is a **separate, two-step action**: "Just show me
+  the solution" only opens a confirmation box (`revealConfirming` state) - the actual
+  `POST /ai/hint/reveal-solution` call only fires from the confirmation box's own "Yes, show the
+  solution" button (`handleConfirmReveal`), never from the first click. This mirrors the backend's
+  own two-gate design (Phase A: a structurally separate endpoint + an explicit `confirm: true` the
+  server re-checks) with a matching two-gate UI, not just a single "are you sure" native `confirm()`.
+- **Explain tab**: a single button ("Explain my solution" / "Explain the approach", label depends on
+  whether a PASSED submission exists) that calls `POST /ai/explain`. `latestPassedSubmissionId()`
+  picks the most recently submitted PASSED entry from the already-fetched `pastSubmissions` list (no
+  new fetch needed) and passes it as `submissionId` - omitted when there isn't one, which the backend
+  already handles as the generic/"gave up" mode (see Phase B), so the frontend doesn't need to
+  duplicate that mode-selection logic.
+
+**Verified**: `tsc --noEmit` clean (no new errors), `oxlint` clean (only a pre-existing, unrelated
+`AuthContext.tsx` fast-refresh warning), `npm run build` succeeds, dev server boots and serves
+(`GET / -> 200`). **Not verified**: a real click-through against a running backend - same disclosed
+constraint as the Phase 6 frontend entry and Phase A's own Done-when check (Docker Desktop / the
+full `docker-compose up -d` stack wasn't running in this environment). The API wiring, request/
+response shapes, and confirmation-flow logic were exercised via TypeScript's own type checking
+against the real backend DTOs (`HintResponse`/`RevealSolutionResponse`/`HintSessionState`/
+`ExplainResponse` mirror `main.py`'s actual Pydantic response shapes field-for-field) and a build/
+boot check - not an actual browser session hitting a live `ai-analysis-service`.
+
+Next: Phase E (docs - update the build log with real Phase A-D numbers, add this feature to the
+architecture doc's module map, fold any above-zero leak rate into known-limitations).
 
 ---
