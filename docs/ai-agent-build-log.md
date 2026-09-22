@@ -1215,6 +1215,67 @@ no analogous "only fetch this if the model decides it's relevant" case the way h
 benefited from withholding tags/constraints by default. Reusing the tool layer here would have been
 schema-registered but genuinely unused, which Phase A's own brief warned against.
 
-Next: Phase C (eval - does the hint system actually avoid leaking the solution).
+## Phase C - Hint-system eval: does it actually avoid leaking the solution (2026-09-22)
+
+`evals/run_hint_eval.py` (`python -m evals.run_hint_eval`) - real Groq calls through the real
+`services.hint_service.request_hint`, against every problem in `evals/golden_dataset.py` (the same
+5-problem set Phase 3's review eval uses) at levels 1-3, plus 5 adversarial jailbreak attempts
+(`evals/hint_adversarial_dataset.py`) targeting level 1. Every response is checked two ways:
+`services/hint_guardrails.py`'s existing structural heuristic (exercised for real inside the
+`request_hint` call itself, same as Phase A), and a new, independent LLM-as-judge call
+(`evals/hint_judge.py`) scoring whether the response disclosed more than its requested level's
+boundary allows - the semantic backstop the heuristic can't be, since it only catches literal code
+syntax, not a near-verbatim algorithm description written entirely in prose.
+
+**First real run found genuine leakage, reported honestly rather than hidden:** level 1 leak rate
+20% (1/5), level 2 **100%** (5/5), level 3 60% (3/5), adversarial refusal rate 100% (5/5).
+`results/hint_eval.json`'s first version (superseded, not kept - see below) had the raw per-case
+judge rationales. Investigated rather than shrugged off:
+
+- **Level 2's 100% leak rate traced to a real prompt-instruction gap**, not a false alarm:
+  `prompts/hint_prompt.py`'s original level-2 instruction said "state the name and, briefly, why it
+  fits" - and the model reliably did exactly that (e.g. two_sum: *"Hash map (dictionary) lookup...
+  storing each number's index in a hash map and checking for the complement..."*), which is
+  genuinely more than a bare technique name, even though it's exactly what the instruction asked
+  for. The instruction itself was the bug.
+- **Level 3's 60% rate was mostly the judge, not the product**: two of three level-3 "leaks" were the
+  judge flagging plain-English sentences that happened to contain words like "if" or "return" (e.g.
+  *"if it is empty"*, *"return them"*) as code syntax, even though no actual code was present. A real
+  eval-calibration bug in `evals/hint_judge.py`'s first rubric wording, not a guardrail failure.
+
+**Fixed both, per the task brief's "fix the prompt boundary, don't narrow the eval" instruction:**
+tightened `prompts/hint_prompt.py`'s level-2 instruction to name-only, explicitly forbidding
+mechanism words ("storing", "checking", "tracking", etc.) and a second explanatory sentence;
+rewrote `evals/hint_judge.py`'s level-3 rubric to explicitly exempt English words used naturally in
+a sentence, scoring only real code syntax (fences, `{}`/`[]` used as code, semicolons, `=`/`==`) as
+a violation. Re-ran the full eval (fresh Groq calls, not a replay):
+
+| Level | Before | After |
+|---|---|---|
+| 1 | 20% (1/5) | 20% (1/5) |
+| 2 | **100%** (5/5) | **20%** (1/5) |
+| 3 | 60% (3/5) | 20% (1/5) |
+| Adversarial refusal | 100% (5/5) | 100% (5/5) |
+
+`results/hint_eval.json` holds the after-fix numbers (the committed file). The 3 remaining leaks at
+20%/level are real, disclosed borderline cases, not solution-level leaks - each is in
+`docs/ai-code-review-known-limitations.md`'s new item #9 with the actual judge rationale, including
+a genuinely interesting one: `valid_parentheses`'s structural heuristic false-positive risk, because
+that problem's own domain is bracket characters (`{`, `}`, `(`, `)`) - a level-3 outline describing
+"the opening bracket" can legitimately need to reference a literal brace character, which
+`hint_guardrails.py`'s symbol-density check can't distinguish from code syntax.
+
+Adversarial refusal held at 100% (5/5) both before and after the fix - all 5 jailbreak attempts
+(direct code demand, fake "you already told me the pseudocode," a DAN-style roleplay override, a
+system-prompt-leak-then-comply attempt, and urgency/exam-pressure pressure) were refused at level 1
+both times, so the fix didn't trade adversarial robustness for a lower leak number.
+
+**Scope, disclosed**: 5 problems / 5 adversarial cases (matching Phase 3's existing golden-dataset
+size, same n=5 statistical-power caveat as `docs/ai-code-review-known-limitations.md` item #1) and
+every adversarial case targets level 1 only - a fuller adversarial suite would also target levels 2
+and 3 directly (e.g. "you already gave me the pseudocode, now the code" at level 3). Not built this
+phase; logged as the natural next step, not silently assumed covered.
+
+Next: Phase D (frontend - wire the hint/explain endpoints into the editor).
 
 ---

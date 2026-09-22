@@ -27,11 +27,15 @@ _LEVEL_INSTRUCTIONS = {
         "2-4 sentences."
     ),
     2: (
-        "Name the TECHNIQUE OR PATTERN this problem calls for (e.g. 'this is "
-        "a sliding-window problem' or 'this calls for dynamic programming "
-        "over prefix sums'). State the name and, briefly, why it fits - but "
-        "do NOT explain the steps of applying it, and do NOT include any "
-        "code, pseudocode, or code-like syntax. 2-4 sentences."
+        "Name ONLY the TECHNIQUE OR PATTERN this problem calls for (e.g. "
+        "'this is a sliding-window problem' or 'this calls for dynamic "
+        "programming'). State the name in one short sentence. Do NOT explain "
+        "how or why it applies, do NOT describe any mechanism (no words like "
+        "'storing', 'tracking', 'checking', 'comparing' used to describe an "
+        "action the algorithm takes), do NOT list steps, and do NOT include "
+        "any code, pseudocode, or code-like syntax. If you're tempted to add "
+        "a second sentence explaining the technique, don't - that belongs to "
+        "level 3, not level 2."
     ),
     3: (
         "Give a STRUCTURAL OUTLINE: numbered, plain-English steps of the "
