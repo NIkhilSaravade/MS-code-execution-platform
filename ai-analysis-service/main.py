@@ -10,7 +10,7 @@ import httpx
 from logging_config import get_logger
 from services import analysis_pipeline, explanation_service, hint_service
 from services.circuit_breaker import CircuitOpenError, get_breaker
-from services.exceptions import AnalysisOutputInvalid
+from services.exceptions import AnalysisOutputInvalid, ExplanationGenerationFailed
 from services.rate_limiter import get_analysis_rate_limiter, get_explain_rate_limiter, get_hint_rate_limiter
 from db.database import engine
 from db.init_db import create_tables
@@ -261,11 +261,14 @@ async def explain_endpoint(
     except CircuitOpenError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    return explanation_service.explain(
-        problem_id=request.problemId,
-        problem_description=problem["description"],
-        code=code,
-    )
+    try:
+        return explanation_service.explain(
+            problem_id=request.problemId,
+            problem_description=problem["description"],
+            code=code,
+        )
+    except ExplanationGenerationFailed as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.post("/ai/analyze")

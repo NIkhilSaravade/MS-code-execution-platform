@@ -12,6 +12,7 @@ from sqlalchemy.orm import sessionmaker
 from db.models import Base, ExplanationCache
 from services import explanation_service
 from services.chunking import Chunk
+from services.exceptions import ExplanationGenerationFailed
 from services.llm_provider import LLMProvider
 from tests.fakes import completion_response
 
@@ -104,3 +105,47 @@ def test_explain_redacts_secrets_before_caching(sqlite_session, monkeypatch):
 
     assert second["source"] == "CACHE"
     assert calls["n"] == 1
+
+
+def test_explain_raises_and_does_not_cache_an_empty_response(sqlite_session, monkeypatch):
+    """A blank LLM completion must not be silently cached (and re-served
+    forever) as if it were a real explanation - it should raise instead,
+    same 'don't cache a bad result' rule the review pipeline's
+    AnalysisOutputInvalid already enforces."""
+    _mock_llm(monkeypatch, "   ")  # whitespace-only - strips to empty
+
+    with pytest.raises(ExplanationGenerationFailed):
+        explanation_service.explain(6, PROBLEM_DESC, "def f(): pass")
+
+    db = sqlite_session()
+    assert db.query(ExplanationCache).filter(ExplanationCache.problem_id == 6).first() is None
+    db.close()
+
+
+def test_explain_retries_after_an_empty_response_is_not_cached(sqlite_session, monkeypatch):
+    """A later, real call for the same (problem, mode, code) after an
+    earlier empty one must actually hit the LLM again, not find a bogus
+    cached-empty row."""
+    _mock_llm(monkeypatch, "")
+    with pytest.raises(ExplanationGenerationFailed):
+        explanation_service.explain(7, PROBLEM_DESC, "def f(): pass")
+
+    calls = _mock_llm(monkeypatch, "a real explanation this time")
+    result = explanation_service.explain(7, PROBLEM_DESC, "def f(): pass")
+
+    assert result["source"] == "AI"
+    assert result["explanation"] == "a real explanation this time"
+    assert calls["n"] == 1
+
+
+def test_explain_handles_empty_rag_context_without_crashing(sqlite_session, monkeypatch):
+    """hybrid_retrieve returning no chunks at all (e.g. an empty/cold
+    corpus) must still produce a normal explanation, not error out while
+    formatting the prompt."""
+    monkeypatch.setattr(explanation_service, "hybrid_retrieve", lambda query, top_k=3: [])
+    _mock_llm(monkeypatch, "an explanation with no grounding context")
+
+    result = explanation_service.explain(8, PROBLEM_DESC, "def f(): pass")
+
+    assert result["source"] == "AI"
+    assert result["explanation"] == "an explanation with no grounding context"

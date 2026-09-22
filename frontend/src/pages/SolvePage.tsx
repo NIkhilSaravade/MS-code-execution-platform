@@ -319,6 +319,15 @@ export default function SolvePage() {
   const [explainResult, setExplainResult] = useState<ExplainResponse | null>(null);
   const [explainLoading, setExplainLoading] = useState(false);
   const [explainError, setExplainError] = useState<string | null>(null);
+  // The most recent Run/Submit's id and whether it judged hidden cases too
+  // (a real Submit, not a Run) - lets the Result tab's "Explain this
+  // solution" banner (only shown for a PASSED Submit) hand handleExplain
+  // the exact submissionId it means, rather than relying on
+  // latestPassedSubmissionId()'s read of pastSubmissions, which a
+  // just-finished Submit may not have landed in yet (see handleExplain's
+  // docstring on the race this avoids).
+  const [lastSubmissionId, setLastSubmissionId] = useState<number | null>(null);
+  const [lastIncludeHidden, setLastIncludeHidden] = useState(false);
   // `RunResult | null` — this state starts as null (no result yet) and
   // becomes a real RunResult object once submission-service reports a
   // terminal verdict (see api/submissions.ts's pollSubmissionResult).
@@ -550,12 +559,20 @@ export default function SolvePage() {
     return passed.reduce((latest, s) => (s.submittedAt > latest.submittedAt ? s : latest)).id;
   }
 
-  async function handleExplain() {
+  // `submissionIdOverride` lets a caller (the Result tab's "Explain this
+  // solution" banner - see runCode below) hand over the submission that
+  // was JUST judged, instead of relying on latestPassedSubmissionId()'s
+  // read of `pastSubmissions` - that list is refreshed by a fire-and-forget
+  // refreshPastSubmissions() call in runCode, so reading it here right
+  // after a fresh Submit could race a click that happens before that
+  // refresh resolves. The Explain tab's own "Explain my solution" button
+  // (no override) still falls back to latestPassedSubmissionId() as before.
+  async function handleExplain(submissionIdOverride?: number) {
     if (!problemId || !accessToken) return;
     setExplainLoading(true);
     setExplainError(null);
     try {
-      const result = await explainProblem(accessToken, problemId, latestPassedSubmissionId());
+      const result = await explainProblem(accessToken, problemId, submissionIdOverride ?? latestPassedSubmissionId());
       setExplainResult(result);
     } catch (err) {
       setExplainError(err instanceof Error ? err.message : 'Failed to load the explanation.');
@@ -676,6 +693,11 @@ export default function SolvePage() {
     setAiToolCalls([]);
     setRunError(null);
     setSelectedSubmissionId(null); // this run is fresh code, not a re-loaded past submission
+    setLastSubmissionId(null);
+    // Explain reflects the PREVIOUS Submit's result, if any, until this
+    // one finishes - clearing it now would just flash the "no explanation
+    // yet" state for every Run, which is noise for the (much more common)
+    // "Run" case that isn't Explain-eligible anyway.
 
     try {
       const { submissionId } = await createSubmission(
@@ -699,6 +721,8 @@ export default function SolvePage() {
         estimatedTimeComplexity: detail.estimatedTimeComplexity,
         estimatedSpaceComplexity: detail.estimatedSpaceComplexity,
       });
+      setLastSubmissionId(submissionId);
+      setLastIncludeHidden(includeHidden);
       refreshPastSubmissions(); // pick up the submission that just finished
 
       // Independent, non-blocking stream of the AI review - see
@@ -1448,7 +1472,7 @@ export default function SolvePage() {
 
                   {!explainResult && (
                     <button
-                      onClick={handleExplain}
+                      onClick={() => void handleExplain()}
                       disabled={explainLoading}
                       style={{
                         fontFamily: 'inherit',
@@ -1718,6 +1742,53 @@ export default function SolvePage() {
                           </span>
                         )}
                       </div>
+
+                      {/* Only for a real, judged Submit (includeHidden) that
+                          PASSED - a Run that merely passed the visible cases
+                          isn't an accepted solution, and pastSubmissions
+                          (what latestPassedSubmissionId/the Explain tab read)
+                          never includes Runs anyway - see api/submissions.ts. */}
+                      {result.passed && lastIncludeHidden && lastSubmissionId !== null && (
+                        <div
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 10,
+                            border: '1px solid rgba(124,58,237,.3)',
+                            background: 'rgba(124,58,237,.08)',
+                            borderRadius: 10,
+                            padding: '10px 14px',
+                            marginBottom: 16,
+                          }}
+                        >
+                          <span style={{ fontSize: 13, color: '#c4b5fd' }}>
+                            Solved! Want to understand why it works?
+                          </span>
+                          <div style={{ flex: 1 }} />
+                          <button
+                            onClick={() => {
+                              setLeftTab('explain');
+                              void handleExplain(lastSubmissionId);
+                            }}
+                            disabled={explainLoading}
+                            style={{
+                              fontFamily: 'inherit',
+                              fontSize: 12,
+                              fontWeight: 700,
+                              padding: '6px 14px',
+                              borderRadius: 8,
+                              border: '1px solid rgba(167,139,250,.4)',
+                              background: 'rgba(124,58,237,.14)',
+                              color: '#c4b5fd',
+                              cursor: explainLoading ? 'default' : 'pointer',
+                              opacity: explainLoading ? 0.6 : 1,
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {explainLoading ? 'Loading…' : 'Explain this solution'}
+                          </button>
+                        </div>
+                      )}
 
                       {result.reason && (
                         <div

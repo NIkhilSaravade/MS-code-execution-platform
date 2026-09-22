@@ -19,6 +19,7 @@ from db.database import SessionLocal
 from db.models import ExplanationCache
 from logging_config import get_logger
 from prompts.explain_prompt import EXPLAIN_TEMPLATE, SYSTEM_PROMPT, code_section
+from services.exceptions import ExplanationGenerationFailed
 from services.hybrid_search import hybrid_retrieve
 from services.llm_provider import LLMProvider
 from services.redaction import redact_secrets
@@ -67,6 +68,19 @@ def explain(problem_id: int, problem_description: str, code: str | None) -> dict
         ]
         response = LLMProvider.complete_with_tools(messages, tools=None)
         explanation_text = (response.choices[0].message.content or "").strip()
+
+        if not explanation_text:
+            # Don't persist a blank result - a transient empty completion
+            # would otherwise be cached forever and served to every future
+            # caller for this exact (problem_id, mode, code) combination,
+            # since ExplanationCache is a permanent content-addressed
+            # cache with no TTL/invalidation (see get_cached's own model
+            # docstring in analysis_pipeline.py for the equivalent
+            # reasoning on the review pipeline's cache).
+            log.warning("explain.empty_response", problem_id=problem_id, mode=mode)
+            raise ExplanationGenerationFailed(
+                f"LLM returned an empty explanation for problem {problem_id} (mode={mode})"
+            )
 
         db.add(ExplanationCache(
             cache_key=cache_key,

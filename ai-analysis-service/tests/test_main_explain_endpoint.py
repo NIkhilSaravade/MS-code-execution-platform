@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 import main
 from security.jwt_verifier import get_current_claims
+from services.exceptions import ExplanationGenerationFailed
 from services.rate_limiter import RateLimiter
 
 
@@ -117,3 +118,25 @@ def test_explain_endpoint_rejects_mismatched_problem_id(monkeypatch):
         main.app.dependency_overrides.pop(get_current_claims, None)
 
     assert response.status_code == 400
+
+
+def test_explain_endpoint_returns_502_when_generation_fails(monkeypatch):
+    async def fake_fetch_problem(problem_id, authorization):
+        return {"description": "desc"}
+
+    def fake_explain(**kwargs):
+        raise ExplanationGenerationFailed("LLM returned an empty explanation")
+
+    monkeypatch.setattr(main, "_fetch_problem", fake_fetch_problem)
+    monkeypatch.setattr(main.explanation_service, "explain", fake_explain)
+
+    try:
+        client = _client_with_claims()
+        response = client.post(
+            "/ai/explain", json={"problemId": 1},
+            headers={"Authorization": "Bearer test-token"},
+        )
+    finally:
+        main.app.dependency_overrides.pop(get_current_claims, None)
+
+    assert response.status_code == 502

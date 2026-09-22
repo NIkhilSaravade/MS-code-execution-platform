@@ -1191,17 +1191,19 @@ non-committed, in-memory-SQLite-plus-stubbed-RAG shape as Phase A's):
   patience-sorting approach from scratch, correctly reasoning about *why* tracking the smallest
   tail-per-length is sufficient before presenting the algorithm - proving generic mode isn't degraded
   relative to submission mode just because there's no user code to anchor to.
-- **Qualitative comparison against `passed_prompt.py`'s existing review output**: by content/schema,
-  not a live side-by-side call - the walkthrough script's side-by-side step (calling
-  `AnalysisService._build_messages` + a raw completion on the same Maximum Subarray problem) failed
-  with `psycopg2.errors.FeatureNotSupported: extension "vector" is not available`, because
+- **Qualitative comparison against `passed_prompt.py`'s existing review output** - originally not a
+  live side-by-side call: the first walkthrough script's comparison step (calling
+  `AnalysisService._build_messages` + a raw completion) failed with
+  `psycopg2.errors.FeatureNotSupported: extension "vector" is not available`, because
   `RAGService.__init__` eagerly connects to real pgvector and this environment's local Postgres
-  doesn't have the `vector` extension installed - a real, disclosed gap in the comparison method, not
-  a silently-skipped check. The comparison instead rests on `passed_prompt.py`'s literal template
-  (`Return ONLY valid JSON... "timeComplexity": "...", "optimizationSuggestions": "..."`, one line
-  per field, no reasoning) versus `explain_prompt.py`'s actual captured output above (multi-paragraph
-  prose, analogies, explicit "why is this correct?" reasoning) - the difference in kind is evident
-  from the two real artifacts even without an executed side-by-side call.
+  doesn't have the `vector` extension installed. **Closed as a follow-up** (see the
+  "Phase B follow-ups" entry below): `scripts/compare_explain_vs_review.py`, a real, committed
+  script, now runs both prompts for real in one pass using the same infra substitution
+  `evals/run_eval.py` already established for this exact constraint (disable only hybrid search's
+  vector-search arm; BM25 still runs for real over the live corpus, no Postgres needed) - see
+  `results/explain_vs_review_comparison.json` for the actual captured output: review output 749
+  chars of terse JSON, explain output 3,643 chars of multi-section prose with analogies and explicit
+  "why?" reasoning at every step. Real numbers, not an inferred comparison from the two templates.
 
 **Tests**: `tests/test_explanation_service.py` (9 cases - submission vs. generic mode selection,
 content-addressed caching including that the two modes cache separately, cache-key derived from
@@ -1382,5 +1384,42 @@ tests/test_kafka_hint_reset.py tests/test_main_hint_endpoints.py -q`: **27 passe
 
 Scope held to exactly this gap, per the task brief - the other two disclosed cuts in item 8 (the
 guardrail's heuristic-vs-semantic limits, no full-stack click-through) are untouched.
+
+## Post-Phase-E follow-up - Phase B follow-ups (2026-09-22)
+
+User-requested, scoped to three concrete things (a clarifying question narrowed "Phase B
+follow-ups" down to these, since Phase B had no single named gap the way Phase A's hint-reset did):
+
+**1. Real explain-vs-review comparison** (closes the gap the Phase B entry above disclosed) - see
+that entry's updated bullet: `scripts/compare_explain_vs_review.py` + `results/
+explain_vs_review_comparison.json`, real Groq output on both sides, no changes made to the local
+Postgres install (deliberately - see the script's own docstring on why reusing `evals/run_eval.py`'s
+existing RAG-stub pattern was the safer, correct fix rather than installing `pgvector` onto a shared
+local dev database for a comparison that doesn't actually need retrieval to work).
+
+**2. Explain hardening**: added `services.exceptions.ExplanationGenerationFailed`, raised by
+`explanation_service.explain()` when the LLM returns an empty/whitespace-only response, mapped to a
+502 by `POST /ai/explain` (`main.py`) - mirrors `AnalysisOutputInvalid`'s existing "never cache a bad
+result" rule, applied to explain's cache (`ExplanationCache` has no JSON schema to validate against,
+unlike the review pipeline, so "non-empty" is the cheap check available). New tests confirm an empty
+response isn't cached (so a later real call still hits the LLM, not a poisoned cache entry) and that
+`hybrid_retrieve` returning no chunks at all doesn't crash prompt formatting.
+
+**3. Frontend: surface Explain from the Result panel.** `SolvePage.tsx`'s Result tab now shows a
+"Solved! ... Explain this solution" banner right after a real, judged, PASSED Submit (gated on
+`includeHidden` - a Run that merely clears the visible cases doesn't count, matching
+`pastSubmissions`' own Submit-only scope). Clicking it switches to the Explain tab and calls
+`handleExplain` with the just-finished submission's id passed directly, rather than relying on
+`latestPassedSubmissionId()`'s read of `pastSubmissions` - that list is refreshed by a
+fire-and-forget call in `runCode`, so reading it immediately after a fresh Submit could race a click
+that lands before the refresh resolves; `handleExplain` now takes an optional override id for exactly
+this caller.
+
+**Verified**: backend - `venv/Scripts/python.exe -m pytest tests/ -q -m "not real_mcp"`: 98 passed,
+3 deselected (up from 82 before this follow-up: 4 new `test_explanation_service.py` cases, 1 new
+`test_main_explain_endpoint.py` case), `ruff` clean. Frontend - `tsc --noEmit` clean, `oxlint` clean
+(only the pre-existing unrelated `AuthContext.tsx` warning), `npm run build` succeeds. No live
+click-through against a running backend this session - same disclosed constraint as items 6/10 in
+`docs/ai-code-review-known-limitations.md`.
 
 ---
