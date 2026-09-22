@@ -142,17 +142,42 @@ open: there's no user-facing way to ask for the slower, critic-verified path ins
 "verify this" button that calls `POST /ai/analyze` after the stream finishes) - today the tradeoff
 is fixed, not actually a choice the user gets to make.
 
-## 8. AI hint system: heuristic guardrail, no attempt reset, no full-stack click-through
+## 8. AI hint system: heuristic guardrail, no full-stack click-through (attempt reset: resolved)
 
 Phase A (`docs/ai-agent-build-log.md`'s Phase A entry) added `POST /ai/hint` /
-`POST /ai/hint/reveal-solution` / `GET /ai/hint/{problemId}/session`. Three disclosed cuts:
+`POST /ai/hint/reveal-solution` / `GET /ai/hint/{problemId}/session`. Three disclosed cuts, one now
+resolved:
 
-- **`HintSession` has no "start a new attempt" reset.** One row per (user_id, problem_id);
-  `current_level` only ever climbs (capped at 3) across however many separate solve sessions a user
-  returns for on the same problem, until they explicitly hit the level-4 solution reveal. A user who
-  solves a problem, comes back months later to re-practice it, and wants to start the hint ladder
-  over from level 1 currently can't - they'd immediately get a level-2/3 hint depending on where
-  they left off.
+- **RESOLVED - `HintSession` has no "start a new attempt" reset.** Was: one row per
+  (user_id, problem_id), `current_level` only ever climbed (capped at 3) across however many
+  separate solve sessions a user returned for on the same problem, with no way to start over.
+  **Fixed**: `HintSession` gained an `attempt_number` column (`db/models.py`); a reset (explicit or
+  automatic - see below) zeroes `current_level` and increments `attempt_number`, rather than
+  deleting/replacing the row, so hint history stays queryable per attempt. Two reset paths:
+    - **Explicit**: `POST /ai/hint/{problemId}/reset` (`main.py::hint_reset_endpoint` ->
+      `services/hint_service.py::reset_session`) - not behind the hint rate limiter, since it makes
+      no LLM call.
+    - **Automatic**: a fresh PASSED submission for a (user, problem) resets that problem's
+      `HintSession` via `services/hint_service.py::reset_session_for_new_attempt`, called from
+      `kafka/consumer.py`'s existing `analysis.trigger.v1` consumer path
+      (`_maybe_reset_hint_session`, best-effort - a failure there is logged and never blocks the
+      actual LLM-analysis processing that consumer exists for). Required restructuring
+      `_process_event` to always fetch the submission (previously skipped on an analysis-cache hit)
+      so the PASSED check always has a submission to look at.
+    - **Documented double-reset behavior**: `services/hint_service.py::_start_new_attempt` only
+      resets (and bumps `attempt_number`) when there's actually something to reset
+      (`current_level > 0`). Calling the explicit and automatic paths back-to-back, in either order,
+      increments `attempt_number` exactly once - whichever runs first does the real reset, the
+      second finds `current_level` already at 0 and is a no-op.
+    - **Real test output** (`venv/Scripts/python.exe -m pytest tests/test_hint_service.py
+      tests/test_kafka_hint_reset.py tests/test_main_hint_endpoints.py -q`): 27 passed. Covers the
+      reset endpoint zeroing `current_level`/bumping `attempt_number`, a post-reset hint request
+      correctly coming back at level 1 (not a continuation), a fresh (never-hinted) session's reset
+      being a documented no-op, the Kafka-triggered automatic reset on a real (mocked-transport)
+      `_process_event` call actually reaching an advanced session and resetting it, a FAILED
+      submission NOT triggering a reset, the reset failure path not breaking analysis processing,
+      and both explicit-then-automatic and automatic-then-explicit orderings landing on
+      `attempt_number` incremented exactly once, not twice.
 - **The guardrail (`services/hint_guardrails.py`) is a structural heuristic, not a semantic
   classifier.** It catches fenced code blocks and a high density of code-only symbols (`{`, `}`,
   `;`) - real signal, confirmed firing on a genuine leak during the Phase A walkthrough - but it
@@ -167,10 +192,9 @@ Phase A (`docs/ai-agent-build-log.md`'s Phase A entry) added `POST /ai/hint` /
   environment. The prompts, escalation logic, and guardrail were exercised for real; the HTTP
   routing, auth, and `problem-service` integration were not.
 
-**What closing this looks like:** add an explicit reset action (or a natural trigger, e.g. a fresh
-hint session per accepted submission) for the first item; build Phase C's eval harness for the
-second (**done** - see item 9); run a real click-through against `docker-compose up -d` plus the
-frontend's hint UI (Phase D) for the third.
+**What closing this looks like:** attempt reset - **done**, see above. Build Phase C's eval harness
+for the guardrail item (**done** - see item 9). Run a real click-through against `docker-compose up
+-d` plus the frontend's hint UI (Phase D) for the third.
 
 ## 9. Hint-system eval: 20% residual leak rate at each level, narrow adversarial coverage
 

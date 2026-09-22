@@ -110,3 +110,37 @@ def test_hint_session_endpoint_returns_state(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["currentLevel"] == 2
+
+
+def test_hint_reset_endpoint_calls_reset_session(monkeypatch):
+    def fake_reset_session(user_id, problem_id):
+        assert user_id == "user-1"
+        assert problem_id == 7
+        return {"reset": True, "currentLevel": 0, "attemptNumber": 2}
+
+    monkeypatch.setattr(main.hint_service, "reset_session", fake_reset_session)
+
+    try:
+        client = _client_with_claims()
+        response = client.post("/ai/hint/7/reset", headers={"Authorization": "Bearer test-token"})
+    finally:
+        main.app.dependency_overrides.pop(get_current_claims, None)
+
+    assert response.status_code == 200
+    assert response.json() == {"reset": True, "currentLevel": 0, "attemptNumber": 2}
+
+
+def test_hint_reset_endpoint_is_not_rate_limited(monkeypatch):
+    """No LLM call in this path, so it shouldn't share (or be blocked by)
+    the hint rate limiter's budget - a user who exhausts their hint
+    requests can still reset."""
+    monkeypatch.setattr(main, "get_hint_rate_limiter", lambda: (_ for _ in ()).throw(AssertionError("should not be called")))
+    monkeypatch.setattr(main.hint_service, "reset_session", lambda user_id, problem_id: {"reset": False, "currentLevel": 0, "attemptNumber": 1})
+
+    try:
+        client = _client_with_claims()
+        response = client.post("/ai/hint/7/reset", headers={"Authorization": "Bearer test-token"})
+    finally:
+        main.app.dependency_overrides.pop(get_current_claims, None)
+
+    assert response.status_code == 200

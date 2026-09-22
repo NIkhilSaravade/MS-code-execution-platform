@@ -1341,4 +1341,46 @@ No new scope was invented for this phase beyond what A-D's own "Done-when" check
 Phase E's job was making sure it's all findable in one pass, which the table above and the module-map
 entries do.
 
+## Post-Phase-E follow-up - hint session reset (2026-09-22)
+
+User-requested fix for `docs/ai-code-review-known-limitations.md` item 8's first disclosed gap:
+`HintSession` had no way to start a new attempt - `current_level` only ever climbed, so a user
+returning to a problem months later got dropped into whatever level they'd left off at instead of a
+fresh level-1 nudge.
+
+**Two reset paths, both landing on the same underlying semantics** (`services/hint_service.py`):
+- `POST /ai/hint/{problemId}/reset` - explicit, user-triggered (`main.py::hint_reset_endpoint`), not
+  rate-limited (no LLM call).
+- Automatic - a fresh PASSED submission for a (user, problem) resets that problem's `HintSession`,
+  wired into the existing `analysis.trigger.v1` Kafka consumer (`kafka/consumer.py`'s new
+  `_maybe_reset_hint_session`, best-effort - logs and swallows its own failures rather than ever
+  blocking the LLM-analysis processing that consumer exists for). Required a small restructuring:
+  `_process_event` previously skipped fetching the submission entirely on an analysis-cache hit;
+  now it always fetches it, so the PASSED check always has something to look at.
+
+`HintSession` gained an `attempt_number` column (not a new row per reset, per the task's own
+instruction) - a reset zeroes `current_level` and increments `attempt_number`, keeping hint history
+queryable per attempt. **Documented double-reset behavior**: `_start_new_attempt` only resets (and
+bumps `attempt_number`) when there's something to reset (`current_level > 0`) - an explicit reset
+right after an automatic one (or vice versa) is a no-op the second time, so `attempt_number`
+increments exactly once per real reset, never twice for one. Chose this over "always increment"
+because incrementing a counter for a reset that didn't actually change anything would make
+`attempt_number` a less reliable analytics signal, not a more precise one.
+
+**Real test output**: `tests/test_hint_service.py` (8 new cases: reset zeroes level/bumps attempt
+number, a post-reset hint request returns level 1 not a continuation, resetting an already-fresh
+session is a documented no-op, the automatic-reset function resets an advanced session, both
+call-order combinations of explicit+automatic land on exactly one increment, `get_session_state`
+reports `attemptNumber`) and a new `tests/test_kafka_hint_reset.py` (3 cases, driven through
+`kafka.consumer._process_event` itself, not just `hint_service` directly - a real PASSED submission
+resets an advanced session and the next hint request comes back at level 1; a FAILED submission
+does NOT reset; a broken reset function doesn't break analysis processing) plus 2 new
+`tests/test_main_hint_endpoints.py` cases (the reset endpoint wiring, and that it isn't behind the
+hint rate limiter). `venv/Scripts/python.exe -m pytest tests/test_hint_service.py
+tests/test_kafka_hint_reset.py tests/test_main_hint_endpoints.py -q`: **27 passed**. Full suite:
+94 passed, 3 deselected (live/real_mcp markers, unaffected).
+
+Scope held to exactly this gap, per the task brief - the other two disclosed cuts in item 8 (the
+guardrail's heuristic-vs-semantic limits, no full-stack click-through) are untouched.
+
 ---

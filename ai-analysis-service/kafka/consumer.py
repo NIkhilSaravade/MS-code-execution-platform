@@ -13,7 +13,7 @@ from db.database import SessionLocal
 from db.models import ProcessedEvent
 from discovery.service_resolver import get_service_url
 from logging_config import get_logger
-from services import analysis_pipeline
+from services import analysis_pipeline, hint_service
 from services.circuit_breaker import get_breaker
 from tracing import extract_trace_context, inject_trace_headers, tracer
 
@@ -127,10 +127,38 @@ async def _fetch_submission_and_problem(submission_id: int) -> tuple[dict, dict]
     return submission, problem
 
 
+def _maybe_reset_hint_session(submission: dict) -> None:
+    """A fresh PASSED submission means the user's next hint request for
+    this problem should start at level 1, not wherever a past solve
+    session's HintSession left off - see docs/ai-code-review-known-
+    limitations.md item 8 (now resolved) and
+    services/hint_service.py::reset_session_for_new_attempt. Best-effort:
+    a failure here must never affect the actual analysis pipeline below,
+    since a stale hint level is a UX gap, not a correctness bug - logged,
+    not raised."""
+    if submission.get("status") != "PASSED":
+        return
+    try:
+        hint_service.reset_session_for_new_attempt(submission["userId"], submission["problemId"])
+    except Exception as exc:
+        log.warning(
+            "analysis_trigger.hint_session_reset_failed",
+            user_id=submission.get("userId"),
+            problem_id=submission.get("problemId"),
+            error=str(exc),
+        )
+
+
 async def _process_event(submission_id: int) -> None:
-    """Raises on any failure - callers decide retry/DLQ routing."""
+    """Raises on any failure - callers decide retry/DLQ routing. Always
+    fetches the submission (even on an analysis-cache hit) so
+    _maybe_reset_hint_session can see its status - see that function's
+    docstring for why a PASSED submission needs this regardless of whether
+    its LLM analysis was already cached."""
     submission, problem = await _fetch_submission_and_problem(submission_id)
-    analysis_pipeline.run_analysis(submission_id, submission, problem)
+    if analysis_pipeline.get_cached(submission_id) is None:
+        analysis_pipeline.run_analysis(submission_id, submission, problem)
+    _maybe_reset_hint_session(submission)
 
 
 async def _forward(
@@ -180,8 +208,12 @@ async def _handle_message(
             return
 
         try:
-            if analysis_pipeline.get_cached(submission_id) is None:
-                await _process_event(submission_id)
+            # _process_event itself now checks the analysis cache
+            # internally (see its docstring) - always calling it, rather
+            # than gating the call on get_cached() here too, is what lets
+            # _maybe_reset_hint_session see every PASSED submission's
+            # status even when its LLM analysis is already cached.
+            await _process_event(submission_id)
             _mark_processed(event_key)
             log.info("analysis_trigger.analyzed", submission_id=submission_id)
         except Exception as exc:

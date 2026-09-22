@@ -210,6 +210,16 @@ async def hint_session_endpoint(problem_id: int, claims: dict = Depends(get_curr
     return hint_service.get_session_state(claims.get("sub"), problem_id)
 
 
+@app.post("/ai/hint/{problem_id}/reset")
+async def hint_reset_endpoint(problem_id: int, claims: dict = Depends(get_current_claims)):
+    """Explicit reset - lets a user deliberately restart the graduated-hint
+    ladder for a problem (see services/hint_service.py::reset_session),
+    independent of the automatic reset a fresh PASSED submission triggers
+    (kafka/consumer.py). No LLM call here, so unlike the other hint
+    endpoints this isn't behind get_hint_rate_limiter()."""
+    return hint_service.reset_session(claims.get("sub"), problem_id)
+
+
 class ExplainRequest(BaseModel):
     problemId: int
     submissionId: int | None = None

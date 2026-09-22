@@ -82,22 +82,27 @@ class SubmissionAnalysisMap(Base):
 
 
 class HintSession(Base):
-    """Graduated-hint progress for one (user, problem) in-progress attempt -
-    the AI hint system (POST /ai/hint). Deliberately separate from
-    AnalysisCache/SubmissionAnalysisMap: those are content-addressed and
-    post-submission-scoped, not a fit for tracking a mid-solve, per-user
-    escalation state. One row per (user_id, problem_id) - there is no
-    explicit "start a new attempt" reset in this phase; current_level just
-    keeps climbing (capped at 3) across however many separate solve
-    sessions a user returns for on the same problem, until they explicitly
-    request the level 4 solution reveal. Disclosed as a known scope cut in
-    docs/ai-code-review-known-limitations.md, not silently assumed."""
+    """Graduated-hint progress for one (user, problem) attempt - the AI hint
+    system (POST /ai/hint). Deliberately separate from AnalysisCache/
+    SubmissionAnalysisMap: those are content-addressed and post-submission-
+    scoped, not a fit for tracking a mid-solve, per-user escalation state.
+    One row per (user_id, problem_id) - a reset (not a new row) starts a
+    new attempt: current_level goes back to 0 and attempt_number
+    increments, either explicitly (POST /ai/hint/{problemId}/reset) or
+    automatically once this (user, problem) gets a fresh PASSED submission
+    (see kafka/consumer.py) - see services/hint_service.py's
+    _start_new_attempt for the exact reset semantics, including why calling
+    both back-to-back doesn't double-increment attempt_number.
+    attempt_number is kept (not just a level reset) so hint history stays
+    queryable per attempt for debugging/analytics, not silently overwritten
+    - see docs/ai-code-review-known-limitations.md item 8, now resolved."""
 
     __tablename__ = "hint_sessions"
 
     user_id = Column(String, primary_key=True)
     problem_id = Column(Integer, primary_key=True)
     current_level = Column(Integer, nullable=False, default=0)
+    attempt_number = Column(Integer, nullable=False, default=1)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 

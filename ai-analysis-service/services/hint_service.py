@@ -68,10 +68,67 @@ def _get_or_create_session(db, user_id: str, problem_id: int) -> HintSession:
         HintSession.user_id == user_id, HintSession.problem_id == problem_id
     ).first()
     if session is None:
-        session = HintSession(user_id=user_id, problem_id=problem_id, current_level=0)
+        session = HintSession(user_id=user_id, problem_id=problem_id, current_level=0, attempt_number=1)
         db.add(session)
         db.flush()
     return session
+
+
+def _start_new_attempt(session: HintSession) -> bool:
+    """Resets current_level to 0 for a fresh attempt, incrementing
+    attempt_number - but ONLY if there's actually something to reset
+    (current_level > 0). Calling this on an already-fresh session
+    (current_level == 0) is a no-op that does NOT bump attempt_number.
+
+    This is the documented behavior for "what happens when the explicit
+    reset (POST /ai/hint/{problemId}/reset) and the automatic reset (a
+    fresh PASSED submission - see kafka/consumer.py) land back-to-back":
+    whichever one runs first does the real reset (current_level 0,
+    attempt_number +1); the second one finds current_level already at 0
+    and leaves attempt_number alone, rather than incrementing again for a
+    reset that has no actual level to undo. Returns whether a reset
+    actually happened, so callers can tell "reset" from "already fresh."
+    """
+    if session.current_level == 0:
+        return False
+    session.current_level = 0
+    session.attempt_number += 1
+    return True
+
+
+def reset_session(user_id: str, problem_id: int) -> dict:
+    """Explicit reset - POST /ai/hint/{problemId}/reset (see main.py). Lets
+    a user deliberately restart the hint ladder for a problem, independent
+    of the automatic reset reset_session_for_new_attempt below triggers."""
+    db = SessionLocal()
+    try:
+        session = _get_or_create_session(db, user_id, problem_id)
+        reset = _start_new_attempt(session)
+        db.commit()
+        return {
+            "reset": reset,
+            "currentLevel": session.current_level,
+            "attemptNumber": session.attempt_number,
+        }
+    finally:
+        db.close()
+
+
+def reset_session_for_new_attempt(user_id: str, problem_id: int) -> None:
+    """Automatic reset - called from kafka/consumer.py when a submission
+    for this (user, problem) is judged PASSED. Treats the user's next hint
+    request for this problem as a new attempt rather than a continuation
+    of wherever a past solve session left off - see docs/ai-code-review-
+    known-limitations.md item 8. Same underlying reset as reset_session();
+    see _start_new_attempt's docstring for why calling both back-to-back
+    doesn't double-increment attempt_number."""
+    db = SessionLocal()
+    try:
+        session = _get_or_create_session(db, user_id, problem_id)
+        _start_new_attempt(session)
+        db.commit()
+    finally:
+        db.close()
 
 
 def get_session_state(user_id: str, problem_id: int) -> dict:
@@ -84,6 +141,7 @@ def get_session_state(user_id: str, problem_id: int) -> dict:
             HintSession.user_id == user_id, HintSession.problem_id == problem_id
         ).first()
         current_level = session.current_level if session else 0
+        attempt_number = session.attempt_number if session else 1
 
         history = db.query(HintEvent).filter(
             HintEvent.user_id == user_id, HintEvent.problem_id == problem_id
@@ -91,6 +149,7 @@ def get_session_state(user_id: str, problem_id: int) -> dict:
 
         return {
             "currentLevel": current_level,
+            "attemptNumber": attempt_number,
             "history": [
                 {
                     "level": h.level,

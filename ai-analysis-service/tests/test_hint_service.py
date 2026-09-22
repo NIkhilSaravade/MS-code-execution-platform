@@ -217,3 +217,106 @@ def test_request_hint_uses_metadata_tool_when_model_requests_it(sqlite_session, 
 
     result = hint_service.request_hint("user-9", 11, PROBLEM_DESC, "", "")
     assert result["usedProblemMetadata"] is True
+
+
+# ---- Session reset (docs/ai-code-review-known-limitations.md item 8) ----
+
+
+def test_reset_session_returns_to_level_zero_and_increments_attempt(sqlite_session, monkeypatch):
+    _mock_llm(monkeypatch, ["hint one", "hint two"])
+    hint_service.request_hint("user-10", 20, PROBLEM_DESC, "", "")
+    hint_service.request_hint("user-10", 20, PROBLEM_DESC, "", "")  # now at level 2
+
+    result = hint_service.reset_session("user-10", 20)
+
+    assert result == {"reset": True, "currentLevel": 0, "attemptNumber": 2}
+
+    db = sqlite_session()
+    session = db.query(HintSession).filter(
+        HintSession.user_id == "user-10", HintSession.problem_id == 20
+    ).first()
+    assert session.current_level == 0
+    assert session.attempt_number == 2
+    db.close()
+
+
+def test_reset_session_then_hint_request_returns_level_one_not_a_continuation(sqlite_session, monkeypatch):
+    _mock_llm(monkeypatch, ["hint one", "hint two", "hint three", "post-reset hint"])
+    hint_service.request_hint("user-11", 21, PROBLEM_DESC, "", "")
+    hint_service.request_hint("user-11", 21, PROBLEM_DESC, "", "")
+    hint_service.request_hint("user-11", 21, PROBLEM_DESC, "", "")  # now at level 3 (capped)
+
+    hint_service.reset_session("user-11", 21)
+    result = hint_service.request_hint("user-11", 21, PROBLEM_DESC, "", "")
+
+    assert result["level"] == 1
+    assert result["hint"] == "post-reset hint"
+
+
+def test_reset_session_on_a_fresh_session_is_a_noop(sqlite_session):
+    """No hints requested yet - current_level is already 0, so a reset has
+    nothing to undo. Must not bump attempt_number for a reset that didn't
+    actually reset anything (see _start_new_attempt's docstring)."""
+    result = hint_service.reset_session("user-12", 22)
+    assert result == {"reset": False, "currentLevel": 0, "attemptNumber": 1}
+
+
+def test_reset_session_for_new_attempt_resets_an_advanced_session(sqlite_session, monkeypatch):
+    """The automatic (Kafka-triggered) reset path uses the same underlying
+    semantics as the explicit endpoint."""
+    _mock_llm(monkeypatch, ["hint one", "hint two"])
+    hint_service.request_hint("user-13", 23, PROBLEM_DESC, "", "")
+    hint_service.request_hint("user-13", 23, PROBLEM_DESC, "", "")  # level 2
+
+    hint_service.reset_session_for_new_attempt("user-13", 23)
+
+    db = sqlite_session()
+    session = db.query(HintSession).filter(
+        HintSession.user_id == "user-13", HintSession.problem_id == 23
+    ).first()
+    assert session.current_level == 0
+    assert session.attempt_number == 2
+    db.close()
+
+
+def test_explicit_reset_right_after_automatic_reset_does_not_double_increment(sqlite_session, monkeypatch):
+    """Documented behavior for the two reset paths landing back-to-back:
+    whichever runs first does the real reset; the second, finding
+    current_level already at 0, is a no-op and leaves attempt_number
+    alone - so attempt_number ends up incremented exactly once, not twice,
+    regardless of call order."""
+    _mock_llm(monkeypatch, ["hint one"])
+    hint_service.request_hint("user-14", 24, PROBLEM_DESC, "", "")  # level 1
+
+    hint_service.reset_session_for_new_attempt("user-14", 24)  # automatic reset: attempt 1 -> 2
+    result = hint_service.reset_session("user-14", 24)  # explicit reset right after: no-op
+
+    assert result == {"reset": False, "currentLevel": 0, "attemptNumber": 2}
+
+
+def test_automatic_reset_right_before_explicit_reset_also_does_not_double_increment(sqlite_session, monkeypatch):
+    """Same guarantee, opposite call order."""
+    _mock_llm(monkeypatch, ["hint one"])
+    hint_service.request_hint("user-15", 25, PROBLEM_DESC, "", "")  # level 1
+
+    explicit_result = hint_service.reset_session("user-15", 25)  # explicit reset: attempt 1 -> 2
+    hint_service.reset_session_for_new_attempt("user-15", 25)  # automatic reset right after: no-op
+
+    assert explicit_result == {"reset": True, "currentLevel": 0, "attemptNumber": 2}
+
+    db = sqlite_session()
+    session = db.query(HintSession).filter(
+        HintSession.user_id == "user-15", HintSession.problem_id == 25
+    ).first()
+    assert session.attempt_number == 2
+    db.close()
+
+
+def test_get_session_state_reports_attempt_number(sqlite_session, monkeypatch):
+    _mock_llm(monkeypatch, ["hint one"])
+    hint_service.request_hint("user-16", 26, PROBLEM_DESC, "", "")
+    hint_service.reset_session("user-16", 26)
+
+    state = hint_service.get_session_state("user-16", 26)
+    assert state["attemptNumber"] == 2
+    assert state["currentLevel"] == 0
