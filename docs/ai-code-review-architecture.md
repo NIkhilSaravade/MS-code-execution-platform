@@ -95,6 +95,7 @@ Notes on what's real vs. simplified, so this diagram doesn't overclaim:
 | CI (test/lint/SAST/dependency-scan gates) | `.github/workflows/ai-analysis-service-ci.yml`, `ruff.toml` |
 | AI hint system (graduated hints + solution reveal) - Phase A, a separate pipeline from the review flow above, not a variant of it | `services/hint_service.py`, `prompts/hint_prompt.py`, `services/hint_guardrails.py`, `db.models.HintSession`/`HintEvent` |
 | AI post-solve walkthrough (pedagogical explanation) - Phase B, also separate from the review flow, no tool loop/critic pass | `services/explanation_service.py`, `prompts/explain_prompt.py`, `db.models.ExplanationCache` |
+| Hint-system eval (guardrail leak rate + adversarial refusal rate) - Phase C | `evals/run_hint_eval.py`, `evals/hint_judge.py`, `evals/hint_adversarial_dataset.py`, `results/hint_eval.json` |
 
 ## Reliability primitives (extended, not replaced, across all 5 phases)
 

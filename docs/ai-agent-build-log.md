@@ -1309,7 +1309,36 @@ against the real backend DTOs (`HintResponse`/`RevealSolutionResponse`/`HintSess
 `ExplainResponse` mirror `main.py`'s actual Pydantic response shapes field-for-field) and a build/
 boot check - not an actual browser session hitting a live `ai-analysis-service`.
 
-Next: Phase E (docs - update the build log with real Phase A-D numbers, add this feature to the
-architecture doc's module map, fold any above-zero leak rate into known-limitations).
+## Phase E - Docs (2026-09-22)
+
+Docs were updated incrementally after every phase above (A-D each got a real-numbers build-log entry
+and a `docs/ai-code-review-known-limitations.md` item the moment its gap was found, not batched up
+and written after the fact) - this phase is the consolidation pass the task brief asked for, not new
+work being retroactively documented for the first time.
+
+- **Architecture module map** (`docs/ai-code-review-architecture.md`): both new pipelines are listed
+  - the AI hint system (Phase A) and the post-solve walkthrough (Phase B) - each flagged as a
+  separate pipeline from the existing review flow the rest of that doc diagrams (no tool-calling
+  loop, no critic pass for either), not folded into the review-flow diagram itself, since they
+  genuinely don't share that request flow.
+- **Known limitations** (`docs/ai-code-review-known-limitations.md`): items 8-10 cover, honestly,
+  every real gap this feature shipped with - no hint-session reset (8), the guardrail's heuristic-vs-
+  semantic gap plus Phase C's actual post-fix leak rate, **20% at every level, not 0%** (9), and no
+  live click-through for the frontend wiring (10). Per the task brief's explicit instruction ("if
+  leakage happens sometimes, say so... that goes in known-limitations exactly like every other
+  honestly-disclosed gap") - it's there, with the real number, not rounded down or omitted.
+
+**Real numbers across all four phases, in one place:**
+
+| Phase | What was measured | Result |
+|---|---|---|
+| A | 5-problem walkthrough vs. live Groq | Clean escalation on all 5; 1 real guardrail trigger (caught + fixed a live leak); 1 adversarial jailbreak refused |
+| B | 4-problem walkthrough (3 submission-mode, 1 generic-mode) vs. live Groq | Consistent 4-section pedagogical structure, qualitatively distinct from the terse review schema |
+| C | 5-problem x 3-level eval + 5 adversarial cases, twice (before/after a real prompt+judge fix) | Leak rate 100%/60% (levels 2/3) -> 20%/20% after fixing a real prompt gap and a real judge-calibration bug; adversarial refusal 100% throughout |
+| D | `tsc`/`oxlint`/build/boot checks | All clean; no live click-through (disclosed, item 10) |
+
+No new scope was invented for this phase beyond what A-D's own "Done-when" checks already required -
+Phase E's job was making sure it's all findable in one pass, which the table above and the module-map
+entries do.
 
 ---
