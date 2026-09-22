@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, Float, ForeignKey
+from sqlalchemy import Column, Integer, String, Text, DateTime, Float, ForeignKey, Boolean
 from datetime import datetime
 from db.database import Base
 
@@ -79,3 +79,46 @@ class SubmissionAnalysisMap(Base):
     cache_key = Column(String(64), ForeignKey("analysis_cache.cache_key"), nullable=False, index=True)
     user_id = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class HintSession(Base):
+    """Graduated-hint progress for one (user, problem) in-progress attempt -
+    the AI hint system (POST /ai/hint). Deliberately separate from
+    AnalysisCache/SubmissionAnalysisMap: those are content-addressed and
+    post-submission-scoped, not a fit for tracking a mid-solve, per-user
+    escalation state. One row per (user_id, problem_id) - there is no
+    explicit "start a new attempt" reset in this phase; current_level just
+    keeps climbing (capped at 3) across however many separate solve
+    sessions a user returns for on the same problem, until they explicitly
+    request the level 4 solution reveal. Disclosed as a known scope cut in
+    docs/ai-code-review-known-limitations.md, not silently assumed."""
+
+    __tablename__ = "hint_sessions"
+
+    user_id = Column(String, primary_key=True)
+    problem_id = Column(Integer, primary_key=True)
+    current_level = Column(Integer, nullable=False, default=0)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class HintEvent(Base):
+    """Append-only audit log of every hint request, including level-4
+    solution reveals (is_solution_reveal=True) - logged distinctly per the
+    product requirement that a deliberate "just show me the solution" ask
+    is tracked separately from the system failing to hint well at levels
+    1-3. guardrail_flagged records whether services/hint_guardrails.py's
+    code-leak heuristic fired on the first draft (and a stricter
+    regeneration was needed) - this is the raw signal Phase C's eval
+    aggregates into a leak rate, not just a debugging log line."""
+
+    __tablename__ = "hint_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String, index=True, nullable=False)
+    problem_id = Column(Integer, index=True, nullable=False)
+    level = Column(Integer, nullable=False)
+    is_solution_reveal = Column(Boolean, nullable=False, default=False)
+    guardrail_flagged = Column(Boolean, nullable=False, default=False)
+    stuck_description = Column(Text, nullable=True)
+    response_text = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)

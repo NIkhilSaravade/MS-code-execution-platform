@@ -40,3 +40,15 @@ _analysis_rate_limiter = RateLimiter(max_requests=10, window_seconds=60.0)
 
 def get_analysis_rate_limiter() -> RateLimiter:
     return _analysis_rate_limiter
+
+
+# Separate budget from analysis - a stuck user clicking "hint" repeatedly
+# while iterating on code is a much tighter loop than re-submitting for
+# review, so this allows more requests per window, but it's still its own
+# limiter (not a shared bucket with analysis) so a hint-happy session can't
+# starve that other endpoint's budget or vice versa.
+_hint_rate_limiter = RateLimiter(max_requests=20, window_seconds=60.0)
+
+
+def get_hint_rate_limiter() -> RateLimiter:
+    return _hint_rate_limiter

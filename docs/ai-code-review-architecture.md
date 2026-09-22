@@ -93,6 +93,7 @@ Notes on what's real vs. simplified, so this diagram doesn't overclaim:
 | Pipeline orchestration + caching | `services/analysis_pipeline.py`, `services/analysis_service.py` |
 | Eval harness (golden dataset, mutation testing, LLM-as-judge) | `evals/`, `scripts/eval_retrieval.py`, `results/` |
 | CI (test/lint/SAST/dependency-scan gates) | `.github/workflows/ai-analysis-service-ci.yml`, `ruff.toml` |
+| AI hint system (graduated hints + solution reveal) - Phase A, a separate pipeline from the review flow above, not a variant of it | `services/hint_service.py`, `prompts/hint_prompt.py`, `services/hint_guardrails.py`, `db.models.HintSession`/`HintEvent` |
 
 ## Reliability primitives (extended, not replaced, across all 5 phases)
 

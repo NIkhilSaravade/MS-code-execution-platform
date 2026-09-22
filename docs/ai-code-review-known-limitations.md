@@ -141,3 +141,33 @@ badge on every streamed review (see item 6) instead of pretending the critic ran
 open: there's no user-facing way to ask for the slower, critic-verified path instead (e.g. a
 "verify this" button that calls `POST /ai/analyze` after the stream finishes) - today the tradeoff
 is fixed, not actually a choice the user gets to make.
+
+## 8. AI hint system: heuristic guardrail, no attempt reset, no full-stack click-through
+
+Phase A (`docs/ai-agent-build-log.md`'s Phase A entry) added `POST /ai/hint` /
+`POST /ai/hint/reveal-solution` / `GET /ai/hint/{problemId}/session`. Three disclosed cuts:
+
+- **`HintSession` has no "start a new attempt" reset.** One row per (user_id, problem_id);
+  `current_level` only ever climbs (capped at 3) across however many separate solve sessions a user
+  returns for on the same problem, until they explicitly hit the level-4 solution reveal. A user who
+  solves a problem, comes back months later to re-practice it, and wants to start the hint ladder
+  over from level 1 currently can't - they'd immediately get a level-2/3 hint depending on where
+  they left off.
+- **The guardrail (`services/hint_guardrails.py`) is a structural heuristic, not a semantic
+  classifier.** It catches fenced code blocks and a high density of code-only symbols (`{`, `}`,
+  `;`) - real signal, confirmed firing on a genuine leak during the Phase A walkthrough - but it
+  cannot catch a near-verbatim algorithm description phrased entirely in prose with no code syntax
+  at all (e.g. a level-2 hint that spells out every step of an algorithm in full sentences, never
+  using a single brace or semicolon). Phase C's LLM-as-judge eval is the intended semantic backstop
+  for exactly this gap - until that lands, a prose-only leak would currently ship undetected.
+- **Done-when verification ran `services/hint_service.py` directly against real Groq (via a scratch
+  script, not committed), not through the actual HTTP path** (`api-gateway` -> `ai-analysis-service`
+  -> `problem-service`) **against a running stack.** Same constraint as item 6's frontend
+  verification gap - Docker Desktop / the full docker-compose stack wasn't running in this
+  environment. The prompts, escalation logic, and guardrail were exercised for real; the HTTP
+  routing, auth, and `problem-service` integration were not.
+
+**What closing this looks like:** add an explicit reset action (or a natural trigger, e.g. a fresh
+hint session per accepted submission) for the first item; build Phase C's eval harness for the
+second; run a real click-through against `docker-compose up -d` plus the frontend's hint UI (Phase
+D) for the third.

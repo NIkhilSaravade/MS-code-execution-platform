@@ -8,10 +8,10 @@ from pydantic import BaseModel
 import httpx
 
 from logging_config import get_logger
-from services import analysis_pipeline
+from services import analysis_pipeline, hint_service
 from services.circuit_breaker import CircuitOpenError, get_breaker
 from services.exceptions import AnalysisOutputInvalid
-from services.rate_limiter import get_analysis_rate_limiter
+from services.rate_limiter import get_analysis_rate_limiter, get_hint_rate_limiter
 from db.database import engine
 from db.init_db import create_tables
 from discovery.eureka_client import deregister_from_eureka, register_with_eureka
@@ -107,6 +107,107 @@ async def _fetch_submission_and_problem(submission_id: int, authorization: str) 
         problem = problem_response.json()
 
     return submission, problem
+
+
+async def _fetch_problem(problem_id: int, authorization: str) -> dict:
+    """Used by the hint endpoints - unlike _fetch_submission_and_problem,
+    there's no submission to look up mid-solve, only the problem itself,
+    fetched with the caller's own JWT (the same general
+    hasAnyRole("USER","ADMIN","SERVICE") GET /problems/{id} route
+    submission-service's HarnessApplier also uses, just with the end
+    user's token instead of a service token - see CLAUDE.md's warning
+    about not narrowing that route)."""
+    headers = {"Authorization": authorization}
+    problem_service_url = await get_service_url("PROBLEM-SERVICE")
+    problem_breaker = get_breaker("problem-service")
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await problem_breaker.call(
+            client.get,
+            f"{problem_service_url}/problems/{problem_id}",
+            headers=headers,
+        )
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+    return response.json()
+
+
+class HintRequest(BaseModel):
+    problemId: int
+    code: str = ""
+    stuckDescription: str = ""
+
+
+class RevealSolutionRequest(BaseModel):
+    problemId: int
+    code: str = ""
+    stuckDescription: str = ""
+    confirm: bool = False
+
+
+@app.post("/ai/hint")
+async def hint_endpoint(
+    request: HintRequest,
+    authorization: str = Header(None),
+    claims: dict = Depends(get_current_claims),
+):
+    """Graduated, no-spoiler hint - escalates the caller's session by
+    exactly one level (server-decided, see services/hint_service.py), up
+    to level 3. The full solution (level 4) is never reachable from this
+    endpoint - see POST /ai/hint/reveal-solution."""
+    if not get_hint_rate_limiter().allow(claims.get("sub", "unknown")):
+        raise HTTPException(status_code=429, detail="Too many hint requests - try again shortly.")
+
+    try:
+        problem = await _fetch_problem(request.problemId, authorization)
+    except CircuitOpenError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    return hint_service.request_hint(
+        user_id=claims.get("sub"),
+        problem_id=request.problemId,
+        problem_description=problem["description"],
+        code=request.code,
+        stuck_description=request.stuckDescription,
+    )
+
+
+@app.post("/ai/hint/reveal-solution")
+async def reveal_solution_endpoint(
+    request: RevealSolutionRequest,
+    authorization: str = Header(None),
+    claims: dict = Depends(get_current_claims),
+):
+    """Level 4 - a distinct endpoint, not a natural escalation of POST
+    /ai/hint, precisely so a user can't reach the full solution through
+    repeated hint clicks. Requires confirm=true; the frontend is expected
+    to surface this as its own separate, deliberate action (see
+    docs/ai-agent-build-log.md's Phase A/D entries)."""
+    if not request.confirm:
+        raise HTTPException(status_code=400, detail="Set confirm=true to explicitly request the full solution.")
+
+    if not get_hint_rate_limiter().allow(claims.get("sub", "unknown")):
+        raise HTTPException(status_code=429, detail="Too many hint requests - try again shortly.")
+
+    try:
+        problem = await _fetch_problem(request.problemId, authorization)
+    except CircuitOpenError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    return hint_service.reveal_solution(
+        user_id=claims.get("sub"),
+        problem_id=request.problemId,
+        problem_description=problem["description"],
+        code=request.code,
+        stuck_description=request.stuckDescription,
+    )
+
+
+@app.get("/ai/hint/{problem_id}/session")
+async def hint_session_endpoint(problem_id: int, claims: dict = Depends(get_current_claims)):
+    """Lets the frontend restore hint state (current level + history) on
+    load, e.g. after a page refresh mid-solve."""
+    return hint_service.get_session_state(claims.get("sub"), problem_id)
 
 
 @app.post("/ai/analyze")
