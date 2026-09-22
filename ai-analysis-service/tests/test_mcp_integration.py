@@ -15,10 +15,20 @@ from tests.fakes import completion_response, tool_call
 
 
 @pytest.mark.real_mcp
-def test_list_tools_discovers_all_four_tools_via_real_protocol_roundtrip():
+def test_list_tools_discovers_all_five_tools_via_real_protocol_roundtrip():
     schemas = mcp_client.list_tools_sync()
     names = {s["function"]["name"] for s in schemas}
-    assert names == {"run_linter", "run_security_scan", "fetch_similar_past_reviews", "get_style_guide_section"}
+    # get_problem_metadata was added in Phase A (services/hint_service.py)
+    # for the hint agent's on-demand problem-metadata lookup - it's
+    # registered on the same MCP server as the original four review tools
+    # (mcp_server/server.py), so it shows up here too.
+    assert names == {
+        "run_linter",
+        "run_security_scan",
+        "fetch_similar_past_reviews",
+        "get_style_guide_section",
+        "get_problem_metadata",
+    }
     # Each schema's parameters came from the server's own auto-generated
     # JSON schema (see mcp_server/server.py), not a copy sitting next to it.
     run_linter_schema = next(s for s in schemas if s["function"]["name"] == "run_linter")

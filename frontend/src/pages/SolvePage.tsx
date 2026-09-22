@@ -27,6 +27,14 @@ import {
   type ToolCall,
 } from '../api/submissions';
 import { getSolutionForProblem, getNote, saveNote, type Solution as SolutionData } from '../api/solutions';
+import {
+  requestHint,
+  revealSolution,
+  getHintSession,
+  explainProblem,
+  type HintSessionState,
+  type ExplainResponse,
+} from '../api/aiHints';
 // This is the busiest page in the app: it reads the URL, fetches the real
 // problem from problem-service, manages several pieces of state (selected
 // language, the code being typed, which test case is shown, run status),
@@ -266,7 +274,7 @@ export default function SolvePage() {
   // Which top-level panel is showing on the left, alongside Description and
   // Solutions - mirrors LeetCode's own layout, where Submissions lives next
   // to the problem statement rather than buried in the bottom console.
-  const [leftTab, setLeftTab] = useState<'description' | 'solutions' | 'submissions'>('description');
+  const [leftTab, setLeftTab] = useState<'description' | 'solutions' | 'submissions' | 'hints' | 'explain'>('description');
   // This user's past Submits (not Runs - see getSubmissionsForProblem) for
   // this problem - fetched once on mount, re-fetched whenever a new Submit
   // reaches a terminal status so the list stays current without a manual
@@ -289,6 +297,37 @@ export default function SolvePage() {
   const [noteSavedContent, setNoteSavedContent] = useState('');
   const [noteLoaded, setNoteLoaded] = useState(false);
   const [noteSaving, setNoteSaving] = useState(false);
+
+  // ---- AI hint system (Phase A/D) state ----
+  // null distinguishes "not fetched yet" from "fetched, level 0/no history"
+  // - same disambiguation pattern `solution`/`solutionLoaded` above use.
+  const [hintSession, setHintSession] = useState<HintSessionState | null>(null);
+  const [hintSessionLoaded, setHintSessionLoaded] = useState(false);
+  const [hintStuckDescription, setHintStuckDescription] = useState('');
+  const [hintLoading, setHintLoading] = useState(false);
+  const [hintError, setHintError] = useState<string | null>(null);
+  // Level 4 is a structurally separate flow, not the next click of "Get a
+  // hint": revealConfirming gates a distinct confirmation UI (see
+  // handleRevealClick/handleConfirmReveal below) so a user can never reach
+  // the full solution with one accidental click.
+  const [revealConfirming, setRevealConfirming] = useState(false);
+  const [revealLoading, setRevealLoading] = useState(false);
+  const [revealError, setRevealError] = useState<string | null>(null);
+  const [revealedSolution, setRevealedSolution] = useState<string | null>(null);
+
+  // ---- AI post-solve explain (Phase B/D) state ----
+  const [explainResult, setExplainResult] = useState<ExplainResponse | null>(null);
+  const [explainLoading, setExplainLoading] = useState(false);
+  const [explainError, setExplainError] = useState<string | null>(null);
+  // The most recent Run/Submit's id and whether it judged hidden cases too
+  // (a real Submit, not a Run) - lets the Result tab's "Explain this
+  // solution" banner (only shown for a PASSED Submit) hand handleExplain
+  // the exact submissionId it means, rather than relying on
+  // latestPassedSubmissionId()'s read of pastSubmissions, which a
+  // just-finished Submit may not have landed in yet (see handleExplain's
+  // docstring on the race this avoids).
+  const [lastSubmissionId, setLastSubmissionId] = useState<number | null>(null);
+  const [lastIncludeHidden, setLastIncludeHidden] = useState(false);
   // `RunResult | null` — this state starts as null (no result yet) and
   // becomes a real RunResult object once submission-service reports a
   // terminal verdict (see api/submissions.ts's pollSubmissionResult).
@@ -456,6 +495,92 @@ export default function SolvePage() {
     }
   }
 
+  // Fetches (or re-fetches) this problem's hint session state - called when
+  // the Hints tab is first opened and again after every hint/reveal so the
+  // level/history shown always reflects what's actually persisted, not just
+  // this call's own return value.
+  async function loadHintSession() {
+    if (!problemId || !accessToken) return;
+    try {
+      const session = await getHintSession(accessToken, problemId);
+      setHintSession(session);
+    } finally {
+      setHintSessionLoaded(true);
+    }
+  }
+
+  async function handleGetHint() {
+    if (!problemId || !accessToken) return;
+    setHintLoading(true);
+    setHintError(null);
+    try {
+      await requestHint(accessToken, problemId, code, hintStuckDescription);
+      setHintStuckDescription('');
+      await loadHintSession(); // re-fetch rather than hand-append, so the persisted level is the source of truth
+    } catch (err) {
+      setHintError(err instanceof Error ? err.message : 'Failed to get a hint.');
+    } finally {
+      setHintLoading(false);
+    }
+  }
+
+  // Step 1 of 2 - opens the confirmation UI, does NOT call the backend yet.
+  function handleRevealClick() {
+    setRevealError(null);
+    setRevealConfirming(true);
+  }
+
+  // Step 2 of 2 - the actual, deliberate confirmation. Only this function
+  // calls POST /ai/hint/reveal-solution.
+  async function handleConfirmReveal() {
+    if (!problemId || !accessToken) return;
+    setRevealLoading(true);
+    setRevealError(null);
+    try {
+      const result = await revealSolution(accessToken, problemId, code, hintStuckDescription);
+      setRevealedSolution(result.solution);
+      setRevealConfirming(false);
+      await loadHintSession();
+    } catch (err) {
+      setRevealError(err instanceof Error ? err.message : 'Failed to reveal the solution.');
+    } finally {
+      setRevealLoading(false);
+    }
+  }
+
+  // Most recently submitted PASSED submission for this problem, if any -
+  // used as the default submissionId for POST /ai/explain's "submission
+  // mode" (walk through the user's own working code). Falls back to
+  // undefined (explain's "generic" mode) when there isn't one, e.g. the
+  // user gave up and wants to see the intended approach instead.
+  function latestPassedSubmissionId(): number | undefined {
+    const passed = pastSubmissions.filter((s) => s.status === 'PASSED');
+    if (passed.length === 0) return undefined;
+    return passed.reduce((latest, s) => (s.submittedAt > latest.submittedAt ? s : latest)).id;
+  }
+
+  // `submissionIdOverride` lets a caller (the Result tab's "Explain this
+  // solution" banner - see runCode below) hand over the submission that
+  // was JUST judged, instead of relying on latestPassedSubmissionId()'s
+  // read of `pastSubmissions` - that list is refreshed by a fire-and-forget
+  // refreshPastSubmissions() call in runCode, so reading it here right
+  // after a fresh Submit could race a click that happens before that
+  // refresh resolves. The Explain tab's own "Explain my solution" button
+  // (no override) still falls back to latestPassedSubmissionId() as before.
+  async function handleExplain(submissionIdOverride?: number) {
+    if (!problemId || !accessToken) return;
+    setExplainLoading(true);
+    setExplainError(null);
+    try {
+      const result = await explainProblem(accessToken, problemId, submissionIdOverride ?? latestPassedSubmissionId());
+      setExplainResult(result);
+    } catch (err) {
+      setExplainError(err instanceof Error ? err.message : 'Failed to load the explanation.');
+    } finally {
+      setExplainLoading(false);
+    }
+  }
+
   // Loads a past submission's code straight into the real editor (same one
   // used for writing new code) instead of showing a separate read-only
   // copy, and shows its already-judged verdict in the console's Result tab
@@ -568,6 +693,11 @@ export default function SolvePage() {
     setAiToolCalls([]);
     setRunError(null);
     setSelectedSubmissionId(null); // this run is fresh code, not a re-loaded past submission
+    setLastSubmissionId(null);
+    // Explain reflects the PREVIOUS Submit's result, if any, until this
+    // one finishes - clearing it now would just flash the "no explanation
+    // yet" state for every Run, which is noise for the (much more common)
+    // "Run" case that isn't Explain-eligible anyway.
 
     try {
       const { submissionId } = await createSubmission(
@@ -591,6 +721,8 @@ export default function SolvePage() {
         estimatedTimeComplexity: detail.estimatedTimeComplexity,
         estimatedSpaceComplexity: detail.estimatedSpaceComplexity,
       });
+      setLastSubmissionId(submissionId);
+      setLastIncludeHidden(includeHidden);
       refreshPastSubmissions(); // pick up the submission that just finished
 
       // Independent, non-blocking stream of the AI review - see
@@ -795,11 +927,18 @@ export default function SolvePage() {
               { id: 'description', label: 'Description' },
               { id: 'solutions', label: 'Solutions' },
               { id: 'submissions', label: `Submissions${pastSubmissions.length > 0 ? ` (${pastSubmissions.length})` : ''}` },
+              { id: 'hints', label: 'Hints' },
+              { id: 'explain', label: 'Explain' },
             ] as const
           ).map((t) => (
             <button
               key={t.id}
-              onClick={() => setLeftTab(t.id)}
+              onClick={() => {
+                setLeftTab(t.id);
+                if (t.id === 'hints' && !hintSessionLoaded) {
+                  void loadHintSession();
+                }
+              }}
               className="op-tab"
               style={{
                 fontFamily: 'inherit',
@@ -1124,6 +1263,249 @@ export default function SolvePage() {
               )}
             </div>
               )}
+
+              {leftTab === 'hints' && (
+                <div style={{ fontSize: 13.5 }}>
+                  {!hintSessionLoaded ? (
+                    <span style={{ color: '#6b7392' }}>Loading…</span>
+                  ) : (
+                    <>
+                      {(hintSession?.history.length ?? 0) === 0 && (
+                        <span style={{ color: '#6b7392' }}>
+                          Stuck? Get a graduated hint below - it starts with a conceptual nudge and only
+                          escalates one level at a time, never straight to the answer.
+                        </span>
+                      )}
+
+                      {/* Past hints for this problem, in the order they were
+                          given - each level's response stays visible so the
+                          user can scroll back through the escalation instead
+                          of only ever seeing the latest one. */}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 16 }}>
+                        {hintSession?.history.map((h, i) => (
+                          <div
+                            key={i}
+                            style={{
+                              border: '1px solid rgba(255,255,255,.08)',
+                              borderRadius: 10,
+                              padding: '10px 14px',
+                              background: h.isSolutionReveal ? 'rgba(248,113,113,.06)' : 'none',
+                            }}
+                          >
+                            <div style={{ fontSize: 11.5, fontWeight: 700, color: h.isSolutionReveal ? '#f87171' : '#a78bfa', marginBottom: 6 }}>
+                              {h.isSolutionReveal ? 'FULL SOLUTION' : `LEVEL ${h.level} HINT`}
+                            </div>
+                            <div className="op-solution-md">
+                              <ReactMarkdown remarkPlugins={[remarkGfm]}>{h.response}</ReactMarkdown>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      <textarea
+                        value={hintStuckDescription}
+                        onChange={(e) => setHintStuckDescription(e.target.value)}
+                        placeholder="Optional: what are you stuck on? (not required)"
+                        style={{
+                          width: '100%',
+                          minHeight: 60,
+                          resize: 'vertical',
+                          background: 'rgba(255,255,255,.04)',
+                          border: '1px solid rgba(255,255,255,.08)',
+                          borderRadius: 8,
+                          padding: '10px 12px',
+                          color: '#cdd3e0',
+                          fontFamily: 'inherit',
+                          fontSize: 13,
+                          outline: 'none',
+                          marginBottom: 10,
+                        }}
+                      />
+
+                      {hintError && (
+                        <div style={{ color: '#f87171', fontSize: 12.5, marginBottom: 10 }}>{hintError}</div>
+                      )}
+
+                      <div style={{ display: 'flex', gap: 10 }}>
+                        <button
+                          onClick={handleGetHint}
+                          disabled={hintLoading || (hintSession?.currentLevel ?? 0) >= 3}
+                          style={{
+                            fontFamily: 'inherit',
+                            fontSize: 12.5,
+                            fontWeight: 700,
+                            padding: '8px 16px',
+                            borderRadius: 8,
+                            border: '1px solid rgba(167,139,250,.4)',
+                            background: 'rgba(124,58,237,.14)',
+                            color: '#c4b5fd',
+                            cursor: hintLoading ? 'default' : 'pointer',
+                            opacity: hintLoading ? 0.6 : 1,
+                          }}
+                        >
+                          {hintLoading
+                            ? 'Thinking…'
+                            : (hintSession?.currentLevel ?? 0) >= 3
+                              ? 'All hints given'
+                              : `Get hint (level ${(hintSession?.currentLevel ?? 0) + 1})`}
+                        </button>
+
+                        {/* Level 4 - a separate action, never one accidental
+                            click of "Get hint" away. First click here only
+                            opens the confirmation box below; the actual
+                            reveal call happens in handleConfirmReveal. */}
+                        {!revealConfirming ? (
+                          <button
+                            onClick={handleRevealClick}
+                            style={{
+                              fontFamily: 'inherit',
+                              fontSize: 12.5,
+                              fontWeight: 700,
+                              padding: '8px 16px',
+                              borderRadius: 8,
+                              border: '1px solid rgba(248,113,113,.35)',
+                              background: 'none',
+                              color: '#f87171',
+                              cursor: 'pointer',
+                            }}
+                          >
+                            Just show me the solution
+                          </button>
+                        ) : null}
+                      </div>
+
+                      {revealConfirming && (
+                        <div
+                          style={{
+                            marginTop: 12,
+                            border: '1px solid rgba(248,113,113,.35)',
+                            background: 'rgba(248,113,113,.06)',
+                            borderRadius: 10,
+                            padding: '12px 14px',
+                          }}
+                        >
+                          <div style={{ color: '#f87171', fontSize: 12.5, marginBottom: 10 }}>
+                            This skips the hints and shows the full solution, including working code. Are
+                            you sure?
+                          </div>
+                          {revealError && (
+                            <div style={{ color: '#f87171', fontSize: 12, marginBottom: 8 }}>{revealError}</div>
+                          )}
+                          <div style={{ display: 'flex', gap: 10 }}>
+                            <button
+                              onClick={handleConfirmReveal}
+                              disabled={revealLoading}
+                              style={{
+                                fontFamily: 'inherit',
+                                fontSize: 12.5,
+                                fontWeight: 700,
+                                padding: '7px 14px',
+                                borderRadius: 8,
+                                border: 'none',
+                                background: '#f87171',
+                                color: '#1a0a0a',
+                                cursor: revealLoading ? 'default' : 'pointer',
+                                opacity: revealLoading ? 0.6 : 1,
+                              }}
+                            >
+                              {revealLoading ? 'Loading…' : 'Yes, show the solution'}
+                            </button>
+                            <button
+                              onClick={() => setRevealConfirming(false)}
+                              disabled={revealLoading}
+                              style={{
+                                fontFamily: 'inherit',
+                                fontSize: 12.5,
+                                fontWeight: 700,
+                                padding: '7px 14px',
+                                borderRadius: 8,
+                                border: '1px solid rgba(255,255,255,.14)',
+                                background: 'none',
+                                color: '#9aa2b8',
+                                cursor: 'pointer',
+                              }}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {revealedSolution && (
+                        <div
+                          style={{
+                            marginTop: 16,
+                            border: '1px solid rgba(248,113,113,.25)',
+                            borderRadius: 10,
+                            padding: '12px 14px',
+                          }}
+                        >
+                          <div style={{ fontSize: 11.5, fontWeight: 700, color: '#f87171', marginBottom: 6 }}>
+                            FULL SOLUTION
+                          </div>
+                          <div className="op-solution-md">
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{revealedSolution}</ReactMarkdown>
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+
+              {leftTab === 'explain' && (
+                <div style={{ fontSize: 13.5 }}>
+                  {!explainResult && !explainLoading && (
+                    <div style={{ marginBottom: 14 }}>
+                      <span style={{ color: '#6b7392' }}>
+                        {latestPassedSubmissionId() !== undefined
+                          ? 'Get a step-by-step walkthrough of why your accepted solution works.'
+                          : "You haven't passed this problem yet - this will explain the intended approach " +
+                            'from scratch instead of walking through your own code.'}
+                      </span>
+                    </div>
+                  )}
+
+                  {explainError && (
+                    <div style={{ color: '#f87171', fontSize: 12.5, marginBottom: 10 }}>{explainError}</div>
+                  )}
+
+                  {!explainResult && (
+                    <button
+                      onClick={() => void handleExplain()}
+                      disabled={explainLoading}
+                      style={{
+                        fontFamily: 'inherit',
+                        fontSize: 12.5,
+                        fontWeight: 700,
+                        padding: '8px 16px',
+                        borderRadius: 8,
+                        border: '1px solid rgba(167,139,250,.4)',
+                        background: 'rgba(124,58,237,.14)',
+                        color: '#c4b5fd',
+                        cursor: explainLoading ? 'default' : 'pointer',
+                        opacity: explainLoading ? 0.6 : 1,
+                      }}
+                    >
+                      {explainLoading
+                        ? 'Writing walkthrough…'
+                        : latestPassedSubmissionId() !== undefined
+                          ? 'Explain my solution'
+                          : 'Explain the approach'}
+                    </button>
+                  )}
+
+                  {explainResult && (
+                    <div className="op-solution-md">
+                      <div style={{ fontSize: 11.5, fontWeight: 700, color: '#6b7392', marginBottom: 10 }}>
+                        {explainResult.mode === 'submission' ? 'WALKTHROUGH OF YOUR SOLUTION' : 'GENERAL APPROACH'}
+                        {explainResult.source === 'CACHE' ? ' · cached' : ''}
+                      </div>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{explainResult.explanation}</ReactMarkdown>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
         {/* editor + console */}
@@ -1360,6 +1742,53 @@ export default function SolvePage() {
                           </span>
                         )}
                       </div>
+
+                      {/* Only for a real, judged Submit (includeHidden) that
+                          PASSED - a Run that merely passed the visible cases
+                          isn't an accepted solution, and pastSubmissions
+                          (what latestPassedSubmissionId/the Explain tab read)
+                          never includes Runs anyway - see api/submissions.ts. */}
+                      {result.passed && lastIncludeHidden && lastSubmissionId !== null && (
+                        <div
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 10,
+                            border: '1px solid rgba(124,58,237,.3)',
+                            background: 'rgba(124,58,237,.08)',
+                            borderRadius: 10,
+                            padding: '10px 14px',
+                            marginBottom: 16,
+                          }}
+                        >
+                          <span style={{ fontSize: 13, color: '#c4b5fd' }}>
+                            Solved! Want to understand why it works?
+                          </span>
+                          <div style={{ flex: 1 }} />
+                          <button
+                            onClick={() => {
+                              setLeftTab('explain');
+                              void handleExplain(lastSubmissionId);
+                            }}
+                            disabled={explainLoading}
+                            style={{
+                              fontFamily: 'inherit',
+                              fontSize: 12,
+                              fontWeight: 700,
+                              padding: '6px 14px',
+                              borderRadius: 8,
+                              border: '1px solid rgba(167,139,250,.4)',
+                              background: 'rgba(124,58,237,.14)',
+                              color: '#c4b5fd',
+                              cursor: explainLoading ? 'default' : 'pointer',
+                              opacity: explainLoading ? 0.6 : 1,
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {explainLoading ? 'Loading…' : 'Explain this solution'}
+                          </button>
+                        </div>
+                      )}
 
                       {result.reason && (
                         <div

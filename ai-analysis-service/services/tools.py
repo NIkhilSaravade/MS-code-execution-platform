@@ -17,6 +17,7 @@ subprocess, parse output" shape. Flagged as a Phase 1 follow-up in the build
 log rather than silently claimed as done.
 """
 
+import asyncio
 import json
 # All subprocess.run() calls below use a fixed argv list (never shell=True)
 # against a tempfile this module created itself - see the nosec B603
@@ -25,6 +26,8 @@ import subprocess  # nosec B404
 import sys
 import tempfile
 from pathlib import Path
+
+import httpx
 
 from services.hybrid_search import hybrid_retrieve
 from services.reranker import rerank
@@ -137,6 +140,44 @@ def get_style_guide_section(topic: str) -> dict:
     return {"found": True, "topic": topic, "content": section}
 
 
+async def _get_problem_metadata_async(problem_id: int) -> dict:
+    # Same OAuth2 client-credentials pattern submission-service's
+    # HarnessApplier and this service's own auth/token_client.py module
+    # already use for service-to-service calls - problem-service's
+    # GET /problems/{id} route allows the SERVICE role (see CLAUDE.md's
+    # warning against narrowing that route), so this doesn't need the
+    # end user's own JWT forwarded through the hint request.
+    from auth.token_client import get_service_token
+    from discovery.service_resolver import get_service_url
+
+    token = await get_service_token()
+    problem_service_url = await get_service_url("PROBLEM-SERVICE")
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.get(
+            f"{problem_service_url}/problems/{problem_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    if response.status_code != 200:
+        return {"found": False, "status": response.status_code}
+    body = response.json()
+    return {
+        "found": True,
+        "tags": body.get("tags", []),
+        "constraints": body.get("constraints", ""),
+        "difficulty": body.get("difficulty"),
+    }
+
+
+def get_problem_metadata(problem_id: int) -> dict:
+    """Used by the hint agent (services/hint_service.py) to look up a
+    problem's tags/constraints on demand, instead of every hint prompt
+    (including the cheapest level-1 nudge) statically carrying that data
+    whether or not it's relevant. Bridges to the async HTTP call the same
+    way services/mcp_client.py bridges its own sync/async boundary -
+    asyncio.run() per call."""
+    return asyncio.run(_get_problem_metadata_async(problem_id))
+
+
 TOOL_SCHEMAS = [
     {
         "type": "function",
@@ -196,6 +237,20 @@ TOOL_SCHEMAS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_problem_metadata",
+            "description": "Fetch a problem's tags, constraints and difficulty by problem id.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "problemId": {"type": "integer", "description": "The problem's numeric id."},
+                },
+                "required": ["problemId"],
+            },
+        },
+    },
 ]
 
 TOOL_DISPATCH = {
@@ -203,4 +258,5 @@ TOOL_DISPATCH = {
     "run_security_scan": lambda args: run_security_scan(args.get("language", ""), args.get("code", "")),
     "fetch_similar_past_reviews": lambda args: fetch_similar_past_reviews(args.get("query", "")),
     "get_style_guide_section": lambda args: get_style_guide_section(args.get("topic", "")),
+    "get_problem_metadata": lambda args: get_problem_metadata(args.get("problemId", 0)),
 }

@@ -43,5 +43,10 @@ def get_style_guide_section(topic: str) -> dict:
     return tools_impl.get_style_guide_section(topic)
 
 
+@mcp_server.tool(description="Fetch a problem's tags, constraints and difficulty by problem id.")
+def get_problem_metadata(problemId: int) -> dict:
+    return tools_impl.get_problem_metadata(problemId)
+
+
 if __name__ == "__main__":
     mcp_server.run(transport="stdio")

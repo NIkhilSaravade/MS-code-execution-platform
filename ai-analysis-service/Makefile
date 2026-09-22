@@ -1,7 +1,13 @@
-.PHONY: eval test mine-data build-dataset train-lora eval-finetune roi-metrics dashboard
+.PHONY: eval hint-eval test mine-data build-dataset train-lora eval-finetune roi-metrics dashboard
 
 eval:
 	venv/Scripts/python.exe -m evals.run_eval
+
+hint-eval:
+	venv/Scripts/python.exe -m evals.run_hint_eval
+
+compare-explain:
+	venv/Scripts/python.exe -m scripts.compare_explain_vs_review
 
 test:
 	venv/Scripts/python.exe -m pytest tests/ -v

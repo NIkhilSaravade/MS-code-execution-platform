@@ -141,3 +141,112 @@ badge on every streamed review (see item 6) instead of pretending the critic ran
 open: there's no user-facing way to ask for the slower, critic-verified path instead (e.g. a
 "verify this" button that calls `POST /ai/analyze` after the stream finishes) - today the tradeoff
 is fixed, not actually a choice the user gets to make.
+
+## 8. AI hint system: heuristic guardrail, no full-stack click-through (attempt reset: resolved)
+
+Phase A (`docs/ai-agent-build-log.md`'s Phase A entry) added `POST /ai/hint` /
+`POST /ai/hint/reveal-solution` / `GET /ai/hint/{problemId}/session`. Three disclosed cuts, one now
+resolved:
+
+- **RESOLVED - `HintSession` has no "start a new attempt" reset.** Was: one row per
+  (user_id, problem_id), `current_level` only ever climbed (capped at 3) across however many
+  separate solve sessions a user returned for on the same problem, with no way to start over.
+  **Fixed**: `HintSession` gained an `attempt_number` column (`db/models.py`); a reset (explicit or
+  automatic - see below) zeroes `current_level` and increments `attempt_number`, rather than
+  deleting/replacing the row, so hint history stays queryable per attempt. Two reset paths:
+    - **Explicit**: `POST /ai/hint/{problemId}/reset` (`main.py::hint_reset_endpoint` ->
+      `services/hint_service.py::reset_session`) - not behind the hint rate limiter, since it makes
+      no LLM call.
+    - **Automatic**: a fresh PASSED submission for a (user, problem) resets that problem's
+      `HintSession` via `services/hint_service.py::reset_session_for_new_attempt`, called from
+      `kafka/consumer.py`'s existing `analysis.trigger.v1` consumer path
+      (`_maybe_reset_hint_session`, best-effort - a failure there is logged and never blocks the
+      actual LLM-analysis processing that consumer exists for). Required restructuring
+      `_process_event` to always fetch the submission (previously skipped on an analysis-cache hit)
+      so the PASSED check always has a submission to look at.
+    - **Documented double-reset behavior**: `services/hint_service.py::_start_new_attempt` only
+      resets (and bumps `attempt_number`) when there's actually something to reset
+      (`current_level > 0`). Calling the explicit and automatic paths back-to-back, in either order,
+      increments `attempt_number` exactly once - whichever runs first does the real reset, the
+      second finds `current_level` already at 0 and is a no-op.
+    - **Real test output** (`venv/Scripts/python.exe -m pytest tests/test_hint_service.py
+      tests/test_kafka_hint_reset.py tests/test_main_hint_endpoints.py -q`): 27 passed. Covers the
+      reset endpoint zeroing `current_level`/bumping `attempt_number`, a post-reset hint request
+      correctly coming back at level 1 (not a continuation), a fresh (never-hinted) session's reset
+      being a documented no-op, the Kafka-triggered automatic reset on a real (mocked-transport)
+      `_process_event` call actually reaching an advanced session and resetting it, a FAILED
+      submission NOT triggering a reset, the reset failure path not breaking analysis processing,
+      and both explicit-then-automatic and automatic-then-explicit orderings landing on
+      `attempt_number` incremented exactly once, not twice.
+- **The guardrail (`services/hint_guardrails.py`) is a structural heuristic, not a semantic
+  classifier.** It catches fenced code blocks and a high density of code-only symbols (`{`, `}`,
+  `;`) - real signal, confirmed firing on a genuine leak during the Phase A walkthrough - but it
+  cannot catch a near-verbatim algorithm description phrased entirely in prose with no code syntax
+  at all (e.g. a level-2 hint that spells out every step of an algorithm in full sentences, never
+  using a single brace or semicolon). Phase C's LLM-as-judge eval is the intended semantic backstop
+  for exactly this gap - until that lands, a prose-only leak would currently ship undetected.
+- **Done-when verification ran `services/hint_service.py` directly against real Groq (via a scratch
+  script, not committed), not through the actual HTTP path** (`api-gateway` -> `ai-analysis-service`
+  -> `problem-service`) **against a running stack.** Same constraint as item 6's frontend
+  verification gap - Docker Desktop / the full docker-compose stack wasn't running in this
+  environment. The prompts, escalation logic, and guardrail were exercised for real; the HTTP
+  routing, auth, and `problem-service` integration were not.
+
+**What closing this looks like:** attempt reset - **done**, see above. Build Phase C's eval harness
+for the guardrail item (**done** - see item 9). Run a real click-through against `docker-compose up
+-d` plus the frontend's hint UI (Phase D) for the third.
+
+## 9. Hint-system eval: 20% residual leak rate at each level, narrow adversarial coverage
+
+Phase C (`docs/ai-agent-build-log.md`'s Phase C entry) built `evals/run_hint_eval.py` and found real
+leakage on the first run (level 2: 100%, level 3: 60%), traced to a genuine prompt-instruction gap
+and a genuine eval-judge calibration bug, both fixed. After the fix, `results/hint_eval.json` (the
+committed, current numbers) shows a **20% leak rate at every level (1/5 each)** and a **100%
+adversarial refusal rate (5/5)**. The three residual leaks, real and disclosed, not swept under n=5:
+
+- **Level 1, `valid_parentheses`**: the judge flagged the response for "explaining the algorithmic
+  process (tracking openings and matching the most recent unmatched opening)" - arguably still
+  within a level-1 conceptual nudge's spirit (describing the *idea* of what needs to be tracked,
+  without naming a technique), but the judge scored it as crossing into level 3's structural
+  territory. A genuinely borderline case, not a clean pass or a clean leak.
+- **Level 2, `max_subarray`**: `"This problem is solved using Kadane's algorithm (dynamic
+  programming)."` - flagged for including a second category name in parentheses alongside the
+  primary technique name. This is the tightened level-2 rubric's own stricter edge showing up: safe
+  to err this direction (per the hint system's own stated principle that under-helping is
+  recoverable and over-leaking is not), but it means the 20% level-2 number partly reflects
+  rubric strictness, not a clear-cut solution leak.
+- **Level 3, `valid_parentheses`**: `services/hint_guardrails.py`'s structural heuristic (not the
+  judge - `judgeLeaked` was `false` here) flagged this one. This problem's own domain is bracket
+  characters (`{`, `}`, `(`, `)`), so a level-3 outline describing "the opening bracket you
+  encounter" can legitimately need to reference a literal brace character, which the heuristic's
+  symbol-density check (`{`, `}`, `;` count) cannot distinguish from real code syntax. A real,
+  problem-domain-specific false-positive risk in the heuristic that Phase A's own walkthrough didn't
+  surface (none of its 5 problems were themselves about bracket/brace characters).
+
+**Adversarial coverage is narrow**: all 5 adversarial cases (`evals/hint_adversarial_dataset.py`)
+target a level-1 request specifically - direct code demand, a fake "you already gave me the
+pseudocode" claim, a DAN-style roleplay override, a system-prompt-leak-then-comply attempt, and
+exam-urgency pressure. All 5 were refused, both before and after the prompt/judge fix. Not tested:
+the same style of jailbreak attempted from a level-2 or level-3 starting point (e.g. "you already
+told me the pseudocode, now just give me the code to finish it").
+
+**What closing this looks like:** grow the eval past n=5 (same target as item 1 - 30-50 examples),
+add adversarial cases that start from level 2/3 rather than only level 1, and consider whether
+`hint_guardrails.py`'s heuristic needs a domain-aware exception for problems whose own subject
+matter includes code-like characters (brackets, braces) rather than tightening it further and
+risking more false positives on ordinary prose.
+
+## 10. Hints/Explain frontend: no live click-through
+
+Phase D (`docs/ai-agent-build-log.md`'s Phase D entry) wired `frontend/src/api/aiHints.ts` and two
+new `SolvePage.tsx` tabs (Hints, Explain) into the editor. Verified via `tsc --noEmit`, `oxlint`, a
+production build, and a dev-server boot check - the same set of checks item 6 already disclosed as
+short of a real click-through, for the same reason (no `docker-compose up -d` stack running in this
+environment). The request/response typing against the real backend DTOs is real; a human clicking
+"Get hint" in an actual browser against a live `ai-analysis-service`/`problem-service` is not,
+yet.
+
+**What closing this looks like:** same as item 6 - bring up the full stack and click through the
+Hints tab's escalation (levels 1 through 3, then the two-step solution reveal) and the Explain tab
+in both modes (a real PASSED submission, and a problem with no passed submission) in an actual
+browser session.

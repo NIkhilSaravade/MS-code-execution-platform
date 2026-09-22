@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, Float, ForeignKey
+from sqlalchemy import Column, Integer, String, Text, DateTime, Float, ForeignKey, Boolean
 from datetime import datetime
 from db.database import Base
 
@@ -78,4 +78,73 @@ class SubmissionAnalysisMap(Base):
     submission_id = Column(Integer, primary_key=True)
     cache_key = Column(String(64), ForeignKey("analysis_cache.cache_key"), nullable=False, index=True)
     user_id = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class HintSession(Base):
+    """Graduated-hint progress for one (user, problem) attempt - the AI hint
+    system (POST /ai/hint). Deliberately separate from AnalysisCache/
+    SubmissionAnalysisMap: those are content-addressed and post-submission-
+    scoped, not a fit for tracking a mid-solve, per-user escalation state.
+    One row per (user_id, problem_id) - a reset (not a new row) starts a
+    new attempt: current_level goes back to 0 and attempt_number
+    increments, either explicitly (POST /ai/hint/{problemId}/reset) or
+    automatically once this (user, problem) gets a fresh PASSED submission
+    (see kafka/consumer.py) - see services/hint_service.py's
+    _start_new_attempt for the exact reset semantics, including why calling
+    both back-to-back doesn't double-increment attempt_number.
+    attempt_number is kept (not just a level reset) so hint history stays
+    queryable per attempt for debugging/analytics, not silently overwritten
+    - see docs/ai-code-review-known-limitations.md item 8, now resolved."""
+
+    __tablename__ = "hint_sessions"
+
+    user_id = Column(String, primary_key=True)
+    problem_id = Column(Integer, primary_key=True)
+    current_level = Column(Integer, nullable=False, default=0)
+    attempt_number = Column(Integer, nullable=False, default=1)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class HintEvent(Base):
+    """Append-only audit log of every hint request, including level-4
+    solution reveals (is_solution_reveal=True) - logged distinctly per the
+    product requirement that a deliberate "just show me the solution" ask
+    is tracked separately from the system failing to hint well at levels
+    1-3. guardrail_flagged records whether services/hint_guardrails.py's
+    code-leak heuristic fired on the first draft (and a stricter
+    regeneration was needed) - this is the raw signal Phase C's eval
+    aggregates into a leak rate, not just a debugging log line."""
+
+    __tablename__ = "hint_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String, index=True, nullable=False)
+    problem_id = Column(Integer, index=True, nullable=False)
+    level = Column(Integer, nullable=False)
+    is_solution_reveal = Column(Boolean, nullable=False, default=False)
+    guardrail_flagged = Column(Boolean, nullable=False, default=False)
+    stuck_description = Column(Text, nullable=True)
+    response_text = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class ExplanationCache(Base):
+    """Content-addressed cache for POST /ai/explain (Phase B) - same
+    sha256-of-inputs shape as AnalysisCache, but a separate table rather
+    than a shared one: explain's output is free-form teaching prose, not a
+    PassedAnalysis/FailedAnalysis JSON document, and its cache key covers a
+    different mode (with a real passed submission's code, or generic -
+    "gave up" - with no code at all) that AnalysisCache's key shape
+    (problem_id + code + status) doesn't represent. No per-submission
+    ownership-mapping table like SubmissionAnalysisMap - POST /ai/explain
+    is synchronous only (no GET-by-id polling surface), so there is
+    nothing that needs a stored per-user pointer into this cache."""
+
+    __tablename__ = "explanation_cache"
+
+    cache_key = Column(String(64), primary_key=True)
+    problem_id = Column(Integer, index=True, nullable=False)
+    mode = Column(String(16), nullable=False)  # "submission" | "generic"
+    raw_response = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
