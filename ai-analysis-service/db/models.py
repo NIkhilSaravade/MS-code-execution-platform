@@ -122,3 +122,24 @@ class HintEvent(Base):
     stuck_description = Column(Text, nullable=True)
     response_text = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class ExplanationCache(Base):
+    """Content-addressed cache for POST /ai/explain (Phase B) - same
+    sha256-of-inputs shape as AnalysisCache, but a separate table rather
+    than a shared one: explain's output is free-form teaching prose, not a
+    PassedAnalysis/FailedAnalysis JSON document, and its cache key covers a
+    different mode (with a real passed submission's code, or generic -
+    "gave up" - with no code at all) that AnalysisCache's key shape
+    (problem_id + code + status) doesn't represent. No per-submission
+    ownership-mapping table like SubmissionAnalysisMap - POST /ai/explain
+    is synchronous only (no GET-by-id polling surface), so there is
+    nothing that needs a stored per-user pointer into this cache."""
+
+    __tablename__ = "explanation_cache"
+
+    cache_key = Column(String(64), primary_key=True)
+    problem_id = Column(Integer, index=True, nullable=False)
+    mode = Column(String(16), nullable=False)  # "submission" | "generic"
+    raw_response = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)

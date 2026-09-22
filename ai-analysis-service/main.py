@@ -8,10 +8,10 @@ from pydantic import BaseModel
 import httpx
 
 from logging_config import get_logger
-from services import analysis_pipeline, hint_service
+from services import analysis_pipeline, explanation_service, hint_service
 from services.circuit_breaker import CircuitOpenError, get_breaker
 from services.exceptions import AnalysisOutputInvalid
-from services.rate_limiter import get_analysis_rate_limiter, get_hint_rate_limiter
+from services.rate_limiter import get_analysis_rate_limiter, get_explain_rate_limiter, get_hint_rate_limiter
 from db.database import engine
 from db.init_db import create_tables
 from discovery.eureka_client import deregister_from_eureka, register_with_eureka
@@ -208,6 +208,54 @@ async def hint_session_endpoint(problem_id: int, claims: dict = Depends(get_curr
     """Lets the frontend restore hint state (current level + history) on
     load, e.g. after a page refresh mid-solve."""
     return hint_service.get_session_state(claims.get("sub"), problem_id)
+
+
+class ExplainRequest(BaseModel):
+    problemId: int
+    submissionId: int | None = None
+
+
+@app.post("/ai/explain")
+async def explain_endpoint(
+    request: ExplainRequest,
+    authorization: str = Header(None),
+    claims: dict = Depends(get_current_claims),
+):
+    """Post-solve walkthrough - pedagogical, not a code review (see
+    services/explanation_service.py). If submissionId is given, it must be
+    a PASSED submission for the same problemId owned by the caller (the
+    same IDOR-scoped GET /submissions/{id} ownership check every other
+    submission-fetching path in this service already relies on); otherwise
+    this falls back to a generic, code-free walkthrough of the intended
+    approach, the same as when submissionId is omitted entirely (the "gave
+    up" case)."""
+    if not get_explain_rate_limiter().allow(claims.get("sub", "unknown")):
+        raise HTTPException(status_code=429, detail="Too many explain requests - try again shortly.")
+
+    code: str | None = None
+    try:
+        if request.submissionId is not None:
+            submission, problem = await _fetch_submission_and_problem(request.submissionId, authorization)
+            if submission.get("problemId") != request.problemId:
+                raise HTTPException(status_code=400, detail="submissionId does not belong to problemId")
+            if submission.get("status") == "PASSED":
+                code = submission["code"]
+            else:
+                log.info(
+                    "explain.submission_not_passed_falling_back_to_generic",
+                    submission_id=request.submissionId,
+                    status=submission.get("status"),
+                )
+        else:
+            problem = await _fetch_problem(request.problemId, authorization)
+    except CircuitOpenError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    return explanation_service.explain(
+        problem_id=request.problemId,
+        problem_description=problem["description"],
+        code=code,
+    )
 
 
 @app.post("/ai/analyze")

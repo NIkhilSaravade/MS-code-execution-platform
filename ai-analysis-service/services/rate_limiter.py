@@ -52,3 +52,12 @@ _hint_rate_limiter = RateLimiter(max_requests=20, window_seconds=60.0)
 
 def get_hint_rate_limiter() -> RateLimiter:
     return _hint_rate_limiter
+
+
+# Post-solve, called once (or a few times) per problem, not iterated on
+# repeatedly like hints - same budget shape as analysis.
+_explain_rate_limiter = RateLimiter(max_requests=10, window_seconds=60.0)
+
+
+def get_explain_rate_limiter() -> RateLimiter:
+    return _explain_rate_limiter

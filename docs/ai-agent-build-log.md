@@ -1155,6 +1155,66 @@ Done-when check exercised `services/hint_service.py` directly against real Groq,
 path through a running `problem-service`/api-gateway - no click-through against the actual app this
 session, same constraint as the Phase 6 frontend entry above.
 
-Next: Phase B (`POST /ai/explain`, a post-solve walkthrough).
+## Phase B - AI post-solve walkthrough (2026-09-22)
+
+`POST /ai/explain` (`main.py`) - pedagogical explanation of why an approach works, for a user who
+just solved a problem (or gave up). A genuinely separate pipeline from Phase A's hints and from the
+existing post-submission review (`services/analysis_service.py`), not a variant of either: no
+tool-calling agent loop, no critic pass, no PassedAnalysis/FailedAnalysis JSON schema - the output is
+free-form teaching prose (`prompts/explain_prompt.py`), because pedagogy doesn't compress into a
+terse schema the way `passed_prompt.py`'s review does.
+
+**Two modes, decided server-side in `main.py`, not by the caller:**
+- `submission` mode - `submissionId` is given, belongs to `problemId`, and is `PASSED`: the user's
+  real code is redacted (`services/redaction.py`) and walked through directly ("why the code I wrote
+  works").
+- `generic` mode - `submissionId` omitted, or given but not `PASSED` (logged as a fallback, not
+  silently ignored): explains the intended optimal approach from scratch, no user code referenced.
+
+Content-addressed caching (`db.models.ExplanationCache`, `services/explanation_service.py`) - same
+sha256-of-inputs shape Phases 1-6 already established for `AnalysisCache`, but its own table: the
+key covers `(problem_id, mode, redacted_code_or_empty)`, which `AnalysisCache`'s
+`(problem_id, code, status)` key doesn't represent, and the cached value is prose, not a JSON
+document. No `GET /ai/explain/{id}` polling surface (unlike hints/analysis) - explain is synchronous
+only, so there's no per-submission ownership-mapping table needed.
+
+**Done-when check** (three problems minimum, ran four - three real solved problems in submission mode
+plus one generic-mode problem) against the live Groq key, via a scratch walkthrough script (same
+non-committed, in-memory-SQLite-plus-stubbed-RAG shape as Phase A's):
+- Maximum Subarray, Two Sum, and Valid Parentheses (submission mode, real working code from each)
+  all produced the same four-section structure (Core Idea / Step-by-Step Reasoning / Complexity
+  Analysis / An Alternative Approach) with genuine "why" reasoning at each step (e.g. Two Sum: "If a
+  pair exists, the earlier number of the pair will be in `seen` when we process the later one") and
+  intuition-building analogies (Maximum Subarray opened with a walking-uphill/downhill analogy before
+  any formalism) - this is qualitatively pedagogical, not a re-skinned review.
+- Longest Increasing Subsequence in generic mode (no code passed) explained the O(n log n)
+  patience-sorting approach from scratch, correctly reasoning about *why* tracking the smallest
+  tail-per-length is sufficient before presenting the algorithm - proving generic mode isn't degraded
+  relative to submission mode just because there's no user code to anchor to.
+- **Qualitative comparison against `passed_prompt.py`'s existing review output**: by content/schema,
+  not a live side-by-side call - the walkthrough script's side-by-side step (calling
+  `AnalysisService._build_messages` + a raw completion on the same Maximum Subarray problem) failed
+  with `psycopg2.errors.FeatureNotSupported: extension "vector" is not available`, because
+  `RAGService.__init__` eagerly connects to real pgvector and this environment's local Postgres
+  doesn't have the `vector` extension installed - a real, disclosed gap in the comparison method, not
+  a silently-skipped check. The comparison instead rests on `passed_prompt.py`'s literal template
+  (`Return ONLY valid JSON... "timeComplexity": "...", "optimizationSuggestions": "..."`, one line
+  per field, no reasoning) versus `explain_prompt.py`'s actual captured output above (multi-paragraph
+  prose, analogies, explicit "why is this correct?" reasoning) - the difference in kind is evident
+  from the two real artifacts even without an executed side-by-side call.
+
+**Tests**: `tests/test_explanation_service.py` (9 cases - submission vs. generic mode selection,
+content-addressed caching including that the two modes cache separately, cache-key derived from
+redacted code so two different secrets that redact identically still hit the same cache entry) and
+`tests/test_main_explain_endpoint.py` (rate-limit 429, generic/submission/fallback-to-generic
+routing, the mismatched-`problemId` 400 guard). Full suite: 82 passed, 3 deselected.
+
+**Scope note**: no `get_problem_metadata` MCP tool call here, unlike Phase A - explain already has
+the problem description it needs from the same fetch that gets the submission/problem, and there's
+no analogous "only fetch this if the model decides it's relevant" case the way hint levels 1-3
+benefited from withholding tags/constraints by default. Reusing the tool layer here would have been
+schema-registered but genuinely unused, which Phase A's own brief warned against.
+
+Next: Phase C (eval - does the hint system actually avoid leaking the solution).
 
 ---
